@@ -11,6 +11,7 @@ import { backoffMs } from "./backoff";
 import {
   ANONYMOUS_REQUESTS_PER_HOUR,
   ingestSettingsSchema,
+  isPrimaryEntry,
   minAnonymousIntervalSeconds,
   type PollConfig,
   type PollRepoConfig,
@@ -154,7 +155,11 @@ export class Poller {
    */
   #cfgsFor(repo: string): PollRepoConfig[] {
     const l = repo.toLowerCase();
-    const fixed = this.#o.config.repos.filter((r) => r.repo.toLowerCase() === l);
+    const all = this.#o.config.repos;
+    const fixed = all
+      .filter((r) => r.repo.toLowerCase() === l)
+      // The primary workflow keeps the plain check names; the others are named by workflow.
+      .map((r) => ({ ...r, primary: isPrimaryEntry(all, r) }));
     if (fixed.length > 0) return fixed;
     const bound = this.#bound.get(l);
     return bound ? [bound] : [];
@@ -457,7 +462,14 @@ export class Poller {
     repo: string | undefined,
     req: DispatchRequest,
   ): Promise<DispatchResult & { repo: string }> {
-    const cfg = await this.#projectCfg(scope, repo);
+    const repoCfg = await this.#projectCfg(scope, repo);
+    // The entry for THIS workflow decides the vars, protected refs and tag rules; never the first
+    // entry of the repo.
+    const wanted = req.workflow.trim();
+    const cfg = this.#cfgsFor(repoCfg.repo).find((c) => c.workflow === wanted);
+    if (!cfg) {
+      throw new DispatchError("invalid_input", `no poll entry for ${wanted} in ${repoCfg.repo}`);
+    }
     // An agent token's policy is checked from the ref name before any forge call (a client may
     // mint an installation token).
     refuseAgentByName(cfg, req);

@@ -34,6 +34,7 @@ import {
 import { assertRepoRelative } from "../run/safe-read";
 import type { RunDispatchAgents } from "../settings/definitions";
 import { classifyRun, decideRun, needsApproval, type TrustClass } from "../trust";
+import { checkScopeFor } from "../checks/mapping";
 import type { PollRepoConfig } from "./config";
 import { validateDispatchInputs } from "./dispatch-inputs";
 import { describeWorkflow, fetchLocalActions, type IngestDeps } from "./ingest";
@@ -225,6 +226,7 @@ export async function dispatchWorkflow(
   const isTag = target.kind === "tag";
   const event = { name: "workflow_dispatch", ref: target.ref };
   const workflowName = describeWorkflow(yaml)?.name ?? undefined;
+  const scopeName = checkScopeFor(cfg.primary, req.workflow, workflowName);
   const githubExtra: Record<string, Value> = {
     sha: target.sha,
     actor: req.actor,
@@ -361,6 +363,8 @@ export async function dispatchWorkflow(
         egress,
         ...(headCheckoutJobs.length > 0 ? { headCheckouts: headCheckoutJobs } : {}),
         ...(wp.concurrency ? { concurrency: wp.concurrency } : {}),
+        // A non-primary workflow's checks are named under its own name (#549).
+        ...(scopeName ? { checkScope: scopeName } : {}),
       }),
       ...(group ? { concurrencyGroup: group } : {}),
       trust: JSON.stringify(decision),

@@ -17,6 +17,8 @@ import { CheckReporter, type TokenMinter } from "../src/checks/reporter";
 import { type CheckRunBody, type CheckRunsApi } from "../src/checks/client";
 import { setProjectChecksMode, bindRepo } from "../src/db";
 import { GithubClient, Poller, pollConfigSchema, pollRepo } from "../src/poll";
+import { isPrimaryEntry } from "../src/poll/config";
+import { DispatchError } from "../src/poll/dispatch";
 import { setIngestPolicy } from "../src/ops/policy-cli";
 import { newTagCaches } from "../src/poll/ingest";
 import { makeGithub, SHA } from "./github-stub";
@@ -62,7 +64,9 @@ beforeEach(async () => {
 const linear = (...shas: string[]) =>
   shas.map((sha, i) => ({ sha, parents: shas[i + 1] ? [shas[i + 1] as string] : [] }));
 
-function world(o: { releaseYaml?: string } = {}) {
+function world(
+  o: { releaseYaml?: string; ciExtra?: object; releaseExtra?: object; ciYaml?: string } = {},
+) {
   const gh = makeGithub("acme/web", CI_PATH);
   gh.state.files.set("*", CI);
   gh.state.history = linear(SHA("a"), SHA("b"), SHA("c"));
@@ -94,6 +98,7 @@ function world(o: { releaseYaml?: string } = {}) {
         vars: { TURNTABLE_CI: "true" },
         maxRunsPerHour: 1000,
         maxWaitingRuns: 500,
+        ...o.ciExtra,
       },
       {
         repo: "acme/web",
@@ -104,6 +109,7 @@ function world(o: { releaseYaml?: string } = {}) {
         vars: { TURNTABLE_CI: "true" },
         maxRunsPerHour: 1000,
         maxWaitingRuns: 500,
+        ...o.releaseExtra,
       },
     ],
   });
@@ -112,7 +118,11 @@ function world(o: { releaseYaml?: string } = {}) {
   const pollEntry = (i: number) =>
     pollRepo(
       { db, github, provider: "docker", now: () => now, tagCaches },
-      config.repos[i] as (typeof config.repos)[number],
+      // As the Poller does: the primary workflow is resolved from the whole config.
+      {
+        ...(config.repos[i] as (typeof config.repos)[number]),
+        primary: isPrimaryEntry(config.repos, config.repos[i] as (typeof config.repos)[number]),
+      },
     );
   /** One poll of each entry, in config order. */
   const pollBoth = async () => {
@@ -279,20 +289,120 @@ describe("checks", () => {
       const posted = await postChecks(mode, RELEASE);
       const prefix = mode === "shadow" ? "shadow" : "turntable";
       expect(posted.map((b) => b.name).sort()).toEqual([
+        `${prefix} / Release / publish`,
         `${prefix} / build`,
-        `${prefix} / publish`,
       ]);
       expect(new Set(posted.map((b) => b.external_id)).size).toBe(2);
     });
   }
 
-  test("a job of the same name in both workflows posts two check runs with ONE name on the sha (a collision, see FOLLOWUPS)", async () => {
+  test("a job of the same name in both workflows posts two DISTINCT contexts; the primary keeps the plain name", async () => {
     const posted = await postChecks("live", RELEASE_SAME_JOB);
     expect(posted).toHaveLength(2);
-    expect(posted.map((b) => b.name)).toEqual(["turntable / build", "turntable / build"]);
+    expect(posted.map((b) => b.name).sort()).toEqual([
+      "turntable / Release / build",
+      "turntable / build",
+    ]);
     expect(posted.map((b) => b.head_sha)).toEqual([SHA("a"), SHA("a")]);
-    // Distinct external ids: the second does not overwrite the first, so both stay on the commit.
     expect(new Set(posted.map((b) => b.external_id)).size).toBe(2);
+    // Neither result overwrote the other: both are completed with their own conclusion.
+    expect(posted.every((b) => b.status === "completed" && b.conclusion === "success")).toBe(true);
+  });
+
+  test("a workflow name is rendered inertly (no markup)", async () => {
+    const posted = await postChecks(
+      "live",
+      RELEASE_SAME_JOB.replace("name: Release", "name: '`x`'"),
+    );
+    expect(posted.map((b) => b.name).sort()).toEqual([
+      "turntable / build",
+      "turntable / x / build",
+    ]);
+  });
+
+  test("a workflow with no name uses its file name (shadow mode too)", async () => {
+    const bare = await postChecks("shadow", RELEASE_SAME_JOB.replace("name: Release\n", ""));
+    expect(bare.map((b) => b.name).sort()).toEqual(["shadow / build", "shadow / release / build"]);
+  });
+});
+
+describe("which entry is primary", () => {
+  const entry = (workflow: string, extra: object = {}) => ({
+    repo: "acme/web",
+    workflow,
+    defaultBranch: "main",
+    ...extra,
+  });
+  const parse = (repos: object[]) => pollConfigSchema.parse({ allowUnauthenticated: true, repos });
+
+  test("a single entry is primary; with none marked the first is; a marked one wins", () => {
+    const one = parse([entry(CI_PATH)]);
+    expect(isPrimaryEntry(one.repos, one.repos[0]!)).toBe(true);
+    const two = parse([entry(CI_PATH), entry(RELEASE_PATH)]);
+    expect(two.repos.map((r) => isPrimaryEntry(two.repos, r))).toEqual([true, false]);
+    const marked = parse([entry(CI_PATH), entry(RELEASE_PATH, { primary: true })]);
+    expect(marked.repos.map((r) => isPrimaryEntry(marked.repos, r))).toEqual([false, true]);
+  });
+
+  test("two entries marked primary are refused at load, with a reason", () => {
+    expect(() =>
+      parse([entry(CI_PATH, { primary: true }), entry(RELEASE_PATH, { primary: true })]),
+    ).toThrow(/marked primary/);
+  });
+});
+
+describe("dispatch picks the entry of the dispatched workflow", () => {
+  const DISPATCHABLE = (y: string) => y.replace("on:\n", "on:\n  workflow_dispatch:\n");
+  const planOf = async (runId: string) => {
+    const [row] = await db.run((h) => h.orm.select().from(s.runs));
+    void row;
+    const all = await db.run((h) => h.orm.select().from(s.runs));
+    return JSON.parse(all.find((r) => r.id === runId)!.plan!) as {
+      vars: Record<string, string>;
+      trust: string;
+      checkScope?: string;
+    };
+  };
+  function dispatchWorld() {
+    const w = world({
+      releaseYaml: DISPATCHABLE(RELEASE),
+      ciExtra: { vars: { WHICH: "ci" } },
+      releaseExtra: { vars: { WHICH: "release" }, protectedRefs: ["refs/heads/rel/**"] },
+    });
+    w.gh.state.files.set("*", DISPATCHABLE(CI));
+    w.gh.state.branches.set("rel/x", SHA("b"));
+    const p = new Poller({ db, config: w.config, fetch: w.fetch, now: () => now });
+    const go = (workflow: string, ref = "main") =>
+      p.dispatch(scope, "acme/web", {
+        workflow,
+        ref,
+        inputs: {},
+        actor: "tester",
+        role: "operator",
+      });
+    return { w, p, go };
+  }
+
+  test("release.yml uses the release entry's vars and rules; ci.yml uses ci's", async () => {
+    const { go } = dispatchWorld();
+    const rel = await go(RELEASE_PATH, "rel/x");
+    expect((await planOf(rel.runId)).vars).toEqual({ WHICH: "release" });
+    expect(rel.trustClass).toBe("protected");
+    expect((await planOf(rel.runId)).checkScope).toBe("Release");
+    const ci = await go(CI_PATH, "rel/x");
+    expect((await planOf(ci.runId)).vars).toEqual({ WHICH: "ci" });
+    // ci's entry does not protect rel/**
+    expect(ci.trustClass).toBe("trusted_pr");
+    expect((await planOf(ci.runId)).checkScope).toBeUndefined();
+  });
+
+  test("a workflow with no poll entry is refused with the reason", async () => {
+    const { go } = dispatchWorld();
+    const err = await go(".github/workflows/other.yml").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DispatchError);
+    expect((err as Error).message).toBe(
+      "no poll entry for .github/workflows/other.yml in acme/web",
+    );
   });
 });
 
