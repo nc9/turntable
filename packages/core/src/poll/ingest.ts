@@ -12,6 +12,8 @@ import { parse } from "yaml";
 import type { Db } from "../db";
 import {
   appendAudit,
+  cancelRunJobs,
+  listActivePrRuns,
   bindRepo,
   findRepoBindingByName,
   countPolledSince,
@@ -744,6 +746,51 @@ async function tagCandidates(
  * the same concurrency group with cancel-in-progress supersedes the older ones. Idempotent.
  * Honours the per-hour run cap. Rate limits propagate to the caller.
  */
+/** Closed PRs checked per poll, so a project with many stale runs costs a bounded number of calls. */
+const MAX_CLOSED_PR_CHECKS = 20;
+
+/**
+ * Cancels the queued, running and awaiting-approval runs of pull requests that GitHub now says
+ * are closed or merged, with the reason "PR closed". Only runs of event `pull_request` for that PR
+ * number in this project and repo; push, merge group, tag and dispatch runs are never touched.
+ * A PR is judged closed only by its own state from the forge, never by absence from the open
+ * list. Audited as a system action. Best effort per PR: a failed look is retried next poll.
+ */
+export async function cancelClosedPrRuns(deps: IngestDeps, cfg: PollRepoConfig): Promise<string[]> {
+  const scope = await targetScope(deps.db, cfg);
+  const cancelledRuns: string[] = [];
+  const active = await listActivePrRuns(deps.db, scope, cfg.repo);
+  for (const pr of active.slice(0, MAX_CLOSED_PR_CHECKS)) {
+    let state: "open" | "closed" | "unknown";
+    try {
+      state = await deps.github.pullState(cfg.repo, pr.number);
+    } catch (err) {
+      (deps.log ?? (() => {}))(`poll ${cfg.repo}: cannot read pr #${pr.number}: ${String(err)}`);
+      continue;
+    }
+    if (state !== "closed") continue;
+    for (const runId of pr.runIds) {
+      const res = await cancelRunJobs(deps.db, scope, runId);
+      if (!res) continue;
+      cancelledRuns.push(runId);
+      await appendAudit(deps.db, scope, {
+        principalKind: "system",
+        principalId: "poller",
+        op: "cancel",
+        effect: "destructive",
+        outcome: "ok",
+        input: { run_id: runId, reason: "PR closed", repo: cfg.repo, pr: pr.number },
+      }).catch(() => {});
+    }
+  }
+  if (cancelledRuns.length > 0) {
+    (deps.log ?? (() => {}))(
+      `poll ${cfg.repo}: cancelled ${cancelledRuns.length} run(s) of closed PRs`,
+    );
+  }
+  return cancelledRuns;
+}
+
 export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<IngestResult> {
   const now = (deps.now ?? Date.now)();
   const log = deps.log ?? (() => {});
@@ -764,6 +811,11 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     }
     await bindRepo(deps.db, scope, { forge: "github", owner, repo: name });
   }
+
+  // Runs of pull requests that closed or merged since the last poll stop here, before new work.
+  await cancelClosedPrRuns(deps, cfg).catch((err) => {
+    log(`poll ${repo}: closed-PR cancel failed: ${String(err)}`);
+  });
 
   const candidates: Candidate[] = [];
   const head = await deps.github.branchHead(repo, cfg.defaultBranch);
