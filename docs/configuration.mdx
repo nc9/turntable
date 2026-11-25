@@ -402,5 +402,6 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_SIGN_DARWIN` |  |  | Set to `1` for `scripts/build.ts` to re-sign the darwin binary with rcodesign and verify it. |
 | `TURNTABLE_DIST` |  |  | Output directory of `scripts/build.ts` (the reproducibility check builds twice into two directories). |
 | `TURNTABLE_UI_BACKEND` |  |  | UI build default backend (`fixture` or `http`); set by `bun run dev`. |
+| `TURNTABLE_BUILD_SHA` |  |  | The commit the binary was built from. Stamped into the binary by `scripts/build.ts` from the `BUILD_SHA` file that CD writes, and reported by `/healthz` as `build_sha`. Never set by hand; `unknown` when the build had no stamp. |
 
 {/* config:end */}
