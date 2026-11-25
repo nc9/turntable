@@ -829,6 +829,18 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "On the lane: the request key shared with the worker. Needs the release proxy (`TURNTABLE_RELEASE_PROXY_PORT`).",
   },
   {
+    name: "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE",
+    area: "Release lane",
+    description:
+      "On the lane: the key under which the main process may change the lane's configuration over the channel (pin, publish targets, lane secrets: the instance's `release_*` ops). A different file from the worker's key, which never opens it. Unset: the config endpoint is off and those ops are refused. See [Hosted setup (no shell)](/release-lane#hosted-setup-no-shell).",
+  },
+  {
+    name: "TURNTABLE_PUBLISH_CONFIG_KEY_FILE",
+    area: "Release lane",
+    description:
+      "On the main (API) process: the lane's config key (`TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE` on the lane), enabling the instance's `release_*` configuration ops. The channel is reached through `TURNTABLE_PUBLISH_CHANNEL_SOCKET` or `_URL` (same prefix). Never set it on a worker.",
+  },
+  {
     name: "TURNTABLE_RELEASE_CHANNEL_SOCKET",
     area: "Release lane",
     default: "`<data dir>/channel.sock`",

@@ -56,6 +56,18 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: cross-tenant poll health is the operator's view, never an agent's",
   instance_audit_verify:
     "instance administrator ops are REST only: audit integrity is the operator's check, never an agent's",
+  instance_step_up_challenge:
+    "instance administrator ops are REST only: a passkey step-up for the release lane's configuration is a human act",
+  release_pin_repo:
+    "instance administrator ops are REST only: the release lane's configuration decides where signed bytes go, behind a passkey step-up",
+  release_publish_target_set:
+    "instance administrator ops are REST only: the release lane's configuration decides where signed bytes go, behind a passkey step-up",
+  release_publish_target_delete:
+    "instance administrator ops are REST only: the release lane's configuration decides where signed bytes go, behind a passkey step-up",
+  release_publish_target_list:
+    "instance administrator ops are REST only: the release lane's configuration is the operator's view, never an agent's",
+  release_secret_set:
+    "instance administrator ops are REST only: a lane secret's value would sit in an agent's context",
   set_quotas: "instance administrator ops are REST only, and quotas are a limit-raising setter",
   set_project_settings:
     "instance administrator ops are REST only: a project's snapshot and cap are operator controls, never an agent's",

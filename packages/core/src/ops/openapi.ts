@@ -141,7 +141,8 @@ export function buildOpenApi(registry: OpRegistry, version: string): Json {
   for (const op of [
     ...listed,
     ...registry.signatureOps(),
-    ...registry.instanceOps(),
+    // A value-bearing instance op is left out like any other: its curl is in the docs.
+    ...registry.instanceOps().filter((op) => op.secretInputFields.length === 0),
     ...registry.accountOps(),
   ]) {
     (paths[op.http.path] ??= {})[op.http.method.toLowerCase()] = operation(op);

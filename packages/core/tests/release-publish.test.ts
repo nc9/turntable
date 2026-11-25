@@ -22,6 +22,7 @@ import { integrityOf } from "../src/release/publish/npm";
 import { tarEntry } from "../src/release/publish/tar";
 import type { PublishCredentials, PublishWiring } from "../src/release/publish/types";
 import { seedWorld, type Tenant } from "./ops-helpers";
+import { opsHarness } from "./release-config-helpers";
 
 const SHA = "a".repeat(40);
 const TOKEN_NPM = ["npm", "publish", "token", "5f2c91"].join("_");
@@ -737,5 +738,78 @@ describe("target declarations", () => {
     ]) {
       expect(() => parseTarget(bad)).toThrow();
     }
+  });
+});
+
+describe("config version binding (#541)", () => {
+  const REASON = "release lane config changed since approval; re-approve";
+  const scope = () => ({ orgId: a.orgId, projectId: a.projectId });
+  const npmInput = (over: Record<string, unknown> = {}) => ({
+    target_org: a.slug,
+    target_project: a.projectSlug,
+    key: "npm",
+    kind: "npm",
+    package: "@acme/web",
+    artifact: "web-1.0.0.tgz",
+    secret: "NPM_TOKEN",
+    accept_long_lived_token: true,
+    ...over,
+  });
+
+  test("approve, change the npm target through the op, publish is refused with the reason; approving again publishes", async () => {
+    const h = await opsHarness({ db, attest, orgId: a.orgId });
+    try {
+      // The first approval: the lane signs with no target declared, so nothing is published yet.
+      const first = await run(["web-1.0.0.tgz"]);
+      expect(first.row.status).toBe("signed");
+      expect(first.published).toEqual([]);
+      const approvedAt = attest.approvedRelease({ ...scope(), runId: a.runId })!.configVersion;
+      expect(approvedAt).toBe(attest.configVersion());
+
+      // The instance administrator declares the npm target: the config version moves.
+      const set = await h.signedCall("release_publish_target_set", npmInput());
+      expect(set.ok).toBe(true);
+      expect(attest.configVersion()).toBeGreaterThan(approvedAt);
+
+      // Publishing for that approval is refused, with exactly that reason, and nothing is sent.
+      const refused = await lane.finalize({ ...scope(), runId: a.runId });
+      expect(refused).toEqual([{ target: "npm", state: "refused", reason: REASON }]);
+      expect(registryCalls()).toEqual([]);
+      expect(attest.approvedRelease({ ...scope(), runId: a.runId })!.finalizedAt).toBeUndefined();
+      expect((await audits()).map((r) => r.outcome)).toContain(`publish:npm:refused:${REASON}`);
+
+      // Changing the target again moves it again; still refused under the old approval.
+      await h.signedCall("release_publish_target_set", npmInput({ tag: "next" }));
+      expect((await lane.finalize({ ...scope(), runId: a.runId }))[0]).toMatchObject({
+        reason: REASON,
+      });
+
+      // Approving again (a new request for the run, signed under the new version) publishes.
+      const again = await run(["web-1.0.0.tgz"]);
+      expect(again.published).toMatchObject([{ target: "npm", state: "published" }]);
+      expect(registryCalls().some((r) => r.method === "PUT")).toBe(true);
+      expect(attest.approvedRelease({ ...scope(), runId: a.runId })!.configVersion).toBe(
+        attest.configVersion(),
+      );
+    } finally {
+      h.dispose();
+    }
+  });
+
+  test("a lane secret or a pin change binds the same way, and a change before any approval costs nothing", async () => {
+    const h = await opsHarness({ db, attest, orgId: a.orgId });
+    try {
+      await h.signedCall("release_publish_target_set", npmInput());
+      // approved after the change: publishes
+      const ok = await run(["web-1.0.0.tgz"]);
+      expect(ok.published).toMatchObject([{ target: "npm", state: "published" }]);
+    } finally {
+      h.dispose();
+    }
+    // a pin through the store (the CLI's path) moves the version too
+    const v = attest.configVersion();
+    attest.pinRepo(a.orgId, a.projectId, "acme/web", 1);
+    expect(attest.configVersion()).toBe(v + 1);
+    expect(attest.configChangedSince({ ...scope(), runId: a.runId })).toBe(true);
   });
 });

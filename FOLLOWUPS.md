@@ -7,3 +7,11 @@
 - Realtime for web sessions. A signed-in session cannot open the realtime socket (it takes bearer tokens only), so the UI polls `my_pending_approvals` (30 s visible, 120 s hidden) and refetches on focus. Letting a session open the socket would make approval notices immediate and work for a hidden tab; that is a change to who may subscribe, so it needs its own issue.
 - A person-wide op scope. `my_pending_approvals` is called with one org (the dispatcher resolves a session to one org) and answers for all of the person's orgs. A first-class scope for ops about the person, not an org, would remove that.
 - Release requests waiting on a person. `my_pending_approvals` has no `release_request` kind, because a release request never waits on a person today (it is queued for the release lane). Add the kind to the op's enum, the UI types and the docs when a release request can wait on someone, with the same eligibility check as the approving code.
+
+## Release lane configuration (#541)
+
+- For stable (#352): the lane verifies a signed approval statement over each config change itself, instead of trusting the main process's step-up check.
+- When `docs/releasing.mdx` lands, update its CLI-only note to point at the hosted setup operations in `docs/release-lane.mdx` ("Hosted setup (no shell)").
+- The config version is recorded when the lane approves a release (when it signs), not when the human's approval statement was given in the main database. Carrying the version into the approval request itself would also cover a change between the human approval and the lane's signing.
+- The config channel needs the release proxy and channel to be on (`TURNTABLE_RELEASE_PROXY_PORT` and `TURNTABLE_RELEASE_CHANNEL_KEY_FILE`); a lane that publishes only in strict mode with no proxy cannot be configured this way yet.
+- A refused lane call (lane down, bad key) happens after the step-up is spent. A preflight that checks the lane is reachable before the dispatcher spends it would save the approver a second tap.

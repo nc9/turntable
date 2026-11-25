@@ -11,6 +11,7 @@ import { releaseConfigFromEnv, releaseMasterKey } from "../roles";
 import { systemOrgId } from "../audit/failures";
 import { rewrapReleaseKey } from "./rewrap";
 import { AttestationStore } from "./attest";
+import { LaneConfig } from "./config";
 import { dirArtifacts } from "./artifacts";
 import { githubForge } from "./forge";
 import type { PublishWiring } from "./publish/types";
@@ -153,6 +154,19 @@ export async function serveRelease(
           db,
           proxy,
           key: readFileSync(cfg.channel.keyFile, "utf8").trim(),
+          ...(cfg.channel.configKeyFile
+            ? {
+                config: {
+                  key: readFileSync(cfg.channel.configKeyFile, "utf8").trim(),
+                  lane: new LaneConfig({
+                    attest,
+                    vault,
+                    db,
+                    githubCredential: cfg.githubPublishToken !== undefined,
+                  }),
+                },
+              }
+            : {}),
           listen: cfg.channel.tcp
             ? {
                 tcp: {

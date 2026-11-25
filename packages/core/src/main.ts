@@ -98,7 +98,11 @@ import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops
 import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { mainRuntime, releaseLaneConfigured, resolveRoles, takeReleaseKeys } from "./roles";
-import { createChannelClient, withReleaseChannel } from "./release/channel-client";
+import {
+  createChannelClient,
+  laneConfigClientFromEnv,
+  withReleaseChannel,
+} from "./release/channel-client";
 import { DEFAULT_DRAIN_TIMEOUT_SECONDS, drainTimeoutSecondsSetting } from "./settings/definitions";
 import { resolveSetting } from "./settings/resolve";
 import { cachedDoctor } from "./doctor/cache";
@@ -1026,6 +1030,8 @@ async function serve(args: string[]): Promise<void> {
     sinks.push(webhookSink(exportUrl, auditWebhookSecret ? { secret: auditWebhookSecret } : {}));
   }
   if (sinks.length > 0) auditStops.push(startExporter(db, sinks));
+  // The release lane's config channel (#541), when this process is set up for it.
+  const releaseConfig = laneConfigClientFromEnv(process.env);
   const webauthn = relyingPartyFromEnv(
     values["public-url"] ?? process.env.TURNTABLE_PUBLIC_URL?.trim(),
   );
@@ -1071,6 +1077,7 @@ async function serve(args: string[]): Promise<void> {
         ...(webhooks ? { webhooks } : {}),
         ...(vault ? { vault } : {}),
         ...(webauthn ? { webauthn } : {}),
+        ...(releaseConfig ? { releaseConfig } : {}),
         ...(oidc ? { oidc } : {}),
         ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),

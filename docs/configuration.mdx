@@ -334,6 +334,8 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_PUBLISH_CHANNEL_TLS_KEY_FILE` |  |  | On the worker: the private key of that certificate. |
 | `TURNTABLE_PUBLISH_CHANNEL_TLS_CA_FILE` |  |  | On the worker: the CA that signed the lane's certificate. |
 | `TURNTABLE_RELEASE_CHANNEL_KEY_FILE` |  |  | On the lane: the request key shared with the worker. Needs the release proxy (`TURNTABLE_RELEASE_PROXY_PORT`). |
+| `TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE` |  |  | On the lane: the key under which the main process may change the lane's configuration over the channel (pin, publish targets, lane secrets: the instance's `release_*` ops). A different file from the worker's key, which never opens it. Unset: the config endpoint is off and those ops are refused. See [Hosted setup (no shell)](/release-lane#hosted-setup-no-shell). |
+| `TURNTABLE_PUBLISH_CONFIG_KEY_FILE` |  |  | On the main (API) process: the lane's config key (`TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE` on the lane), enabling the instance's `release_*` configuration ops. The channel is reached through `TURNTABLE_PUBLISH_CHANNEL_SOCKET` or `_URL` (same prefix). Never set it on a worker. |
 | `TURNTABLE_RELEASE_CHANNEL_SOCKET` |  | `<data dir>/channel.sock` | On the lane: the unix socket the release channel listens on (mode 0600). |
 | `TURNTABLE_RELEASE_CHANNEL_TCP` |  |  | On the lane: listen on `host:port` with mutual TLS instead of the socket, for split hosts. Needs `_TLS_CERT_FILE`, `_TLS_KEY_FILE` and `_TLS_CA_FILE` (same prefix). |
 | `TURNTABLE_RELEASE_CHANNEL_TLS_CERT_FILE` |  |  | On the lane: its server certificate for the TCP channel. |

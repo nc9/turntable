@@ -4,3 +4,4 @@ packages/core/tests/release-compat.test.ts
 packages/core/tests/release-oci.test.ts
 packages/core/tests/release-unpack.test.ts
 packages/core/tests/release-lane-zip.test.ts
+packages/core/tests/release-config-ops.test.ts

@@ -108,7 +108,7 @@ After the job, `ReleaseLane.finalize` checks the result against the lane's own r
 The worker does not hold or see any publish credential. For an attempt of a release-class run it asks the lane over the **release channel**, and runs the job behind the release proxy if the lane agrees (replacing the worker's own proxy for that job; such a job runs with the same no-other-route egress as any secret-bearing job). Because the lane grants rules per run, every job of that run that starts after the lane signed is eligible, so keep jobs that should not publish out of a release-class run's tail or give them no network.
 
 - **Transport.** A unix socket by default (`TURNTABLE_RELEASE_CHANNEL_SOCKET`, default `<data dir>/channel.sock`, mode 0600 in a 0700 directory), or TCP with mutual TLS for split hosts (`TURNTABLE_RELEASE_CHANNEL_TCP=host:port` with `_TLS_CERT_FILE`, `_TLS_KEY_FILE`, `_TLS_CA_FILE`). A client without a certificate from that CA is not served at all.
-- **Request key.** Lane and worker share a key (`TURNTABLE_RELEASE_CHANNEL_KEY_FILE` on the lane, `TURNTABLE_PUBLISH_CHANNEL_KEY_FILE` on the worker, plus `TURNTABLE_PUBLISH_CHANNEL_SOCKET` or `_URL` with `_TLS_*_FILE`). Every request carries an HMAC over its fields and a timestamp; a stale, forged, altered or replayed request is refused. The key lets a process ask. It cannot publish.
+- **Request key.** Lane and worker share a key (`TURNTABLE_RELEASE_CHANNEL_KEY_FILE` on the lane, `TURNTABLE_PUBLISH_CHANNEL_KEY_FILE` on the worker, plus `TURNTABLE_PUBLISH_CHANNEL_SOCKET` or `_URL` with `_TLS_*_FILE`). Every request carries an HMAC over its fields and a timestamp; a stale, forged, altered or replayed request is refused. The key lets a process ask. It cannot publish, and it opens none of the [configuration operations](#hosted-setup-no-shell), which use a different key.
 - **An approval is not standing.** It lasts six hours from the signing, ends when the release is finalized (every target published), and is replaced when a newer release of the project is approved. A later request for the same run, or for an older release, is refused (`approval_expired`, `already_finalized`, `superseded`), so an old approval cannot be used to publish old bytes under a name that has moved on, such as rolling `latest` back. Signing the same run again does not reopen a finalized release, extend its window once it is replaced, or move it in the order of approvals (its place is fixed at the first approval), so re-signing an older release never makes it the newest. A registration lasts no longer than its approval, and every request through it re-checks: a release finalized, expired or replaced gets nothing more: the request is refused (a 502 the job can read, audited as `release_proxy_refuse` with the reason) and the registration is ended by the next sweep, never from inside the refused request, which would cut the connection the refusal is written on.
 - **The lane re-verifies.** The attempt must be running, in that job and run, with the release trust class. Then the lane's own file decides: it signed this run, the pin holds, the tag still points at the signed commit, a compat target exists, no freeze is on, and (for GitHub) the draft exists or can be created. Nothing the worker says counts for those.
 - **The reply** is the proxy endpoint and an attempt-scoped proxy credential. Never a publish credential.
@@ -135,6 +135,58 @@ Unpacking refuses, with `unpack_failed` and the reason in the detail, and signs 
 Two files with the same name across the request's artifacts are refused as `duplicate_subject`. The signing service checks each zip's digest against its own record and signs the lane's file subjects only alongside those zip digests (`verified.archives`); with no zip in the request it signs exactly the recorded artifacts as before.
 
 The class recorded with each artifact is the control plane's own, taken from the attempt that wrote it, and the signing service already refuses an artifact below the `release` class (`artifact_not_release_class`). The artifact service applies the same rule to downloads, so a job in a release run never receives what a lower class wrote.
+
+## Hosted setup (no shell)
+
+A hosted instance runs an image with no shell, so `turntable release pin-repo` and `turntable release publish-target` cannot run there. The instance administrator does the same through five REST operations (`release_pin_repo`, `release_publish_target_set`, `release_publish_target_list`, `release_publish_target_delete` and `release_secret_set`), each of which sends one signed message to the lane over its config channel. The lane writes its own file and its own vault view with the same code the CLI uses, so the CLI and the operations always see the same state and the same validation. None of these is an MCP tool: an agent never sees them, and an instance token is not an MCP credential.
+
+**Turning it on.** The config channel is a second door on the release channel, under its own key, so the worker (which holds only the request key) can never change configuration. On the lane set `TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE` to a key file different from the worker's. On the main service set `TURNTABLE_PUBLISH_CONFIG_KEY_FILE` to the same key, next to the `TURNTABLE_PUBLISH_CHANNEL_SOCKET` or `_URL` it already uses to reach the channel. Never put that key on a worker. Without it the operations are refused with `lane_not_configured`.
+
+**Who may call them.** A change needs the instance administrator's `tti_` token **and** a fresh passkey step-up from an approver enrolled in the org the call names. The step-up is the same mechanism as the [web step-up](/security#human-approvals), bound for an instance token rather than a session: its challenge is bound to the instance token's id, the org, the operation's name and a hash of the exact input (the org and project slugs included). A step-up for another operation, other input, another token or another org is refused; it works once and lasts five minutes. The list operation changes nothing and needs only the token.
+
+A secret value is never part of that hash, so the approver's device never sees it. It is bound by its digest instead: `value_sha256`, the hex sha256 of `turntable.step_up.secret.v1`, a NUL byte, the field name `value`, a NUL byte and the value. A step-up made for one value does not authorize another.
+
+**The morning order.** Read the token from a file, and never put it or a secret on a command line (the shell history and the process list show both).
+
+1. **Enrol a passkey** for the org, if it has none: [the first approver on a host with no shell](/hosted#the-first-approver-on-a-host-with-no-shell), then a passkey signed by that key as usual.
+2. **Pin the repository.** Ask for a step-up for exactly this input, sign the returned `challenge` with the passkey (`navigator.credentials.get` with that challenge, from the org's own origin), then call the operation with the assertion as `step_up`:
+
+```bash
+TOKEN="$(cat ~/.turntable/instance-token)"
+INPUT='{"target_org":"acme","target_project":"web","repo":"acme/web"}'
+
+# 1. a challenge for release_pin_repo with exactly that input
+curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/step-up" \
+  -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d "{\"action\":\"release_pin_repo\",\"input\":$INPUT}"
+# -> {"step_up_id":"...","challenge":"...","passkeys":[{"approver":"...","passkey_id":"..."}],...}
+
+# 2. sign `challenge` with the passkey, then send the same input with the assertion
+curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/release/pin-repo" \
+  -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"target_org":"acme","target_project":"web","repo":"acme/web",
+       "step_up":{"id":"<step_up_id>","approver":"<approver>","signature":{
+         "credential_id":"...","client_data_json":"...","authenticator_data":"...","signature":"..."}}}'
+```
+
+3. **Declare targets** (optional) with `POST /api/v1/instance/release/publish-targets`, using the fields of `turntable release publish-target set` in snake_case (`kind`, `package`, `artifact`, `secret`, `accept_long_lived_token`, `assets`, `registry` and so on), each call with its own step-up. `POST /api/v1/instance/release/publish-targets/delete` takes `target_org`, `target_project` and `key`.
+4. **Set lane secrets** (optional) with `POST /api/v1/instance/release/secrets`. The value goes on stdin, in the request body, never in the URL or an argument (the operation refuses a value in a query string and over plain http). Declare the target that names the secret first: the lane lets it be used only against that target's registry host. Its step-up is asked for with `value_sha256` in place of `value`:
+
+```bash
+# the secret arrives on stdin; the body is built from it and sent with --data-binary @-
+read -rs NPM_TOKEN_VALUE   # or pipe it from your secret manager
+printf '{"target_org":"acme","target_project":"web","name":"NPM_TOKEN","value":%s,"step_up":%s}' \
+  "$(printf '%s' "$NPM_TOKEN_VALUE" | jq -Rs .)" "$STEP_UP_JSON" |
+  curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/release/secrets" \
+    -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+    --data-binary @-
+```
+
+5. **Check it.** `GET /api/v1/instance/release/publish-targets?target_org=acme&target_project=web` returns the pin, the lane's config version and each target with `has_credential` true or false. It returns no secret material of any kind, and a target's `settings` name its vault secret as `vault_name` only.
+
+**Config version.** Every change to the lane's configuration (the pin, a target, a lane secret), through these operations or the CLI, moves a version counter kept in the lane's own file. The lane records the version when it approves a release, and a release approved under an older version publishes nothing: the publish step, the proxy registration and every request of a running job are refused with `release lane config changed since approval; re-approve`. Approve the release again (a new request for the run) and it publishes under the new version. So a target or credential cannot be swapped between an approval and the publish.
+
+**What is audited.** Each change is audited in the system chain with the operation, the org and project slugs, the token that made it and the fields of the input. A secret's value is `[redacted]` there and appears in no output, event or log. A refused step-up is audited too.
 
 ## Deployment
 

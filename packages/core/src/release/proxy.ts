@@ -23,7 +23,7 @@ import type net from "node:net";
 import type { Db } from "../db";
 import { appendAudit, getFreeze } from "../db/repos";
 import type { SecretVault } from "../secrets/vault";
-import type { AttestationStore } from "./attest";
+import { CONFIG_CHANGED_REASON, type AttestationStore } from "./attest";
 import { compatRules, RELEASE_GITHUB_SECRET } from "./compat";
 import type { ArtifactBytes } from "./artifacts";
 import type { ForgeFacts } from "./forge";
@@ -68,6 +68,7 @@ export type RegisterRefusal =
   | "approval_expired"
   | "already_finalized"
   | "superseded"
+  | typeof CONFIG_CHANGED_REASON
   | "no_compat_targets";
 
 export type RegisterResult =
@@ -169,6 +170,10 @@ export class ReleaseProxy {
       return refuse("repo_mismatch");
     const tag = await this.#o.forge.tagCommit(approved.repo, approved.tag);
     if (!tag.found || tag.sha !== approved.sha) return refuse("tag_moved");
+    // Where the job may publish is the lane's configuration: an approval given under an older
+    // version of it (a target, a lane secret) is not registered. Before anything is created.
+    if (this.#o.attest.configChangedSince({ ...scope, runId: a.runId }))
+      return refuse(CONFIG_CHANGED_REASON);
     const digests = this.#o.attest.attestedDigests({
       ...scope,
       repo: approved.repo,
@@ -301,13 +306,21 @@ export class ReleaseProxy {
    * Why an approval no longer backs a live registration, or undefined while it does: the release
    * was finalized, its window ended, or a newer release of the project was approved.
    */
-  #approvalGone(live: Live): "release_finalized" | "approval_expired" | "superseded" | undefined {
+  #approvalGone(
+    live: Live,
+  ):
+    | "release_finalized"
+    | "approval_expired"
+    | "superseded"
+    | typeof CONFIG_CHANGED_REASON
+    | undefined {
     const id = { orgId: live.orgId, projectId: live.projectId, runId: live.runId };
     const approved = this.#o.attest.approvedRelease(id);
     if (!approved) return "approval_expired";
     if (approved.finalizedAt !== undefined) return "release_finalized";
     if ((this.#o.now ?? Date.now)() >= approved.expiresAt) return "approval_expired";
     if (!this.#o.attest.isNewestApproved(id)) return "superseded";
+    if (this.#o.attest.configChangedSince(id)) return CONFIG_CHANGED_REASON;
     return undefined;
   }
 

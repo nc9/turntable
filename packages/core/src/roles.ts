@@ -105,6 +105,12 @@ export interface ReleaseConfig {
   channel?:
     | {
         keyFile: string;
+        /**
+         * The key under which the main process may change the lane's configuration over the
+         * channel (#541), a different file from `keyFile`: the worker never holds it. Absent, the
+         * config endpoint is off and the instance's release config ops are refused.
+         */
+        configKeyFile: string | undefined;
         socket: string;
         tcp:
           | { host: string; port: number; certFile: string; keyFile: string; caFile: string }
@@ -132,8 +138,15 @@ function channelConfig(
       caFile: need("TURNTABLE_RELEASE_CHANNEL_TLS_CA_FILE"),
     };
   }
+  const configKeyFile = env.TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE?.trim() || undefined;
+  if (configKeyFile === keyFile) {
+    throw new Error(
+      "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE must be a different file from the worker's channel key",
+    );
+  }
   return {
     keyFile,
+    configKeyFile,
     socket: env.TURNTABLE_RELEASE_CHANNEL_SOCKET?.trim() || "",
     tcp: parsed,
   };

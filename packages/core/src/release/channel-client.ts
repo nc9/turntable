@@ -2,13 +2,14 @@
 // and gives the job that instead of the worker's own proxy. The worker holds the request key
 // only. What comes back is an endpoint and an attempt-scoped proxy credential, never a publish
 // credential.
+import { readFileSync } from "node:fs";
 import { controlPost, type ControlTarget } from "@turntable/net";
 import type { AttemptCredential } from "@turntable/proxy";
 import type { ProxyEndpoint } from "@turntable/provider-sdk";
 import { parseTrust } from "../db/repos/approve";
 import type { ProxyAccess } from "../proxy";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "../scheduler/types";
-import { channelMac, registerFields } from "./channel";
+import { channelMac, configFields, registerFields, type ConfigAction } from "./channel";
 
 export type ChannelRegister = { ok: true; access: ProxyAccess } | { ok: false; reason: string };
 
@@ -120,4 +121,79 @@ export function withReleaseChannel(
       await o.client.revoke(ctx.attempt.id);
     }
   };
+}
+
+export type LaneConfigReply =
+  | { ok: true; result: unknown }
+  | { ok: false; reason: string; kind: "unreachable" | "refused" | "invalid" };
+
+/**
+ * The main process's side of the lane's config channel (#541): one signed message per change to the
+ * lane's own configuration. It holds the config key, a different key from the worker's request key.
+ */
+export interface LaneConfigClient {
+  call(action: ConfigAction, args: Record<string, unknown>): Promise<LaneConfigReply>;
+}
+
+export function createLaneConfigClient(o: {
+  target: ControlTarget;
+  key: Buffer | string;
+  now?: () => number;
+}): LaneConfigClient {
+  const now = o.now ?? Date.now;
+  return {
+    async call(action, rawArgs) {
+      // What is MACed is what the lane will parse: the arguments after a JSON round trip.
+      const args = JSON.parse(JSON.stringify(rawArgs)) as Record<string, unknown>;
+      const ts = now();
+      let res;
+      try {
+        res = await controlPost(o.target, "/v1/config", {
+          action,
+          args,
+          ts,
+          mac: channelMac(o.key, "config", configFields(action, args), ts),
+        });
+      } catch {
+        return { ok: false, reason: "the release lane could not be reached", kind: "unreachable" };
+      }
+      const b = res.json as { ok?: boolean; reason?: string; result?: unknown } | undefined;
+      if (res.status === 200 && b?.ok) return { ok: true, result: b.result };
+      // 422: the lane refused the input and says why. Anything else is a refusal of the channel.
+      return res.status === 422 && b?.reason
+        ? { ok: false, reason: b.reason, kind: "invalid" }
+        : { ok: false, reason: b?.reason ?? `http_${res.status}`, kind: "refused" };
+    },
+  };
+}
+
+/**
+ * The lane's config client from the main process's environment, or undefined when it is not set
+ * up (no config key): then the instance's release config ops are refused. The channel is the one
+ * the worker uses (`TURNTABLE_PUBLISH_CHANNEL_SOCKET` or `_URL` with its TLS files).
+ */
+export function laneConfigClientFromEnv(
+  env: Record<string, string | undefined>,
+): LaneConfigClient | undefined {
+  const keyFile = env.TURNTABLE_PUBLISH_CONFIG_KEY_FILE?.trim();
+  if (!keyFile) return undefined;
+  const need = (name: string): string => {
+    const v = env[name]?.trim();
+    if (!v) throw new Error(`TURNTABLE_PUBLISH_CONFIG_KEY_FILE needs ${name}`);
+    return v;
+  };
+  const url = env.TURNTABLE_PUBLISH_CHANNEL_URL?.trim();
+  return createLaneConfigClient({
+    key: readFileSync(keyFile, "utf8").trim(),
+    target: url
+      ? {
+          url,
+          tls: {
+            cert: readFileSync(need("TURNTABLE_PUBLISH_CHANNEL_TLS_CERT_FILE"), "utf8"),
+            key: readFileSync(need("TURNTABLE_PUBLISH_CHANNEL_TLS_KEY_FILE"), "utf8"),
+            ca: readFileSync(need("TURNTABLE_PUBLISH_CHANNEL_TLS_CA_FILE"), "utf8"),
+          },
+        }
+      : { unix: need("TURNTABLE_PUBLISH_CHANNEL_SOCKET") },
+  });
 }

@@ -77,6 +77,14 @@ import { myPendingApprovalsOp } from "./definitions/my-pending-approvals";
 import { instanceBindGithubLoginOp, inviteMemberOp } from "./definitions/members";
 import { sessionStepUpChallenge } from "./definitions/session-step-up";
 import {
+  instanceStepUpChallenge,
+  releasePinRepo,
+  releasePublishTargetDelete,
+  releasePublishTargetList,
+  releasePublishTargetSet,
+  releaseSecretSet,
+} from "./definitions/release-config";
+import {
   addPassthroughHostOp,
   deletePassthroughHostOp,
   deleteProxyRuleOp,
@@ -218,6 +226,12 @@ export const registry = createRegistry([
   listUserInstallationsOp,
   inviteMemberOp,
   sessionStepUpChallenge,
+  instanceStepUpChallenge,
+  releasePinRepo,
+  releasePublishTargetSet,
+  releasePublishTargetList,
+  releasePublishTargetDelete,
+  releaseSecretSet,
   instanceBindGithubLoginOp,
   resyncInstallation,
   setOidcAudiencesOp,

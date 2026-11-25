@@ -76,6 +76,22 @@ export const SESSION_STEP_UP_OPS: ReadonlySet<string> = new Set([
   "set_setting",
 ]);
 
+/**
+ * The instance operations that need a step-up (#541): the release lane's configuration decides
+ * where signed bytes go, so the instance administrator's token alone never changes it. The
+ * administrator is a token, not a person, so the step-up binds to the token (`instance:<id>`) and
+ * to ONE org: a passkey enrolled as an approver in the org the call names signs the challenge.
+ */
+export const INSTANCE_STEP_UP_OPS: ReadonlySet<string> = new Set([
+  "release_pin_repo",
+  "release_publish_target_set",
+  "release_publish_target_delete",
+  "release_secret_set",
+]);
+
+/** The principal a step-up challenge row is issued to. */
+export const stepUpHolder = (kind: "session" | "instance", id: string): string => `${kind}:${id}`;
+
 /** The target a step-up binds for a call: sha256 of the canonical validated input plus project scope. */
 export function inputTarget(input: Record<string, unknown>, projectId: string | undefined): string {
   return createHash("sha256")
@@ -140,6 +156,24 @@ export async function stepUpKeys(
   };
 }
 
+/**
+ * The passkeys that may step an instance token up in an org: live WebAuthn approver keys of that
+ * org within its key policy. No person is named (a token is not one): the org's own enrolled
+ * approvers are the second factor for the administrator's token.
+ */
+export async function instanceStepUpKeys(
+  db: Db,
+  orgId: string,
+): Promise<{ id: string; credentialId: string }[]> {
+  const policy = await getKeyPolicy(db, orgId);
+  return (await listApprovers(db, orgId))
+    .filter(
+      (k) =>
+        k.kind === "webauthn" && k.credentialId !== null && keyPolicyViolation(policy, k) === null,
+    )
+    .map((k) => ({ id: k.id, credentialId: k.credentialId! }));
+}
+
 export type VerifiedStepUp = { action: string; target: string | undefined };
 
 /**
@@ -153,9 +187,12 @@ export async function verifyStepUp(
     now: number;
     orgId: string;
     sessionHash: string | undefined;
+    /** The person's user id, or for `instance` the instance token's id. */
     userId: string;
     action: string;
     target: string | undefined;
+    /** An instance token's step-up: bound to the token, signed by an approver key of `orgId`. */
+    instance?: boolean;
   },
   raw: unknown,
 ): Promise<VerifiedStepUp> {
@@ -166,7 +203,8 @@ export async function verifyStepUp(
   const su = parsed.data;
   const row = await getChallenge(o.db, o.orgId, su.id);
   // Not ours (another kind, another person's session): the same answer as an unknown id.
-  if (!row || row.kind !== STEP_UP_KIND || row.principal !== `session:${o.userId}`) {
+  const holder = stepUpHolder(o.instance ? "instance" : "session", o.userId);
+  if (!row || row.kind !== STEP_UP_KIND || row.principal !== holder) {
     throw refuse("step_up_unknown", "no such step-up");
   }
   if (row.usedAt !== null) throw refuse("step_up_reused", "that step-up was already used");
@@ -185,12 +223,14 @@ export async function verifyStepUp(
   }
   const key = await getApprover(o.db, o.orgId, su.approver);
   // A key with no numeric id can never satisfy a step-up, whatever its login says.
-  if (key && key.revokedAt === null && key.githubUserId === null) {
+  if (!o.instance && key && key.revokedAt === null && key.githubUserId === null) {
     throw refuse("step_up_reenrol", "that passkey has no GitHub account id: re-enrol this passkey");
   }
-  const allowed = (await stepUpKeys(o.db, o.orgId, o.userId)).keys.some(
-    (k) => k.id === su.approver,
-  );
+  const allowed = (
+    o.instance
+      ? await instanceStepUpKeys(o.db, o.orgId)
+      : (await stepUpKeys(o.db, o.orgId, o.userId)).keys
+  ).some((k) => k.id === su.approver);
   if (
     !key ||
     key.revokedAt !== null ||

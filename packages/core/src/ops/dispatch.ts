@@ -21,6 +21,7 @@ import type { DoctorReport } from "../doctor/types";
 import type { Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
+import type { LaneConfigClient } from "../release/channel-client";
 import type { WebSessions } from "../auth/web-sessions";
 import type { UserGithub } from "../auth/user-tokens";
 import type { WebhookService } from "../webhooks/service";
@@ -36,7 +37,14 @@ import { type Credential, orgRole, type Principal, principalId } from "./princip
 import type { OpRegistry } from "./registry";
 import { roleSatisfies } from "./roles";
 import { hashToken, looksLikeInstanceToken, looksLikeToken } from "./tokens";
-import { inputTarget, SESSION_STEP_UP_OPS, verifyStepUp, type VerifiedStepUp } from "./step-up";
+import { instanceStepUpTarget } from "./instance-step-up";
+import {
+  inputTarget,
+  INSTANCE_STEP_UP_OPS,
+  SESSION_STEP_UP_OPS,
+  verifyStepUp,
+  type VerifiedStepUp,
+} from "./step-up";
 
 export type Transport = "mcp" | "rest";
 
@@ -76,6 +84,8 @@ export type DispatchEnv = {
   webhooks?: WebhookService | undefined;
   /** WebAuthn relying party for human approvals (TURNTABLE_PUBLIC_URL or the WEBAUTHN vars). */
   webauthn?: RelyingParty | undefined;
+  /** The release lane's config channel; absent when no lane is configured on this instance. */
+  releaseConfig?: LaneConfigClient | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent. */
   attestationAnchors?: TrustAnchors | undefined;
   /** The secret store, for ops that read an org's audit public key; absent without a master key. */
@@ -484,10 +494,12 @@ export async function dispatch(
     }
     // A step-up rides beside the input and is judged by the dispatcher, never by the schema.
     const { step_up: stepUpRaw, ...raw } = rawInput as Record<string, unknown>;
-    if (stepUpRaw !== undefined && credential.kind !== "session") {
+    // An instance token's step-up (#541): for the few instance ops that name it, bound to the token.
+    const instanceStepUp = principal.kind === "instance" && INSTANCE_STEP_UP_OPS.has(op.name);
+    if (stepUpRaw !== undefined && credential.kind !== "session" && !instanceStepUp) {
       throw new OpError("invalid_input", "step_up is only for web sessions");
     }
-    if (stepUpRaw !== undefined && !SESSION_STEP_UP_OPS.has(op.name)) {
+    if (stepUpRaw !== undefined && !SESSION_STEP_UP_OPS.has(op.name) && !instanceStepUp) {
       throw new OpError("invalid_input", `${op.name} does not take a step-up`);
     }
     // Instance ops and org ops never meet: an instance op takes the instance administrator and
@@ -586,6 +598,36 @@ export async function dispatch(
         throw err;
       }
     }
+    if (instanceStepUp && principal.kind === "instance") {
+      try {
+        if (stepUpRaw === undefined) {
+          throw new OpError(
+            "forbidden",
+            `${op.name} needs a fresh passkey step-up (step_up_required): call instance_step_up_challenge`,
+            { reason: "step_up_required" },
+          );
+        }
+        // The org that must sign is the one the call names; its enrolled approvers are the factor.
+        const t = await instanceStepUpTarget(env.db, input, op.secretInputFields);
+        stepUp = await verifyStepUp(
+          {
+            db: env.db,
+            rp: env.webauthn,
+            now: (env.now ?? Date.now)(),
+            orgId: t.orgId,
+            sessionHash: `instance:${principal.id}`,
+            userId: principal.id,
+            action: op.name,
+            target: t.target,
+            instance: true,
+          },
+          stepUpRaw,
+        );
+      } catch (err) {
+        await audit(err instanceof OpError ? `error:${err.code}` : "error:internal", input);
+        throw err;
+      }
+    }
     const ctx = (db: Db): OpContext => ({
       stepUp,
       db,
@@ -601,6 +643,7 @@ export async function dispatch(
       defaultBranchRunner: env.defaultBranchRunner,
       webhooks: env.webhooks,
       webauthn: env.webauthn,
+      releaseConfig: env.releaseConfig,
       transport: env.transport,
       instanceOrgCap: env.instanceOrgCap,
       staticPollProjects: env.staticPollProjects,

@@ -152,6 +152,12 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `list_user_installations` | `GET /api/v1/account/installations` | no |  | read | viewer | account | List the App installations the signed-in GitHub user can reach. |
 | `invite_member` | `POST /api/v1/members/invites` | no |  | write | release_operator | token | Invite a GitHub login to this org. |
 | `session_step_up_challenge` | `POST /api/v1/session/step-up` | no |  | write | viewer | token | Start a passkey step-up for one sensitive action from a web session. |
+| `instance_step_up_challenge` | none | no |  | write | admin | instance | Start a passkey step-up for one release lane configuration change. |
+| `release_pin_repo` | none | no |  | write | admin | instance | Pin the repository a project releases from, in the release lane. |
+| `release_publish_target_set` | none | no |  | write | admin | instance | Declare or replace a publish target of a project, in the release lane. |
+| `release_publish_target_list` | none | no |  | read | admin | instance | A project's release lane configuration: the pin and each publish target. |
+| `release_publish_target_delete` | none | no |  | destructive | admin | instance | Remove a publish target of a project, in the release lane. |
+| `release_secret_set` | none | no |  | write | admin | instance | Set a lane secret (a publish credential) for a project, in the release lane's vault. |
 | `instance_bind_github_login` | none | no |  | write | admin | instance | Grant an org role to a GitHub login (instance administrator only). |
 | `resync_installation` | `POST /api/v1/github/installations/{installation_id}/resync` | yes |  | write | release_operator | token | Re-sync one GitHub App installation of this org with GitHub. |
 | `set_oidc_audiences` | `POST /api/v1/oidc-audiences` | no |  | write | admin | token | Limit the OIDC audiences a project's jobs may ask for, or lift the limit. |

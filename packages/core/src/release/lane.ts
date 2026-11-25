@@ -18,7 +18,7 @@ import {
   listReleaseRequests,
   type ReleaseRequest,
 } from "../db/repos";
-import type { AttestationStore } from "./attest";
+import { CONFIG_CHANGED_REASON, type AttestationStore } from "./attest";
 import type { ArtifactBytes } from "./artifacts";
 import { ReleaseFiles } from "./files";
 import type { ForgeFacts } from "./forge";
@@ -466,6 +466,9 @@ export class ReleaseLane {
       provenance: typeof v.envelope === "string" ? v.envelope : JSON.stringify(v.envelope),
     };
     const out: TargetResult[] = [];
+    // Where signed bytes go is the lane's configuration. An approval given under an older version
+    // of it (a target, the pin or a lane secret changed since) publishes nothing: approve again.
+    const stale = this.#o.attest.configChangedSince({ ...scope, runId: req.runId });
     for (const key of keys) {
       const t = targets[key]!;
       const record = async (r: TargetResult): Promise<void> => {
@@ -485,6 +488,10 @@ export class ReleaseLane {
       };
       if ((await getFreeze(this.#o.db, scope)).frozen) {
         await record({ target: key, state: "refused", reason: "frozen" });
+        continue;
+      }
+      if (stale) {
+        await record({ target: key, state: "refused", reason: CONFIG_CHANGED_REASON });
         continue;
       }
       const prior = this.#o.attest.publishState(id, key);

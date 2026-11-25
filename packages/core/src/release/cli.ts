@@ -8,7 +8,7 @@ import { getOrgBySlug, getProjectBySlug, openDatabase } from "../db";
 import { releaseConfigFromEnv, releaseMasterKey } from "../roles";
 import { builtinKeyRef } from "../signing/service";
 import { AttestationStore } from "./attest";
-import { parseTarget, TARGET_KEY } from "./publish/config";
+import { LaneConfig, validateRepo, validateTargetKey } from "./config";
 import { fileKeyVault } from "./key-vault";
 import { keysDir } from "./serve";
 
@@ -66,8 +66,7 @@ async function pinRepo(args: string[]): Promise<number> {
   if (!values.org || !values.project || !values.repo) {
     throw new Error("--org, --project and --repo are required");
   }
-  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(values.repo))
-    throw new Error("--repo must be owner/name");
+  validateRepo(values.repo);
   const cfg = releaseConfigFromEnv(process.env);
   const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
@@ -77,11 +76,11 @@ async function pinRepo(args: string[]): Promise<number> {
     if (!project) throw new Error(`no project ${values.project} in org ${values.org}`);
     const attest = new AttestationStore(join(resolve(cfg.dataDir), "attested.db"));
     try {
-      attest.pinRepo(org.id, project.id, values.repo, Date.now());
+      const pinned = new LaneConfig({ attest }).pinRepo(org.id, project.id, values.repo);
+      console.log(`${values.org}/${values.project} releases from ${pinned}`);
     } finally {
       attest.close();
     }
-    console.log(`${values.org}/${values.project} releases from ${values.repo.toLowerCase()}`);
     return 0;
   } finally {
     db.close();
@@ -152,68 +151,37 @@ async function publishTarget(args: string[]): Promise<number> {
         }
         return 0;
       }
-      if (!values.key || !TARGET_KEY.test(values.key)) {
-        throw new Error("--key must be a short lower-case name (letters, digits, dashes)");
-      }
+      const config = new LaneConfig({ attest });
+      const key = validateTargetKey(values.key);
       if (action === "remove") {
-        const gone = attest.removePublishTarget(org.id, project.id, values.key);
-        console.log(gone ? `removed ${values.key}` : `no target ${values.key}`);
+        const gone = config.removeTarget(org.id, project.id, key);
+        console.log(gone ? `removed ${key}` : `no target ${key}`);
         return gone ? 0 : 1;
       }
-      const mode = values.mode ? { mode: values.mode } : {};
-      const raw =
-        values.kind === "npm"
-          ? {
-              kind: "npm",
-              ...mode,
-              package: values.package,
-              artifact: values.artifact,
-              secret: values.secret,
-              ...(values.tag ? { tag: values.tag } : {}),
-              ...(values.access ? { access: values.access } : {}),
-            }
-          : values.kind === "github-release"
-            ? {
-                kind: "github-release",
-                ...mode,
-                assets: (values.assets ?? "")
-                  .split(",")
-                  .map((x) => x.trim())
-                  .filter(Boolean),
-                ...(values["provenance-asset"] !== undefined
-                  ? {
-                      provenanceAsset:
-                        values["provenance-asset"] === "none" ? null : values["provenance-asset"],
-                    }
-                  : {}),
-              }
-            : values.kind === "oci-image"
-              ? {
-                  kind: "oci-image",
-                  mode: values.mode ?? "compat",
-                  registry: values.registry,
-                  repository: values.repository,
-                  manifest: values.manifest,
-                  tags: (values.tags ?? "")
-                    .split(",")
-                    .map((x) => x.trim())
-                    .filter(Boolean),
-                  username: values.username,
-                  ...(values["realm-host"] !== undefined
-                    ? { realmHost: values["realm-host"] }
-                    : {}),
-                  secret: values.secret,
-                }
-              : undefined;
-      if (!raw) throw new Error("--kind must be npm, github-release or oci-image");
-      if (raw.kind === "npm" && !values["accept-long-lived-token"]) {
-        throw new Error(
-          "publishing to npm uses a long-lived registry token (a granular, package-scoped, publish-only one); pass --accept-long-lived-token to say you accept that",
-        );
-      }
-      const target = parseTarget(raw);
-      attest.setPublishTarget(org.id, project.id, values.key, target, Date.now());
-      console.log(`${values.org}/${values.project}: ${values.key} = ${JSON.stringify(target)}`);
+      const list = (v: string | undefined): string[] =>
+        (v ?? "")
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean);
+      const target = config.setTarget(org.id, project.id, key, {
+        kind: values.kind,
+        mode: values.mode,
+        package: values.package,
+        artifact: values.artifact,
+        secret: values.secret,
+        tag: values.tag,
+        access: values.access,
+        assets: list(values.assets),
+        provenance_asset: values["provenance-asset"],
+        accept_long_lived_token: values["accept-long-lived-token"],
+        registry: values.registry,
+        repository: values.repository,
+        manifest: values.manifest,
+        tags: list(values.tags),
+        username: values.username,
+        realm_host: values["realm-host"],
+      });
+      console.log(`${values.org}/${values.project}: ${key} = ${JSON.stringify(target)}`);
       return 0;
     } finally {
       attest.close();

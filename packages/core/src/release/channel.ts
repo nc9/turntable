@@ -13,16 +13,37 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { and, eq } from "drizzle-orm";
+import { canonicalJson } from "../audit/chain";
 import type { Db } from "../db";
+import { getProject } from "../db/repos";
 import * as s from "../db/schema";
+import { LaneConfigError, type LaneConfig, type TargetFields } from "./config";
 import type { ReleaseProxy } from "./proxy";
 
 const VERSION = "longshore-release-channel/v1";
 const ID = /^[A-Za-z0-9_.:-]{1,100}$/;
 const MAX_SKEW_MS = 60_000;
 const MAX_BODY = 4096;
+/** A config message may carry a lane secret (up to 16 KiB, so up to a few times that escaped). */
+const MAX_CONFIG_BODY = 128 * 1024;
 
-export type ChannelOp = "register" | "revoke" | "health";
+export type ChannelOp = "register" | "revoke" | "health" | "config";
+
+/** What the config channel does: each is one change to the lane's own configuration (or a read). */
+export const CONFIG_ACTIONS = [
+  "snapshot",
+  "pin_repo",
+  "target_set",
+  "target_delete",
+  "secret_set",
+] as const;
+export type ConfigAction = (typeof CONFIG_ACTIONS)[number];
+
+/** The MAC fields of a config message: the action and the canonical form of its arguments. */
+export const configFields = (action: string, args: unknown): string[] => [
+  action,
+  canonicalJson(args),
+];
 
 /** The MAC of a request: HMAC-SHA256 over the version, the operation, the fields and the time. */
 export function channelMac(
@@ -56,6 +77,12 @@ export interface ChannelOptions {
   /** The shared request key. */
   key: Buffer | string;
   listen: ChannelListen;
+  /**
+   * Lane configuration over the channel (#541), under its OWN request key: the worker's key lets
+   * a process ask for a publish credential and nothing more, so it never opens this. Absent, the
+   * config endpoint answers 404 and the instance's config ops are refused as "lane not configured".
+   */
+  config?: { key: Buffer | string; lane: LaneConfig } | undefined;
   /** How long a job's proxy credential lives. Default 2 hours. */
   ttlMs?: number;
   now?: () => number;
@@ -115,15 +142,92 @@ export async function startChannel(o: ChannelOptions): Promise<RunningChannel> {
     return timingSafeEqual(want, Buffer.from(mac, "hex"));
   };
 
+  /** One config message: authentic under the config key, fresh, for a project of that org. */
+  async function handleConfig(b: Record<string, unknown>, ts: number): Promise<Response> {
+    const cfg = o.config!;
+    const action = b.action;
+    const args = b.args;
+    if (
+      typeof action !== "string" ||
+      !(CONFIG_ACTIONS as readonly string[]).includes(action) ||
+      args === null ||
+      typeof args !== "object" ||
+      Array.isArray(args)
+    )
+      return json(400, { ok: false, reason: "malformed" });
+    const mac = b.mac;
+    if (typeof mac !== "string" || !/^[0-9a-f]{64}$/.test(mac) || !Number.isFinite(ts))
+      return json(401, { ok: false, reason: "bad_mac" });
+    if (
+      Math.abs(now() - ts) > MAX_SKEW_MS ||
+      !timingSafeEqual(
+        Buffer.from(channelMac(cfg.key, "config", configFields(action, args), ts), "hex"),
+        Buffer.from(mac, "hex"),
+      )
+    )
+      return json(401, { ok: false, reason: "bad_mac" });
+    if (!fresh(mac, now())) return json(401, { ok: false, reason: "replay" });
+    const a = args as Record<string, unknown>;
+    const orgId = typeof a.orgId === "string" && ID.test(a.orgId) ? a.orgId : undefined;
+    const projectId =
+      typeof a.projectId === "string" && ID.test(a.projectId) ? a.projectId : undefined;
+    if (!orgId || !projectId) return json(400, { ok: false, reason: "malformed" });
+    // The lane's own check: the project is the org's. A message cannot name another org's project.
+    if (!(await getProject(o.db, { orgId }, projectId)))
+      return json(404, { ok: false, reason: "no such project in that org" });
+    // Every answer carries the config version after the change, read once the change is made.
+    const done = (r: object): Response =>
+      json(200, { ok: true, result: { ...r, config_version: cfg.lane.version } });
+    try {
+      switch (action as ConfigAction) {
+        case "snapshot":
+          return done(await cfg.lane.snapshot(orgId, projectId));
+        case "pin_repo":
+          return done({ repo: cfg.lane.pinRepo(orgId, projectId, String(a.repo ?? "")) });
+        case "target_set": {
+          const target = cfg.lane.setTarget(
+            orgId,
+            projectId,
+            String(a.key ?? ""),
+            (a.fields ?? {}) as TargetFields,
+          );
+          return done({ kind: target.kind });
+        }
+        case "target_delete":
+          return done({ removed: cfg.lane.removeTarget(orgId, projectId, String(a.key ?? "")) });
+        case "secret_set":
+          return done(
+            await cfg.lane.setSecret(
+              orgId,
+              projectId,
+              String(a.name ?? ""),
+              String(a.value ?? ""),
+              String(a.actor ?? "").slice(0, 100),
+            ),
+          );
+      }
+    } catch (e) {
+      // A refusal of the input says what is wrong with it; anything else is not described.
+      if (e instanceof LaneConfigError) return json(422, { ok: false, reason: e.message });
+      throw e;
+    }
+    return json(400, { ok: false, reason: "malformed" });
+  }
+
   async function handle(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname;
     if (
       req.method !== "POST" ||
-      (path !== "/v1/register" && path !== "/v1/revoke" && path !== "/v1/health")
+      (path !== "/v1/register" &&
+        path !== "/v1/revoke" &&
+        path !== "/v1/health" &&
+        path !== "/v1/config")
     )
       return json(404, { ok: false, reason: "not_found" });
+    if (path === "/v1/config" && !o.config) return json(404, { ok: false, reason: "not_found" });
     const raw = await req.text();
-    if (raw.length > MAX_BODY) return json(413, { ok: false, reason: "too_large" });
+    if (raw.length > (path === "/v1/config" ? MAX_CONFIG_BODY : MAX_BODY))
+      return json(413, { ok: false, reason: "too_large" });
     let b: Record<string, unknown>;
     try {
       b = JSON.parse(raw) as Record<string, unknown>;
@@ -133,6 +237,7 @@ export async function startChannel(o: ChannelOptions): Promise<RunningChannel> {
     const str = (k: string): string | undefined =>
       typeof b[k] === "string" && ID.test(b[k] as string) ? (b[k] as string) : undefined;
     const ts = typeof b.ts === "number" ? b.ts : Number.NaN;
+    if (path === "/v1/config") return handleConfig(b, ts);
     // A side-effect-free liveness and key check, for `turntable doctor`: it reads and changes nothing.
     if (path === "/v1/health") {
       if (!authentic("health", [], ts, b.mac)) return json(401, { ok: false, reason: "bad_mac" });
