@@ -582,5 +582,13 @@ export const migrations: Migration[] = [
       "ALTER TABLE `release_requests` ADD `cosignatures` text;",
       "ALTER TABLE `release_requests` ADD `dry_run` integer DEFAULT false NOT NULL;"
     ]
+  },
+  {
+    "tag": "0054_project_added_at",
+    "when": 1795625038414,
+    "statements": [
+      "ALTER TABLE `projects` ADD `added_at` integer;",
+      "UPDATE `projects` SET `added_at` = `created_at` WHERE `ingest_config` IS NOT NULL OR EXISTS (SELECT 1 FROM `runs` WHERE `runs`.`project_id` = `projects`.`id`);"
+    ]
   }
 ];
