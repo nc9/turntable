@@ -39,6 +39,21 @@ export type Principal =
    */
   | { kind: "approver"; id: string; orgId: string; person: string; role: "viewer" }
   /**
+   * A multi-org user token (`ttu_`, #547). The token is bound to a person, not an org: the
+   * dispatcher builds this principal for ONE org per call, from the holder's CURRENT membership
+   * there, with that membership's role (the same mapping as a web session). It is a person's
+   * credential, so agent policies do not apply. It carries no session, so it can never present a
+   * passkey step-up, and it is never accepted by a signature op.
+   */
+  | {
+      kind: "user";
+      /** The token's id (what audit names), never the secret. */
+      id: string;
+      orgId: string;
+      role: MemberRole;
+      githubUserId: string;
+    }
+  /**
    * The instance administrator, from a `tti_` token. It holds no org grant: `orgId` is the
    * system org only so its audit entries land in that chain. It can call `instance` ops and
    * nothing else, and no org principal can call those.

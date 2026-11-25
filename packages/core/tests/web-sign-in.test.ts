@@ -760,6 +760,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       "bind_installation",
       "onboard_repos", // owner or admin onboarding of repos; the op's own `admin` role gates it
       "run_default_branch", // owner or admin starts a default-branch run; same `admin` gate
+      "revoke_user_token",
     ]);
   });
 

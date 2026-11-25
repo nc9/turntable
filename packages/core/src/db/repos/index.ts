@@ -36,6 +36,7 @@ export * from "./events";
 export * from "./lease";
 export * from "./org-summary";
 export * from "./instance-tokens";
+export * from "./user-tokens";
 export * from "./poll";
 export * from "./onboardings";
 export * from "./dismissals";

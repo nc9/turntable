@@ -141,6 +141,13 @@
       "when": 1795572336089,
       "tag": "0019_onboardings",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795582447656,
+      "tag": "0020_user_tokens",
+      "breakpoints": true
     }
   ]
 }

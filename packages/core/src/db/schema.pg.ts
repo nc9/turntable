@@ -543,6 +543,44 @@ export const instanceTokens = pgTable(
   (t) => [unique("instance_tokens_hash_unique").on(t.tokenHash)],
 );
 
+/**
+ * A multi-org user token (#547, prefix `ttu_`). Bound to a person's numeric GitHub id, not to an
+ * org: each call resolves the person's CURRENT membership in the org it names. Not tenant data,
+ * so there is no org column. Stored as a hash; the secret is shown once at mint.
+ */
+export const userTokens = pgTable(
+  "user_tokens",
+  {
+    id: text("id").primaryKey(),
+    githubUserId: text("github_user_id").notNull(),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    createdAt: createdAt(),
+    lastUsedAt: bigint("last_used_at", { mode: "number" }),
+    expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
+    revokedAt: bigint("revoked_at", { mode: "number" }),
+  },
+  (t) => [
+    unique("user_tokens_hash_unique").on(t.tokenHash),
+    index("user_tokens_github_user_idx").on(t.githubUserId),
+  ],
+);
+
+/** The orgs a user token has been used in, with the first use of each (audited once per org). */
+export const userTokenOrgs = pgTable(
+  "user_token_orgs",
+  {
+    tokenId: text("token_id")
+      .notNull()
+      .references(() => userTokens.id),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    firstUsedAt: bigint("first_used_at", { mode: "number" }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.tokenId, t.orgId] })],
+);
+
 /** Append-only record of write and destructive operations, including denied attempts. */
 export const auditLog = pgTable(
   "audit_log",

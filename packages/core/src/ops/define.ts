@@ -210,7 +210,9 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
               .min(1)
               .max(64)
               .optional()
-              .describe("Org slug. Defaults to the caller's org; a token can only name its own."),
+              .describe(
+                "Org slug. Defaults to the caller's org; a token can only name its own. A user token (ttu_) must name the org on every call.",
+              ),
             project: z
               .string()
               .min(1)

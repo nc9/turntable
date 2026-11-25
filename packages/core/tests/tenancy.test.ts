@@ -42,6 +42,7 @@ const NO_ORG_ID = new Set([
   "github_identities", // a GitHub account linked to a global user (#430)
   "login_states", // a sign-in attempt in flight, before anyone is known (#430)
   "web_sessions", // a signed-in user's session; its orgs come from org_members (#430)
+  "user_tokens", // user-scoped, not org-scoped: a user token acts in an org only through a current membership resolved per call (#547)
 ]);
 
 test.skipIf(onPostgres)("every table except the allowlist has an org_id column", () => {

@@ -69,11 +69,11 @@ export const inviteMemberOp = defineOp({
       if (ROLE_RANK[i.role] > ROLE_RANK.member) {
         throw new OpError("forbidden", "a token can invite a viewer or member only");
       }
-    } else if (p.kind === "member" || p.kind === "session") {
+    } else if (p.kind === "member" || p.kind === "session" || p.kind === "user") {
       // A stolen session must never mint a persistent admin or owner: that needs a fresh passkey
       // step-up for exactly this invite (the dispatcher bound it to this input).
       if (
-        p.kind === "session" &&
+        p.kind !== "member" &&
         i.role !== "viewer" &&
         i.role !== "member" &&
         ctx.stepUp?.action !== "invite_member"

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getApiToken, getOrgById, getProject } from "../../db/repos";
+import { getApiToken, getOrgById, getProject, getUserToken } from "../../db/repos";
 import { iso } from "../common";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
@@ -16,7 +16,7 @@ export const whoami = defineOp({
     "created the token: untrusted text.",
   input: z.object({}),
   output: z.object({
-    kind: z.enum(["token", "member", "session"]),
+    kind: z.enum(["token", "member", "session", "user"]),
     id: z.string(),
     name: z.string().nullable().describe("The token's label; null for a person."),
     role: z.enum(ALL_ROLES as [string, ...string[]]),
@@ -44,14 +44,15 @@ export const whoami = defineOp({
       grantProjectId === null ? null : await getProject(ctx.db, { orgId: p.orgId }, grantProjectId);
     const token =
       p.kind === "token" ? await getApiToken(ctx.db, { orgId: p.orgId }, p.id) : undefined;
+    const userToken = p.kind === "user" ? await getUserToken(ctx.db, p.id) : undefined;
     return {
       kind: p.kind,
       id: p.id,
-      name: token?.name ?? null,
+      name: token?.name ?? userToken?.name ?? null,
       role: p.role,
       org: org.slug,
       project: project?.slug ?? null,
-      expires_at: iso(token?.expiresAt),
+      expires_at: iso(token?.expiresAt ?? userToken?.expiresAt),
     };
   },
 });

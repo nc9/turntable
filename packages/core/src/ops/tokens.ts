@@ -23,6 +23,21 @@ export function looksLikeInstanceToken(value: string): boolean {
   );
 }
 
+/**
+ * Prefix of a multi-org user token (#547). Distinct from `tt_` and `tti_`, so it is told apart
+ * before any lookup and a scanner or a human can tell what a leaked one is.
+ */
+export const USER_TOKEN_PREFIX = "ttu_";
+
+/** A new user token: `ttu_` plus 32 random bytes, base64url. Shown once; only its hash is kept. */
+export function generateUserToken(): string {
+  return `${USER_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+}
+
+export function looksLikeUserToken(value: string): boolean {
+  return value.startsWith(USER_TOKEN_PREFIX) && value.length === USER_TOKEN_PREFIX.length + 43;
+}
+
 /** Org tokens minted before the rename (formerly Longshore). Still accepted, nothing else changes. */
 const LEGACY_TOKEN_PREFIX = "ls_"; // rename-keep
 
@@ -82,10 +97,15 @@ export function assertMintable(
     return;
   }
   if (creator.kind === "member") return;
-  if (creator.kind === "approver" || creator.kind === "instance" || creator.kind === "account") {
+  if (
+    creator.kind === "approver" ||
+    creator.kind === "instance" ||
+    creator.kind === "account" ||
+    creator.kind === "user"
+  ) {
     throw new OpError(
       "forbidden",
-      `${creator.kind === "approver" ? "an approver key" : creator.kind === "account" ? "an account session" : "an instance token"} cannot create tokens`,
+      `${creator.kind === "approver" ? "an approver key" : creator.kind === "account" ? "an account session" : creator.kind === "user" ? "a user token" : "an instance token"} cannot create tokens`,
     );
   }
   if (ROLE_RANK[request.role] > ROLE_RANK[creator.role]) {

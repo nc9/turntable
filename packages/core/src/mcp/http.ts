@@ -1,7 +1,7 @@
 // Streamable HTTP transport at /mcp. Stateless: each request authenticates its own bearer token
 // and gets its own server, so no session can outlive a token or be used by another caller.
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { authenticate, type DispatchEnv } from "../ops";
+import { checkBearer, type DispatchEnv } from "../ops";
 import { OpError, errorBody } from "../ops/errors";
 import { createMcpServer } from "./server";
 
@@ -39,7 +39,7 @@ export function createMcpHttp(env: DispatchEnv): (req: Request) => Promise<Respo
     const token = bearer[1]!;
     try {
       // Refuse a bad token here so the client sees 401; every call is checked again by dispatch.
-      await authenticate(env, { kind: "bearer", token });
+      await checkBearer(env, token);
     } catch (err) {
       if (err instanceof OpError) {
         return failure(err, { "www-authenticate": 'Bearer realm="turntable"' });
