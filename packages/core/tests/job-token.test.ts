@@ -136,24 +136,24 @@ describe("job tokens against a fake GitHub", () => {
     expect(a.permissions).toEqual({ metadata: "read", contents: "write", issues: "read" });
   });
 
-  test("no permissions block: contents read only", async () => {
-    const { g, tokens } = await issuer({ metadata: "read", contents: "write" });
+  test("a scope beyond contents read is minted as declared", async () => {
+    const { g, tokens } = await issuer({ metadata: "read", contents: "write", issues: "write" });
     await mint(tokens, {
       installationId: "100",
       owner: "acme",
       repo: "app",
       klass: "protected",
-      workflowYaml: yaml(""),
+      workflowYaml: yaml("    permissions:\n      issues: read\n"),
       jobId: "build",
     });
     expect(g.calls.find((c) => c.method === "POST")?.body).toEqual({
       repositories: ["app"],
-      permissions: { metadata: "read", contents: "read" },
+      permissions: { metadata: "read", issues: "read" },
     });
   });
 
   test("a request wider than the installation's grant is lowered before it is sent", async () => {
-    const { g, tokens } = await issuer({ metadata: "read", contents: "read" });
+    const { g, tokens } = await issuer({ metadata: "read", contents: "read", issues: "read" });
     const t = await mint(tokens, {
       installationId: "100",
       owner: "acme",
@@ -162,14 +162,14 @@ describe("job tokens against a fake GitHub", () => {
       workflowYaml: yaml("    permissions: write-all\n"),
       jobId: "build",
     });
-    expect(t.permissions).toEqual({ metadata: "read", contents: "read" });
+    expect(t.permissions).toEqual({ metadata: "read", contents: "read", issues: "read" });
     expect(t.notes.join(" ")).toContain("not granted");
     expect(g.calls.filter((c) => c.method === "POST")).toHaveLength(1);
   });
 
-  test("untrusted_pr: contents read only, even if the workflow asks for write-all", async () => {
+  test("untrusted_pr: contents read only, so no token, even if the workflow asks for write-all", async () => {
     const { g, tokens } = await issuer({ metadata: "read", contents: "write", issues: "write" });
-    await mint(tokens, {
+    const r = await tokens.issue({
       installationId: "100",
       owner: "acme",
       repo: "app",
@@ -177,20 +177,18 @@ describe("job tokens against a fake GitHub", () => {
       workflowYaml: yaml("    permissions: write-all\n"),
       jobId: "build",
     });
-    expect(g.calls.find((c) => c.method === "POST")?.body).toEqual({
-      repositories: ["app"],
-      permissions: { metadata: "read", contents: "read" },
-    });
+    expect("none" in r).toBe(true);
+    expect(g.calls.filter((c) => c.method === "POST")).toHaveLength(0);
   });
 
   test("revoke deletes exactly that token at GitHub, once, and the token stops working", async () => {
-    const { g, tokens } = await issuer({ metadata: "read", contents: "read" });
+    const { g, tokens } = await issuer({ metadata: "read", contents: "read", issues: "read" });
     const req = {
       installationId: "100",
       owner: "acme",
       repo: "app",
       klass: "protected" as const,
-      workflowYaml: yaml(""),
+      workflowYaml: yaml("    permissions:\n      issues: read\n"),
       jobId: "build",
     };
     const a = await mint(tokens, req);
@@ -230,7 +228,12 @@ describe("a token only when it is needed", () => {
   });
   async function make(isPublic: ((o: string, r: string) => Promise<boolean>) | undefined) {
     const { db, store } = await setup();
-    const g = fakeGithub({ metadata: "read", contents: "write", issues: "write" });
+    const g = fakeGithub({
+      metadata: "read",
+      contents: "write",
+      issues: "write",
+      pull_requests: "write",
+    });
     const tokens = new JobTokens(new AppAuth({ db, store, fetch: g.impl }), { isPublic });
     return { g, tokens };
   }
@@ -267,16 +270,27 @@ describe("a token only when it is needed", () => {
     expect(minted(g)).toBe(1);
   });
 
-  test("a private repo needs contents read to be fetched: PR classes get a token too", async () => {
-    for (const klass of ["untrusted_pr", "trusted_pr", "protected"] as const) {
+  test("a private repo's job with only contents read gets no token: the controller delivers the tree", async () => {
+    for (const klass of ["untrusted_pr", "trusted_pr", "protected", "release"] as const) {
+      for (const perm of ["", "    permissions:\n      contents: read\n"]) {
+        const { g, tokens } = await make(async () => false);
+        const r = await tokens.issue(req(klass, perm));
+        expect("none" in r && r.none).toContain("tree was delivered by Turntable");
+        expect(minted(g)).toBe(0);
+      }
+    }
+  });
+
+  test("a private repo's job with a write scope still gets a token", async () => {
+    for (const scope of ["contents: write", "issues: write", "pull-requests: write"]) {
       const { g, tokens } = await make(async () => false);
-      const r = await tokens.issue(req(klass));
+      const r = await tokens.issue(req("protected", `    permissions:\n      ${scope}\n`));
       expect("none" in r).toBe(false);
       expect(minted(g)).toBe(1);
     }
   });
 
-  test("when visibility is unknown, or the check fails, the repo is treated as private", async () => {
+  test("when visibility is unknown, or the check fails, a read-only job still gets no token", async () => {
     for (const isPublic of [
       undefined,
       async (): Promise<boolean> => {
@@ -284,8 +298,8 @@ describe("a token only when it is needed", () => {
       },
     ]) {
       const { g, tokens } = await make(isPublic);
-      expect("none" in (await tokens.issue(req("protected")))).toBe(false);
-      expect(minted(g)).toBe(1);
+      expect("none" in (await tokens.issue(req("protected")))).toBe(true);
+      expect(minted(g)).toBe(0);
     }
   });
 });

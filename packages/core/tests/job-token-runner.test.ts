@@ -180,13 +180,17 @@ const logOf = async (jobId: string): Promise<string> => {
 };
 const seen = (file: string): string => readFileSync(join(root, "seen", file), "utf8");
 
+/** A job that needs a token: a write scope, which the fake installation grants. */
+const NEEDS_TOKEN = "permissions:\n  issues: write\n";
+const WRITE_GRANT = { metadata: "read", contents: "write", issues: "write" };
+
 const WF = (perm = ""): string =>
   `name: t\non: push\n${perm}jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`;
 
 describe("a job's GitHub token, without the proxy", () => {
   test("a protected job gets its own token in the environment, scoped to its repository, and it is revoked after", async () => {
-    const { gh, job } = await setupRun(WF());
-    const { calls, tokens } = authority();
+    const { gh, job } = await setupRun(WF(NEEDS_TOKEN));
+    const { calls, tokens } = authority(undefined, WRITE_GRANT);
     const sched = await schedule(gh, tokens);
     await sched.tick();
     await sched.idle();
@@ -194,7 +198,7 @@ describe("a job's GitHub token, without the proxy", () => {
       {
         installationId: "100",
         repositories: ["web"],
-        permissions: { metadata: "read", contents: "read" },
+        permissions: { metadata: "read", issues: "write" },
       },
     ]);
     // act is told to take GITHUB_TOKEN from its environment, and the token is not in its argv.
@@ -204,7 +208,7 @@ describe("a job's GitHub token, without the proxy", () => {
     // The log never shows it, and says what the token is.
     const log = await logOf(job.id);
     expect(log).not.toContain(TOKEN);
-    expect(log).toContain("GITHUB_TOKEN for acme/web: metadata:read, contents:read");
+    expect(log).toContain("GITHUB_TOKEN for acme/web: metadata:read, issues:write");
     // Revoked when the job ended.
     expect(calls.revoked).toEqual([TOKEN]);
   });
@@ -238,8 +242,8 @@ describe("a job's GitHub token, without the proxy", () => {
   });
 
   test("a mint failure does not stop the job; its log says there is no token", async () => {
-    const { gh, job } = await setupRun(WF());
-    const { calls, tokens } = authority();
+    const { gh, job } = await setupRun(WF(NEEDS_TOKEN));
+    const { calls, tokens } = authority(undefined, WRITE_GRANT);
     calls.fail = true;
     const sched = await schedule(gh, tokens);
     await sched.tick();
@@ -251,9 +255,12 @@ describe("a job's GitHub token, without the proxy", () => {
 
   test("a cancelled job's token is revoked at once", async () => {
     const { gh, run } = await setupRun(
-      "name: t\non: push\njobs:\n  slow:\n    runs-on: ubuntu-latest\n    steps:\n      - run: sleep 3\n",
+      "name: t\non: push\njobs:\n  slow:\n    runs-on: ubuntu-latest\n    steps:\n      - run: sleep 3\n".replace(
+        "jobs:",
+        `${NEEDS_TOKEN}jobs:`,
+      ),
     );
-    const { calls, tokens } = authority();
+    const { calls, tokens } = authority(undefined, WRITE_GRANT);
     const sched = await schedule(gh, tokens);
     await sched.tick();
     // Wait for the token to exist, then cancel the run's attempts.
@@ -299,6 +306,69 @@ describe("a token only when it is needed", () => {
     expect(calls.minted).toHaveLength(1);
   });
 
+  const openEgress = async (runId: string): Promise<void> => {
+    await db.orm
+      .update(s.runs)
+      .set({ plan: JSON.stringify({ egress: "open" }) })
+      .where(eq(s.runs.id, runId));
+  };
+
+  test("a private repo's protected job with default or contents read permissions runs on open egress with no token", async () => {
+    for (const perm of ["", "permissions:\n  contents: read\n"]) {
+      db = openDatabase(":memory:");
+      scope = await ensureLocalTenant(db);
+      root = join(mkdtempSync(join(tmp, "root-")), "tt");
+      const { gh, run, job } = await setupRun(WF(perm), "protected");
+      await openEgress(run.id);
+      const { calls, tokens } = authority(async () => false, WRITE_GRANT);
+      const sched = await schedule(gh, tokens);
+      await sched.tick();
+      await sched.idle();
+      expect(calls.minted).toEqual([]);
+      expect(seen("env-build.txt")).toBe("");
+      const [att] = await listAttempts(db, scope, job.id);
+      expect(att?.state).toBe("success");
+      expect(await logOf(job.id)).toContain(
+        "GITHUB_TOKEN is not set (the private repository's tree was delivered by Turntable",
+      );
+    }
+  });
+
+  test("a private repo's job with a write scope is still refused on open egress, and the token is revoked", async () => {
+    for (const scopeName of ["contents: write", "issues: write", "pull_requests: write"]) {
+      db = openDatabase(":memory:");
+      scope = await ensureLocalTenant(db);
+      root = join(mkdtempSync(join(tmp, "root-")), "tt");
+      const { gh, run, job } = await setupRun(WF(`permissions:\n  ${scopeName}\n`), "protected");
+      await openEgress(run.id);
+      const { calls, tokens } = authority(async () => false, {
+        ...WRITE_GRANT,
+        pull_requests: "write",
+      });
+      const sched = await schedule(gh, tokens);
+      await sched.tick();
+      await sched.idle();
+      const [att] = await listAttempts(db, scope, job.id);
+      expect(att?.state).toBe("infra_error");
+      expect(att?.errorClass).toContain(
+        "(a write permission, or a private repository), and a job with a token cannot run with open egress",
+      );
+      expect(calls.revoked).toEqual([TOKEN]);
+    }
+  });
+
+  test("a release job with a write scope on a private repo is unchanged: a token, refused on open egress", async () => {
+    const { gh, run, job } = await setupRun(WF(NEEDS_TOKEN), "release");
+    await openEgress(run.id);
+    const { calls, tokens } = authority(async () => false, WRITE_GRANT);
+    const sched = await schedule(gh, tokens);
+    await sched.tick();
+    await sched.idle();
+    const [att] = await listAttempts(db, scope, job.id);
+    expect(att?.state).toBe("infra_error");
+    expect(calls.revoked).toEqual([TOKEN]);
+  });
+
   test("a job that needs a token is refused on open egress, and the token is revoked at once", async () => {
     const { gh, run } = await setupRun(WF("permissions:\n  issues: write\n"));
     await db.orm
@@ -324,8 +394,8 @@ describe("a job holding a token is secret-bearing", () => {
   const blindProvider = () => probing(125);
 
   test("with an unverifiable egress canary, a job that holds a token is refused, and the token is revoked", async () => {
-    const { gh, run } = await setupRun(WF());
-    const { calls, tokens } = authority();
+    const { gh, run } = await setupRun(WF(NEEDS_TOKEN));
+    const { calls, tokens } = authority(undefined, WRITE_GRANT);
     const sched = await schedule(gh, tokens, blindProvider(), true);
     await sched.tick();
     await sched.idle();
@@ -349,8 +419,8 @@ describe("a job holding a token is secret-bearing", () => {
   });
 
   test("a verifiable canary lets the token job run", async () => {
-    const { gh, run } = await setupRun(WF());
-    const { calls, tokens } = authority();
+    const { gh, run } = await setupRun(WF(NEEDS_TOKEN));
+    const { calls, tokens } = authority(undefined, WRITE_GRANT);
     const sched = await schedule(gh, tokens, probing(0), true);
     await sched.tick();
     await sched.idle();

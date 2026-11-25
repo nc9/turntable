@@ -131,8 +131,8 @@ export class JobTokens {
 
   /**
    * Mints the job's token, or says why not. A token is minted only when the capped permissions
-   * need one: any write scope, a scope beyond contents read, or a private repository (contents
-   * read is needed to fetch it).
+   * need one: any write scope, or a scope beyond contents read (contents read alone needs none: the
+   * controller delivers the tree, public or private).
    */
   async issue(r: IssueRequest): Promise<IssuedJobToken | NoToken> {
     const declared = declaredPermissions(r.workflowYaml, r.jobId);
@@ -160,6 +160,11 @@ export class JobTokens {
           none: `no token: ${r.owner}/${r.repo} is public and the job needs nothing beyond contents read, which the controller already delivers`,
         };
       }
+      // A private repository's tree is fetched by the control plane and delivered to the job (the
+      // in-job checkout is a stub), so contents read alone needs no token in the job either.
+      return {
+        none: "the private repository's tree was delivered by Turntable; a step that calls the GitHub API needs a write permission declared, which needs restricted egress or the secrets proxy",
+      };
     }
     const minted = await this.#auth.mintFresh(r.installationId, {
       repositories: [r.repo],

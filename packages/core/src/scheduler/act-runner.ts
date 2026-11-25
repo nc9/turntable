@@ -758,7 +758,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         return run(ctx, plan, undefined);
       }
       // The job's own GitHub token, minted now that the job is known and revoked however it ends.
-      // Only when the capped permissions need one (a write scope, or a private repository): a
+      // Only when the capped permissions need one (a write scope or a read beyond contents): a
       // public repo's job that needs nothing beyond contents read gets none, and stays as it was.
       let issued: IssuedJobToken | undefined;
       let githubToken: string | undefined;
