@@ -131,7 +131,8 @@ describe("persistence, dedupe and routing", () => {
     await h.handler.drain();
     expect(await getDelivery(h.db, guid)).toMatchObject({ status: "processed" });
     expect(await getInstallation(h.db, "100")).toMatchObject({ orgId: h.org.id, status: "active" });
-    expect((await listProjects(h.db, { orgId: h.org.id })).map((p) => p.slug)).toEqual(["api"]);
+    // The webhook records the installation and creates no project (#577).
+    expect(await listProjects(h.db, { orgId: h.org.id })).toEqual([]);
 
     const calls = h.f.calls.getInstallation;
     const replay = await h.post(installed, { guid });
