@@ -7,6 +7,8 @@ export const ERROR_STATUS = {
   not_found: 404,
   method_not_allowed: 405,
   conflict: 409,
+  // The session is valid but holds no sealed GitHub user token: reconnect GitHub, do not sign out.
+  github_user_token_missing: 409,
   payload_too_large: 413,
   rate_limited: 429,
   internal: 500,

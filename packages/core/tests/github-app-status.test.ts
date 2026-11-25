@@ -192,6 +192,35 @@ describe("github_app_status (org view)", () => {
     }
   });
 
+  test("a web session of an org owner or admin reads its org's bound installations: the wizard's lookup, tenant-isolated", async () => {
+    await seedApp();
+    const asSession = (t: Tenant, role: "owner" | "admin") =>
+      dispatch(
+        env,
+        {
+          kind: "principal",
+          principal: { kind: "session", id: "u1", orgId: t.orgId, role, sessionHash: "h" },
+        },
+        "github_app_status",
+        {},
+      );
+    for (const role of ["owner", "admin"] as const) {
+      const mine = await asSession(a, role);
+      expect(mine.ok).toBe(true);
+      if (!mine.ok) continue;
+      const v = mine.output as { installations: { installation_id: string; status: string }[] };
+      expect(
+        v.installations.filter((i) => i.status === "active").map((i) => i.installation_id),
+      ).toEqual(["1"]);
+      const theirs = await asSession(b, role);
+      expect(theirs.ok).toBe(true);
+      if (!theirs.ok) continue;
+      const w = theirs.output as { installations: { installation_id: string }[] };
+      expect(w.installations.map((i) => i.installation_id)).toEqual(["3"]);
+      expect(JSON.stringify(theirs)).not.toContain("a-acct");
+    }
+  });
+
   test("no App: owns_app false, no installations", async () => {
     const r = await asOrg(a);
     expect(r.ok && r.output).toEqual({ owns_app: false, installations: [] });

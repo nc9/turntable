@@ -32,7 +32,7 @@ import { testDb } from "../src/db/dialect";
 import { openPostgres } from "../src/db/pg";
 import { SECRET_CLIENT } from "../src/github/app-auth";
 import { notInstallationOwnerMessage } from "../src/github/claim";
-import { dispatch, type DispatchEnv, registry } from "../src/ops";
+import { dispatch, type DispatchEnv, ERROR_STATUS, registry } from "../src/ops";
 import type { Principal } from "../src/ops/principal";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { settingsRegistry } from "../src/settings/definitions";
@@ -671,7 +671,7 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
       expect(await allText(h)).not.toContain("gho_marker");
     });
 
-    test("a refresh GitHub refuses signs the person out of GitHub: the token is deleted and the op says to sign in", async () => {
+    test("a refresh GitHub refuses drops the GitHub token: the token is deleted and the op says to reconnect, never 401", async () => {
       const { h, alice } = await aliceHarness();
       alice.expiresIn = 3600;
       const si = await h.signIn("c-alice");
@@ -681,10 +681,37 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
       const r = await h.as(si.cookie!, "list_user_installations");
       expect(r.ok).toBe(false);
       if (!r.ok) {
-        expect(r.error.code).toBe("unauthenticated");
-        expect(r.error.message).toContain("sign in again");
+        expect(r.error.code).toBe("github_user_token_missing");
+        expect(r.error.message).toContain("reconnect GitHub");
       }
       expect(await h.store.has(h.org.id, name)).toBe(false);
+    });
+
+    test("a valid session with no sealed GitHub token gets github_user_token_missing (409, not 401) from both ops; a bad cookie is still 401", async () => {
+      const { h } = await aliceHarness();
+      h.facts.installations.set("100", inst("100"));
+      h.facts.repos.set("100", [repo("1", "api")]);
+      const si = await h.signIn("c-alice");
+      // a session made before the token was sealed: the same session, with no token behind it
+      await h.tokens.remove(sessionHash(si.cookie!));
+      expect(ERROR_STATUS.github_user_token_missing).toBe(409);
+      const list = await h.as(si.cookie!, "list_user_installations");
+      const bind = await h.as(si.cookie!, "bind_installation", {
+        installation_id: "100",
+        org: "tenant",
+      });
+      for (const r of [list, bind]) {
+        expect(r.ok).toBe(false);
+        if (!r.ok) {
+          expect(r.error.code).toBe("github_user_token_missing");
+          expect(r.error.status).toBe(409);
+        }
+      }
+      // the session itself is still good
+      expect((await h.as(si.cookie!, "list_my_orgs")).ok).toBe(true);
+      const bad = await h.as("not-a-session-cookie", "list_user_installations");
+      expect(bad.ok).toBe(false);
+      if (!bad.ok) expect(bad.error.code).toBe("unauthenticated");
     });
   });
 

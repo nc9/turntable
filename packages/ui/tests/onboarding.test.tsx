@@ -19,13 +19,18 @@ import { WorkflowPreviewView } from "../src/features/onboarding/preview-view";
 import { RepoTable } from "../src/features/onboarding/repo-table";
 import { validateOnboardingSearch } from "../src/features/onboarding/wizard";
 import {
+  activeInstallations,
   beginInstall,
   buildOnboardRows,
   CHECKS_MODE_LABELS,
   CHECKS_MODES,
   type ClaimOutcome,
   hasRunnableWorkflow,
+  isTokenMissing,
   liveContexts,
+  onboardingReturnPath,
+  reconnectHref,
+  reposStepView,
   type MessageTarget,
   type PopupHandle,
   safeHttpUrl,
@@ -299,6 +304,7 @@ const panel = (over: Partial<InstallPanelProps> = {}): string =>
       onPick={() => {}}
       bindingId={null}
       bindError={null}
+      reconnect={null}
       onClose={() => {}}
       {...over}
     />,
@@ -790,5 +796,132 @@ describe("route search", () => {
       {},
     );
     expect(validateOnboardingSearch({ step: "agent" })).toEqual({});
+  });
+});
+
+// ---- #569: the org's own installation first, and reconnecting GitHub in place ----
+
+const orgInst = (id: string, status = "active") => ({
+  installation_id: id,
+  account_login: "acme",
+  account_type: "Organization",
+  status,
+});
+
+describe("repos step view (#569)", () => {
+  test("an org with a bound active installation goes straight to its repos, with no install modal", () => {
+    expect(reposStepView(undefined, { data: [orgInst("42")], error: null })).toEqual({
+      kind: "repos",
+      installation: "42",
+    });
+  });
+
+  test("an org with several uses the first active one; suspended and deleted ones do not count", () => {
+    const list = [orgInst("1", "suspended"), orgInst("2", "deleted"), orgInst("3"), orgInst("4")];
+    expect(activeInstallations(list).map((i) => i.installation_id)).toEqual(["3", "4"]);
+    expect(reposStepView(undefined, { data: list, error: null })).toEqual({
+      kind: "repos",
+      installation: "3",
+    });
+  });
+
+  test("an org with none shows the install modal", () => {
+    expect(reposStepView(undefined, { data: [], error: null })).toEqual({ kind: "install" });
+    expect(reposStepView(undefined, { data: [orgInst("1", "suspended")], error: null })).toEqual({
+      kind: "install",
+    });
+  });
+
+  test("while the lookup runs or after it failed, no install is offered", () => {
+    expect(reposStepView(undefined, { data: null, error: null })).toEqual({ kind: "loading" });
+    expect(reposStepView(undefined, { data: null, error: "boom" })).toEqual({ kind: "error" });
+  });
+
+  test("an installation in the URL wins over the lookup", () => {
+    expect(reposStepView("7", { data: [], error: null })).toEqual({
+      kind: "repos",
+      installation: "7",
+    });
+  });
+});
+
+describe("reconnecting GitHub in place (#569)", () => {
+  const tokenMissing = () =>
+    new Response(
+      JSON.stringify({ error: { code: "github_user_token_missing", message: "reconnect GitHub" } }),
+      { status: 409, headers: { "content-type": "application/json" } },
+    );
+
+  test("the missing-token answer is not a session end: no sign-in redirect, and the code reaches the UI", async () => {
+    let ended = 0;
+    const api = createOnboardingApi({
+      onUnauthenticated: () => void ended++,
+      fetch: (async () => tokenMissing()) as unknown as typeof fetch,
+    });
+    const err = await api.listUserInstallations().catch((e: unknown) => e);
+    expect((err as { code: string }).code).toBe("github_user_token_missing");
+    expect((err as { status: number }).status).toBe(409);
+    expect(isTokenMissing((err as { code: string }).code)).toBe(true);
+    const bind = await api.bindInstallation({ org: "acme", installationId: "1" }).catch((e) => e);
+    expect(isTokenMissing((bind as { code: string }).code)).toBe(true);
+    expect(ended).toBe(0);
+  });
+
+  test("an expired session (a real 401) still goes to sign-in", async () => {
+    let ended = 0;
+    const api = createOnboardingApi({
+      onUnauthenticated: () => void ended++,
+      fetch: (async () =>
+        new Response(JSON.stringify({ error: { code: "unauthenticated", message: "no" } }), {
+          status: 401,
+        })) as unknown as typeof fetch,
+    });
+    await api.listUserInstallations().catch(() => {});
+    expect(ended).toBe(1);
+    expect(isTokenMissing("unauthenticated")).toBe(false);
+  });
+
+  test("the panel shows the reconnect prompt with a button that runs the GitHub sign-in back to the step", () => {
+    const href = reconnectHref({ step: "repos", org: "acme" });
+    const html = panel({
+      picker: { open: true, installations: null, error: "reconnect GitHub" },
+      reconnect: href,
+    });
+    expect(html).toContain("Reconnect GitHub to see your installations");
+    expect(html).toContain("Reconnect GitHub</a>");
+    expect(html).toContain(`href="${href.replaceAll("&", "&amp;")}"`);
+    expect(panel({ picker: { open: true, installations: [], error: null } })).not.toContain(
+      "Reconnect GitHub to see",
+    );
+  });
+
+  test("the return target round-trips: step, org and installation survive encoding", () => {
+    const href = reconnectHref({ step: "repos", org: "acme", installation: "42" });
+    expect(href.startsWith("/auth/github/login?next=")).toBe(true);
+    const next = new URL(href, "https://ci.example.test").searchParams.get("next");
+    expect(next).toBe("/onboarding?step=repos&org=acme&installation=42");
+    expect(onboardingReturnPath(next)).toBe(next as string);
+  });
+
+  test("a hostile return target is rejected", () => {
+    for (const bad of [
+      "//evil.example",
+      "https://evil.example",
+      "/\\evil",
+      "/\\/evil.example",
+      "/runs",
+      "/onboarding?step=repos&org=acme&x=1",
+      "/onboarding?org=a.b",
+      "/onboarding#x",
+      "javascript:alert(1)",
+      "",
+      42,
+      undefined,
+    ]) {
+      expect(onboardingReturnPath(bad)).toBeUndefined();
+    }
+    // a step or org that cannot be named safely falls back to the plain sign-in link
+    expect(reconnectHref({ step: "repos", org: "//evil.example" })).toBe("/auth/github/login");
+    expect(reconnectHref({ step: "x", org: "acme" })).toBe("/auth/github/login");
   });
 });

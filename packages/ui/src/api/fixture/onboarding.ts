@@ -13,6 +13,7 @@ import type { WireRunDetail } from "../wire";
 
 export function createFixtureOnboarding(): OnboardingApi {
   const orgs = [{ slug: "acme", display_name: "Acme", role: "owner" as string }];
+  let bound = false;
   const repos: InstallationRepo[] = [
     {
       repo: "acme/web",
@@ -66,8 +67,20 @@ export function createFixtureOnboarding(): OnboardingApi {
       const at = claims.get(claimId);
       if (at === undefined) throw new ApiError(404, "not_found", "no such claim");
       return Date.now() >= at
-        ? { state: "completed", installation_id: "100", account_login: "acme" }
+        ? ((bound = true), { state: "completed", installation_id: "100", account_login: "acme" })
         : { state: "pending" };
+    },
+    async listOrgInstallations() {
+      return bound
+        ? [
+            {
+              installation_id: "100",
+              account_login: "acme",
+              account_type: "Organization",
+              status: "active",
+            },
+          ]
+        : [];
     },
     async listUserInstallations() {
       return [
@@ -88,6 +101,7 @@ export function createFixtureOnboarding(): OnboardingApi {
       ];
     },
     async bindInstallation({ installationId }) {
+      bound = true;
       return { installation_id: installationId, account_login: "acme", projects: [] };
     },
     async listInstallationRepos() {

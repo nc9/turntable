@@ -14,6 +14,7 @@ import {
   liveContexts,
   ONBOARD_REPOS_MAX,
   previewRunJobNames,
+  reposStepView,
   type RepoChoice,
   runFinished,
 } from "@/lib/onboarding";
@@ -138,13 +139,7 @@ export function Wizard({ api }: { api: OnboardingApi }) {
           org={myOrg}
           installation={search.installation}
           onInstallation={(id) => go({ step: "repos", org: myOrg.slug, installation: id })}
-          onContinue={() =>
-            go({
-              step: "preview",
-              org: myOrg.slug,
-              ...(search.installation ? { installation: search.installation } : {}),
-            })
-          }
+          onContinue={(installation) => go({ step: "preview", org: myOrg.slug, installation })}
         />
       ) : search.installation === undefined ? (
         <EmptyState title="No installation chosen">
@@ -284,7 +279,7 @@ function OrgStep({
 function ReposStep({
   api,
   org,
-  installation,
+  installation: fromUrl,
   onInstallation,
   onContinue,
 }: {
@@ -292,12 +287,21 @@ function ReposStep({
   org: MyOrg;
   installation: string | undefined;
   onInstallation: (id: string) => void;
-  onContinue: () => void;
+  onContinue: (installation: string) => void;
 }) {
-  // Without an installation the modal opens at once; the person can close it and reopen it.
-  const [modal, setModal] = useState<"install" | "configure" | null>(
-    installation ? null : "install",
+  const [modal, setModal] = useState<"install" | "configure" | null>(null);
+  // Without an installation in the URL, the org's own bound installations come first: the install
+  // modal is for an org that has none.
+  const bound = useAsync(
+    () => (fromUrl ? Promise.resolve([]) : api.listOrgInstallations({ org: org.slug })),
+    [api, org.slug, fromUrl],
   );
+  const view = reposStepView(fromUrl, bound);
+  const installation = view.kind === "repos" ? view.installation : undefined;
+  // The modal opens at once for an org with no installation; the person can close and reopen it.
+  const needsInstall = view.kind === "install";
+  const [dismissed, setDismissed] = useState(false);
+  const modalState = modal ?? (needsInstall && !dismissed ? "install" : null);
   const repos = useAsync(
     () =>
       installation
@@ -313,13 +317,13 @@ function ReposStep({
 
   const submit = () => {
     if (!installation) return;
-    if (rows.length === 0) return onContinue();
+    if (rows.length === 0) return onContinue(installation);
     setBusy(true);
     setError(null);
     api.onboardRepos({ org: org.slug, installationId: installation, repos: rows }).then(
       () => {
         setBusy(false);
-        onContinue();
+        onContinue(installation);
       },
       (e: unknown) => {
         setBusy(false);
@@ -333,9 +337,13 @@ function ReposStep({
       <InstallModal
         api={api}
         org={org.slug}
-        open={modal !== null}
-        onOpenChange={(o) => !o && setModal(null)}
-        {...(modal === "configure" && installation ? { installationId: installation } : {})}
+        open={modalState !== null}
+        onOpenChange={(o) => {
+          if (o) return;
+          setModal(null);
+          setDismissed(true);
+        }}
+        {...(modalState === "configure" && installation ? { installationId: installation } : {})}
         onInstalled={(id) => {
           const same = id === installation;
           setModal(null);
@@ -344,7 +352,14 @@ function ReposStep({
           else onInstallation(id);
         }}
       />
-      {!installation ? (
+      {view.kind === "loading" ? (
+        <Skeleton className="h-40 w-full" />
+      ) : view.kind === "error" ? (
+        <ErrorState
+          message={bound.error ?? "Could not look up the installations."}
+          onRetry={bound.reload}
+        />
+      ) : view.kind === "install" ? (
         <EmptyState
           title="Install the GitHub App"
           action={
@@ -378,7 +393,7 @@ function ReposStep({
               Grant more repos on GitHub
             </Button>
             <Button type="button" size="sm" variant="ghost" onClick={() => setModal("install")}>
-              Use a different installation
+              Add another GitHub account
             </Button>
             <Button
               type="button"
