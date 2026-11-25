@@ -28,6 +28,7 @@
           "secrets-proxy",
           "signing",
           "release-lane",
+          "releasing",
           "github-app",
           "hosted",
           "tenant-isolation",

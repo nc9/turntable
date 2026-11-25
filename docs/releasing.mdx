@@ -1,0 +1,208 @@
+---
+title: Releasing with Turntable
+description: How to build, approve, sign and publish a release from a tag on Turntable, with a reference workflow, a dry run, verification and the refusals you may meet.
+---
+
+<Note>
+  Pre-alpha. This page describes the [release lane](/release-lane) as built. Where something a release needs does not exist yet, the page says "not available yet".
+</Note>
+
+This guide takes a project from a tag to a signed release published to npm and GitHub Releases. The release lane does the signing and the publishing, from the control plane, with its own credentials. No job in your workflow holds a publish credential.
+
+A complete example is in [`docs/examples/release.yml`](https://github.com/turntable-ci/turntable/blob/main/docs/examples/release.yml). Copy it to `.github/workflows/release.yml` and adapt it.
+
+## Before you start
+
+- The [release lane](/release-lane#deployment) runs as its own process (`turntable serve --roles release`), with a signing key (`turntable release init-key`) and the project pointed at it (`turntable policy set --signing-key builtin:release`).
+- The project is [ingested from GitHub](/quickstart#poll-a-github-repo) and has release ref patterns (default `refs/tags/v*`; see [Signing](/signing#configuration)).
+- A GitHub ruleset protects the tags (see [Releasing from a tag](/release-lane#releasing-from-a-tag)). Without one, a tag run is held until a release operator calls `approve_run`.
+- You set the project variable `TURNTABLE_CI=true`, so steps gated on it are skipped: `turntable policy set --ingest on --org <slug> --project <slug> --var TURNTABLE_CI=true`. The option replaces the stored variables, so list them all.
+- The lane's own settings are configured (see [Configure the lane](#configure-the-lane)).
+
+## The release shape
+
+1. **Create the protected tag first.** The maintainer creates it, or a prepare job running elsewhere does. The tag must match the project's release ref patterns.
+2. **Build the release run from that tag.** Either the tag push is ingested (with tag patterns set by `turntable policy set --ingest on --tag-refs 'refs/tags/v*'`, the tag becomes a `release` class run), or you dispatch the workflow at the tag with `run_dispatch` (a branch or tag ref only; a tag that is a release ref gives a release run that waits for approval).
+3. **Build jobs cross-compile and upload artifacts.** The artifact store records each artifact's digest.
+4. **A late gate job sits in the signing environment.** It runs after the builds, with `environment: release` and `needs: [build]`.
+5. **Approve the release.** The approver approves the digest of exactly the recorded artifacts.
+6. **Request the release.** When the run has succeeded, call `request_release`. The lane verifies the bytes, signs, and publishes to the project's declared targets.
+
+### Why the run is built from the tag
+
+The lane signs only a run that meets all of these:
+
+- It was built from `refs/tags/<tag>` (`ref_mismatch` otherwise).
+- The tag, asked of the forge again by the lane, still points at the run's sha (`sha_mismatch`, `tag_not_found`).
+- It already succeeded (`run_not_successful`). The signing policy checks the status before anything else about approvals.
+
+So a run built from a branch cannot be released later by naming a tag, and a tag moved after the build is refused.
+
+### The late gate
+
+Put the signing environment on a job that runs after the builds:
+
+```yaml
+release-gate:
+  needs: [build]
+  runs-on: ubuntu-24.04
+  environment: release
+  steps:
+    - run: echo "Release ${TAG} approved for signing"
+      env:
+        TAG: ${{ github.ref_name }}
+```
+
+The approval of the project's release environment is a `turntable.approve_release.v2` statement bound to `manifest_sha256`, the digest of the artifacts the server recorded. The approver sees each artifact (name, size, sha256) and the digest before signing:
+
+```sh
+turntable approvals approve-release --url https://ci.example.com --org acme --project api \
+  --run <run id> --approver <approver id> --key key.pem --token-file operator.token
+```
+
+See [Approving a release](/security#approving-a-release-in-the-ui-and-with-the-cli).
+
+<Warning>
+  Do not put the signing environment on an early job. The manifest needs recorded artifacts, so a job that waits for approval before the builds finish cannot be approved: the challenge is refused for a run with no recorded artifact yet.
+</Warning>
+
+### Other environments
+
+Any other environment (`npm`, `production`) uses the v1 approval (`longshore.approve_environment.v1`), bound to the run's sha and workflow hash. A v1 statement for the release environment is refused (`release_requires_v2`), and a v2 statement for any other environment is refused (`not_a_release_environment`).
+
+### Request the release
+
+```sh
+curl -sS -X POST https://ci.example.com/api/v1/release-requests \
+  -H "Authorization: Bearer $(cat operator.token)" -H 'content-type: application/json' \
+  -d '{"run_id":"<run id>","tag":"v1.0.0","artifacts":["app-linux-x64","app-linux-arm64","app-darwin-arm64"]}'
+curl -sS https://ci.example.com/api/v1/release-requests/<request id> -H "Authorization: Bearer $(cat operator.token)"
+```
+
+`request_release` and `get_release_request` need the `release_operator` role. `request_release` is not an MCP tool, and there is no CLI command for it yet. The request ends as `signed`, or as `refused` with a `reason` code from the [table below](#common-refusals).
+
+The artifact names are the names you gave `actions/upload-artifact`. The signed subjects are the files inside each uploaded zip (see [Artifacts from jobs](/release-lane#artifacts-from-jobs)).
+
+## Gate in-run publishing off
+
+Steps that publish or attest from inside the run would use credentials the job should not hold. Gate them off on Turntable:
+
+```yaml
+npm-publish:
+  if: vars.TURNTABLE_CI != 'true'
+```
+
+This covers `npm publish`, `gh release`, `actions/attest-build-provenance` and `--provenance`. On GitHub the variable is unset, so the same workflow still publishes there.
+
+Turntable runs Linux sandboxes only. Gate jobs it cannot run (macOS, Windows) the same way, or keep them on another runner. A macOS job that is not gated is reported as unsupported.
+
+If a job must publish itself, use [compat mode](#when-a-job-must-publish-itself).
+
+## Dry run first
+
+A release with no publish targets declared signs and records `signed`, and publishes nothing. The lane's publish step returns an empty list, a clean state. Use it to check the whole path (the tag, the approval, the bytes and the signature) before you give the lane any publish credential.
+
+1. Make sure `turntable release publish-target list --org <slug> --project <slug>` prints nothing.
+2. Tag, let the run finish, approve the gate and call `request_release`.
+3. Expect `status: signed` with a `key_id`, and nothing published.
+4. [Verify the statement](#verify-a-release).
+5. Declare the targets and release the next tag.
+
+The same bytes of a tag sign again only with identical digests, so a dry run on a tag does not stop you releasing that tag after you declare targets. Releasing the same tag with other bytes is refused as an attestation mismatch.
+
+## Configure the lane
+
+These commands act on the release lane's own file, and use the release role's environment (`TURNTABLE_RELEASE_*`):
+
+```sh
+turntable release pin-repo --org acme --project web --repo acme/web
+turntable release publish-target set ...
+turntable release publish-target list --org acme --project web
+```
+
+Release vault secrets are set with `turntable secret set --master-key-file <release key>`, with the release master key.
+
+<Warning>
+  These are CLI commands only. No REST or MCP operation and no instance setting does the same, and `request_release` cannot pin a repository or declare a target. A hosted instance image has no shell, so there the instance operator has to run them. Release lane configuration ops for shell-less instances are planned ([#541](https://github.com/turntable-ci/turntable/issues/541)): pin the repository, publish targets, lane secrets, create the release key. Until then this is not available for shell-less instances.
+</Warning>
+
+## Publishing to npm
+
+The lane publishes to npm. A workflow job does not.
+
+Declare the target, naming the tarball artifact and a vault secret:
+
+```sh
+turntable release publish-target set --org acme --project web --key npm \
+  --kind npm --package @acme/web --artifact web-1.0.0.tgz --secret NPM_TOKEN \
+  --accept-long-lived-token
+```
+
+- `--artifact` names a file inside an artifact the request asks for. The package name, version and tag must match the tarball; private packages are refused, and an existing version is accepted only with the same integrity.
+- Optional: `--tag latest` and `--access public|restricted`.
+- `--accept-long-lived-token` is required. npm trusted publishing does not accept a self-hosted issuer, so the lane holds a long-lived npm token. Make it granular, scoped to the package and publish-only.
+- The token is a vault secret of the **release vault**: sealed with the release master key, usable by `release`-class jobs and by nothing else. The main process's vault refuses it (`release_lane_only`). Set it with `turntable secret set --org acme --name NPM_TOKEN --value-stdin --master-key-file <release key>`.
+
+### Provenance
+
+`npm publish --provenance` is dropped on Turntable. npm accepts that attestation only from GitHub's or GitLab's OIDC, so a Turntable run cannot make it. A package published by the lane has no npm provenance badge.
+
+Consumers verify Turntable's signed statement instead. Declare a GitHub release target with the provenance asset (the default), and give consumers the release public key. They then run [`turntable verify`](#verify-a-release) on the tarball.
+
+### When a job must publish itself
+
+Declare the target with `--mode compat`. The job runs `npm publish` as before, behind the lane's release proxy, which supplies the credential and allows only the one package document the lane derived from the verified tarball. A package whose `package.json` `npm publish` rewrites will not match: publish it in strict mode. The rules are in [Compat mode](/release-lane#compat-mode-the-job-publishes-the-lane-holds-the-credential).
+
+## Verify a release
+
+The lane attaches the signed in-toto statement (a DSSE envelope) to a GitHub release as `provenance.intoto.json`, unless the target disables it. Download it and the artifact, and use the public key `turntable release init-key` printed:
+
+```sh
+turntable verify app-linux-x64 --provenance provenance.intoto.json --pubkey release.pub --name app-linux-x64
+```
+
+Exit code 0 means verified, 1 not verified, 2 a usage error or an unreadable file. It checks the signature under the key you give, that the statement is SLSA v1, and that the artifact's digest is one of its subjects. See [Signing](/signing#verifying).
+
+`get_release_request` returns the status, the reason and the key id, not the envelope. Getting the envelope when there is no GitHub release target is not available yet.
+
+## If your clients pin a signing key
+
+Some projects' clients accept a release only if a file, such as a manifest, is signed by a key pinned in the client. A key held by Turntable would be rejected. There are two ways to handle that.
+
+### Verify on Turntable, sign externally
+
+1. Run the release on Turntable with no publish targets, as in the [dry run](#dry-run-first). The lane signs its provenance and records `signed`, and publishes nothing.
+2. The project's existing publisher downloads the artifacts and the provenance, then runs `turntable verify <artifact> --provenance <file> --pubkey <file>` against the lane's public key. Pin that key out of band, not next to the artifacts.
+3. If verification passes, the publisher signs with its own pinned key and publishes.
+
+Two parts of this path are planned. Fetching the provenance envelope from the release request is planned ([#541](https://github.com/turntable-ci/turntable/issues/541)), and so is reading the lane's public key (`release_public_key`, [#541](https://github.com/turntable-ci/turntable/issues/541)). Until then, the envelope is not available yet when there is no GitHub release target. The public key is the one `turntable release init-key` printed when the key was created; there is no other command to read it again.
+
+### A stepping stone
+
+A new client release pins a Turntable-held key in the client's spare (`next`) key slot. Once deployed clients trust it, Turntable signs the releases that follow.
+
+The key type matters. Turntable's provenance signature is Ed25519. Clients that pin an ECDSA P-256 key need a P-256 signer, which is planned ([#427](https://github.com/turntable-ci/turntable/issues/427), an AWS KMS P-256 signer). A lane-verified co-signature by the pinned key is planned too ([#544](https://github.com/turntable-ci/turntable/issues/544)).
+
+## Common refusals
+
+A `reason` on a release request comes from the lane (`release/lane.ts`) or the signing policy (`signing/policy.ts`, reported as `signer:<reason>`). The other rows are refusals from approvals and the vault.
+
+| Reason | What it means | What to do |
+| --- | --- | --- |
+| `ref_mismatch` | The run was not built from `refs/tags/<tag>`. | Dispatch or ingest the run at the tag, and request that run. |
+| `sha_mismatch`, `tag_not_found` | The forge says the tag points at another commit, or does not have it. | Do not move tags. Create a new tag and a new run. |
+| `signer:run_not_successful` | The run has not finished with `success`. | Wait for it, or fix and rerun. |
+| `repo_not_pinned` | The project has no pinned repository. | Run `turntable release pin-repo` on the lane's host. |
+| `repo_mismatch` | The run's repository is not the pinned one. | Check the pin and the project's ingested repo. |
+| `signer:no_approval`, `signer:manifest_mismatch` | No approval of the release environment, or one for other artifacts. | Approve the late gate over the same artifact set you request. |
+| `release_requires_v2` | A v1 approval was sent for the release environment. | Use `release_approval_challenge` and `approve_release`, or `turntable approvals approve-release`. |
+| `not_a_release_environment` | A v2 release approval was sent for another environment. | Approve that environment with the v1 statement. |
+| `release_lane_only` | The main process's vault was asked for a release-class secret. | Keep the secret in the release vault and do not read it in a job. |
+| `signer:not_release_class`, `signer:ref_not_a_release_ref` | The run is not a release run, or its ref is not in the release ref patterns. | Check `--tag-refs` and `--release-refs`. |
+| `signer:no_signing_key` | The project has no signing key. | `turntable policy set --signing-key builtin:release`. |
+| `unknown_run`, `no_repo`, `bad_tag`, `no_artifacts` | The request names an unknown run, a run with no repository, an invalid tag or no artifacts. | Correct the request. |
+| `artifact_not_recorded`, `signer:artifact_not_recorded` | An artifact name was never uploaded by the run. | Use the names from `actions/upload-artifact`. |
+| `artifact_bytes_missing`, `digest_mismatch`, `size_mismatch` | The lane could not read the bytes, or they differ from the record. | Check `TURNTABLE_RELEASE_ARTIFACT_DIR`; rebuild. |
+| `unpack_failed`, `duplicate_subject` | A zip the lane refuses to unpack, or two files with one name. | See the limits in [Artifacts from jobs](/release-lane#artifacts-from-jobs). |
+| `attestation_mismatch` | The tag was attested before with other digests. | Release a new tag. |
+| `frozen` | An incident freeze is on. | Unfreeze with `turntable incident unfreeze`; the request is then processed. |

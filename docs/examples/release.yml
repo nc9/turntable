@@ -1,0 +1,149 @@
+# Reference release workflow for Turntable. See docs/releasing.mdx.
+#
+# Copy it to .github/workflows/release.yml in your repository and adapt the build and
+# publish steps. This file lives under docs/ on purpose: it is an example, not a workflow
+# of this repository.
+#
+# How the jobs map to the release steps:
+#   1. The run is built FROM a protected tag `v*`: a tag push, or workflow_dispatch AT the tag.
+#   2. `quality` and `build` run on Turntable and upload artifacts. Their digests are recorded.
+#   3. `release-gate` is the LATE gate: it sits in the signing environment after the builds,
+#      so the approver approves the digest of exactly the recorded artifacts.
+#   4. After the run succeeds, a release request (`request_release`) asks the release lane to
+#      sign and publish from the control plane. No job here holds a publish credential.
+#   5. `npm-publish`, `attest` and `verify-macos` do not run on Turntable (TURNTABLE_CI = 'true',
+#      a project variable you set). On GitHub they still work.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Runs on Turntable.
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+
+  # Runs on Turntable. Cross-compiles every target on Linux and uploads one artifact per target.
+  build:
+    needs: [quality]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: linux-x64
+            bun-target: bun-linux-x64
+          - target: linux-arm64
+            bun-target: bun-linux-arm64
+          - target: darwin-arm64
+            bun-target: bun-darwin-arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - run: bun install --frozen-lockfile
+      - name: Compile
+        env:
+          BUN_TARGET: ${{ matrix.bun-target }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p dist
+          bun build --compile --target="${BUN_TARGET}" src/main.ts --outfile "dist/app-${TARGET}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-${{ matrix.target }}
+          path: dist/app-${{ matrix.target }}
+          if-no-files-found: error
+
+  # The LATE gate. It runs after every build, in the project's signing environment (`release`
+  # unless your project sets another with `turntable policy set --signing-environment`), so
+  # the approval covers the recorded artifacts. It only echoes the tag. Never put the signing
+  # environment on an early job: the manifest needs recorded artifacts, so it cannot be
+  # approved before the builds finish.
+  release-gate:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release
+    steps:
+      - name: Release gate
+        env:
+          TAG: ${{ github.ref_name }}
+        run: echo "Release ${TAG} approved for signing"
+
+  # Gated off on Turntable: the release lane publishes to npm with its own credential.
+  # On GitHub this job still publishes, from its own environment.
+  npm-publish:
+    if: vars.TURNTABLE_CI != 'true'
+    needs: [release-gate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # Gated off on Turntable: the lane signs its own provenance statement.
+  attest:
+    if: vars.TURNTABLE_CI != 'true'
+    needs: [release-gate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: app-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/app-*
+
+  # Gated off on Turntable, which has no macOS runners. Keep it on GitHub, or on another runner.
+  verify-macos:
+    if: vars.TURNTABLE_CI != 'true'
+    needs: [build]
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app-darwin-arm64
+          path: dist
+      - run: |
+          chmod +x dist/app-darwin-arm64
+          dist/app-darwin-arm64 --version
