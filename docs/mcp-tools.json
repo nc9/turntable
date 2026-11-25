@@ -571,6 +571,40 @@
     }
   },
   {
+    "name": "get_artifact_files",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$",
+          "description": "The artifact's name as the workflow uploaded it (one upload-artifact name)."
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["run_id", "name"],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "get_artifacts",
     "inputSchema": {
       "type": "object",
@@ -1387,6 +1421,55 @@
           "maxLength": 64
         }
       },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "release_project_signing",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "release_public_key",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The key's name, as a project's `builtin:<name>` signing key setting."
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["name"],
       "additionalProperties": false
     }
   },
