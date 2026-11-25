@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   countOpenChallenges,
   getOrgById,
+  getOrgBySlug,
   getProjectBySlug,
   insertChallenge,
   purgeExpiredChallenges,
@@ -23,6 +24,16 @@ import {
 import { createApiToken } from "./create-api-token";
 import { inviteMemberOp } from "./members";
 import { setSettingOp } from "./settings";
+import {
+  releaseInitKey,
+  releasePinRepo,
+  releasePublishTargetDelete,
+  releasePublishTargetSet,
+  releaseSecretSet,
+  releaseSetProjectSigning,
+} from "./release-config";
+import type { Op } from "../define";
+import { resolveLaneOrg, resolveLaneTarget } from "../lane-target";
 
 const MAX_OPEN_STEP_UPS = 10;
 
@@ -32,6 +43,20 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   invite_member: inviteMemberOp.input,
   set_setting: setSettingOp.input,
 };
+/** The lane configuration ops (#541), whose schemas and secret fields the challenge honours too. */
+const LANE_OPS: Record<string, Op> = {};
+for (const op of [
+  releasePinRepo,
+  releasePublishTargetSet,
+  releasePublishTargetDelete,
+  releaseSecretSet,
+  releaseInitKey,
+  releaseSetProjectSigning,
+]) {
+  LANE_OPS[op.name] = op;
+  SCHEMAS[op.name] = op.input as z.ZodObject;
+}
+const SHA256 = /^[0-9a-f]{64}$/;
 
 export const sessionStepUpChallenge = defineOp({
   name: "session_step_up_challenge",
@@ -77,12 +102,47 @@ export const sessionStepUpChallenge = defineOp({
     if (!schema || !SESSION_STEP_UP_OPS.has(i.action)) {
       throw new OpError("invalid_input", `${i.action} does not take a step-up`);
     }
-    const parsed = schema.safeParse(i.input);
+    // A lane op is for an owner of the operator org alone: refused here before a challenge exists.
+    const lane = LANE_OPS[i.action];
+    if (lane) {
+      const operator = await getOrgBySlug(ctx.db, ctx.operatorOrgSlug ?? "local");
+      if (!operator || operator.id !== ctx.scope.orgId || p.role !== "owner") {
+        throw new OpError(
+          "forbidden",
+          `${i.action} is for a signed-in owner of the operator org, in the web app`,
+          { reason: "lane_operator_owner_only" },
+        );
+      }
+    }
+    // A secret value is not here: its digest (`value_sha256`) is, and a placeholder stands in for
+    // the value to judge the rest of the input as the op will.
+    const given: Record<string, unknown> = { ...i.input };
+    const digests: Record<string, string> = {};
+    for (const f of lane?.secretInputFields ?? []) {
+      const d = given[`${f}_sha256`];
+      if (f in given || typeof d !== "string" || !SHA256.test(d)) {
+        throw new OpError(
+          "invalid_input",
+          `send ${f}_sha256 (sha256 hex of the value) instead of ${f}: the value never goes into a step-up`,
+        );
+      }
+      digests[`${f}_sha256`] = d;
+      delete given[`${f}_sha256`];
+      given[f] = "x";
+    }
+    const parsed = schema.safeParse(given);
     if (!parsed.success) {
       throw new OpError("invalid_input", "input does not match that action's schema");
     }
     // Scope the way the dispatcher does: `org` and `project` leave the input and name the scope.
-    const { org, project, ...rest } = parsed.data as Record<string, unknown>;
+    const { org, project, ...restAll } = parsed.data as Record<string, unknown>;
+    const rest = { ...restAll };
+    for (const f of lane?.secretInputFields ?? []) delete rest[f];
+    // The target org and project must exist as a pair, as the op itself will resolve them.
+    if (lane) {
+      if (lane.name === "release_init_key") await resolveLaneOrg(ctx.db, rest);
+      else await resolveLaneTarget(ctx.db, rest);
+    }
     if (org !== undefined) {
       const o = await getOrgById(ctx.db, ctx.scope.orgId);
       if (!o || o.slug !== org) throw new OpError("not_found", "org or project not found");
@@ -120,7 +180,7 @@ export const sessionStepUpChallenge = defineOp({
       sessionHash: p.sessionHash,
       userId: p.id,
       action: i.action,
-      target: inputTarget(rest, projectId),
+      target: inputTarget({ ...rest, ...digests }, projectId),
       nonce,
       expiresAt,
     });

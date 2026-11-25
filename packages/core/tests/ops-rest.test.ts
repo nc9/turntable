@@ -159,7 +159,9 @@ test("GET /openapi.json is served without auth and matches the registry", async 
         [
           ...registry.documentedOps().filter((o) => o.mcp || o.secretInputFields.length === 0),
           ...registry.signatureOps(),
-          ...registry.instanceOps(),
+          // A value-bearing instance op (release_secret_set) is left out of the document, like the
+          // value-bearing ops above: its curl is in the docs.
+          ...registry.instanceOps().filter((o) => o.secretInputFields.length === 0),
           ...registry.accountOps(),
         ].map((o) => o.http.path),
       ),

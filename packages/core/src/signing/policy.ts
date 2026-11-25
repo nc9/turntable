@@ -19,6 +19,8 @@ export type SigningDenial =
   | "manifest_mismatch"
   /** The release approval for exactly these bytes was already spent by a signature. */
   | "approval_spent"
+  /** The release approval was given under another version of the lane's configuration. */
+  | "config_changed"
   /** The wired approval verifier cannot spend approvals, so nothing is signed (fail closed). */
   | "approval_unspendable"
   | "no_backend"

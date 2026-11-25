@@ -132,6 +132,28 @@ export function latestAuditContaining(
   });
 }
 
+/** The newest entries of one op and outcome in an org's chain, newest first. */
+export function listAuditByOp(
+  db: Db,
+  scope: Scope,
+  q: { op: string; outcome: string; limit: number },
+): Promise<AuditRow[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.auditLog)
+      .where(
+        and(
+          eq(s.auditLog.orgId, scope.orgId),
+          eq(s.auditLog.op, q.op),
+          eq(s.auditLog.outcome, q.outcome),
+        ),
+      )
+      .orderBy(desc(s.auditLog.createdAt), desc(s.auditLog.id))
+      .limit(q.limit),
+  );
+}
+
 /** The newest chained entry of an org, or undefined when it has none. */
 export function auditHead(db: Db, orgId: string): Promise<AuditRow | undefined> {
   return db.run(async (h) => {

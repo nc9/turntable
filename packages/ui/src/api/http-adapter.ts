@@ -25,6 +25,10 @@ import type {
   JobDigest,
   RerunResult,
   Setting,
+  LaneAction,
+  LaneConfig,
+  LaneKey,
+  LaneSecretStatus,
   StepUpChallenge,
   Whoami,
   JobAttempt,
@@ -260,6 +264,15 @@ function quotasOf(w: WireQuotas): OrgQuotas {
     usage: w.usage,
   };
 }
+
+const LANE_PATHS: Record<LaneAction, string> = {
+  release_pin_repo: "/release-lane/pin-repo",
+  release_init_key: "/release-lane/keys",
+  release_publish_target_set: "/release-lane/publish-targets",
+  release_publish_target_delete: "/release-lane/publish-targets/delete",
+  release_set_project_signing: "/release-lane/project-signing",
+  release_secret_set: "/release-lane/secrets",
+};
 
 export function createHttpApi(options: HttpApiOptions): TurntableApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -553,7 +566,15 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         "/whoami",
         options.token() === null && options.session?.() ? { org: org() } : {},
       );
-      return { kind: w.kind, id: w.id, name: w.name, role: w.role, org: w.org, project: w.project };
+      return {
+        kind: w.kind,
+        id: w.id,
+        name: w.name,
+        role: w.role,
+        org: w.org,
+        project: w.project,
+        operatorOrg: w.operator_org === true,
+      };
     },
 
     async approveRun({ runId, headSha, workflowHash }): Promise<ApproveResult> {
@@ -656,6 +677,62 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         rpId: w.rp_id,
         passkeys: w.passkeys.map((k) => ({ approver: k.approver, passkeyId: k.passkey_id })),
       };
+    },
+
+    async laneWrite({ action, input, stepUp }) {
+      return call<Record<string, unknown>>(
+        "POST",
+        LANE_PATHS[action],
+        {},
+        { org: org(), ...input, step_up: stepUp },
+      );
+    },
+
+    async laneConfig({ targetOrg, targetProject }): Promise<LaneConfig> {
+      const w = await call<{
+        pinned_repo: string | null;
+        config_version: number;
+        targets: {
+          key: string;
+          kind: string;
+          mode: string;
+          has_credential: boolean;
+          settings: Record<string, unknown>;
+        }[];
+      }>("GET", "/release-lane/publish-targets", {
+        org: org(),
+        target_org: targetOrg,
+        target_project: targetProject,
+      });
+      return {
+        pinnedRepo: w.pinned_repo,
+        configVersion: w.config_version,
+        targets: w.targets.map((t) => ({
+          key: t.key,
+          kind: t.kind,
+          mode: t.mode,
+          hasCredential: t.has_credential,
+          settings: t.settings,
+        })),
+      };
+    },
+
+    async laneKey({ targetOrg, name }): Promise<LaneKey> {
+      const w = await call<{ keyid: string; public_key_pem: string; created_at: string }>(
+        "GET",
+        `/release-lane/keys/${encodeURIComponent(name)}`,
+        { org: org(), target_org: targetOrg },
+      );
+      return { keyid: w.keyid, publicKeyPem: w.public_key_pem, createdAt: w.created_at };
+    },
+
+    async laneSecretStatus({ targetOrg, targetProject, name }): Promise<LaneSecretStatus> {
+      const w = await call<{ set: boolean; set_at: string | null; set_by: string | null }>(
+        "GET",
+        "/release-lane/secrets",
+        { org: org(), target_org: targetOrg, target_project: targetProject, name },
+      );
+      return { set: w.set, setAt: w.set_at, setBy: w.set_by };
     },
 
     async setSetting({ key, value, unset, project, stepUp }): Promise<Setting> {

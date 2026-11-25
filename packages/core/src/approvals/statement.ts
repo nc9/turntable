@@ -54,6 +54,13 @@ export const releaseStatementSchema = z.strictObject({
   environment: z.string().min(1).max(100),
   /** sha256 hex of the canonical manifest of the artifacts the release lane will sign. */
   manifest_sha256: hex(64, 64),
+  /**
+   * The release lane's configuration version when the challenge was issued (the server reads it
+   * from the lane). The approver signs over the pin, targets and secrets they saw: the lane
+   * refuses to sign or publish when its version has moved since. Required: a statement without it
+   * is not a valid v2 statement.
+   */
+  lane_config_version: z.int().min(0),
   approver: z.string().min(1).max(64),
   expires_at: z.int().positive(),
   /** The single-use challenge id. */

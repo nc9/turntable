@@ -7,6 +7,12 @@ const ALLOWED_OUTSIDE_TRANSACTION = [
   "db_backup", // cannot run inside a transaction
   "instance_bind_installation", // reads GitHub (installation facts, then the sync's repo list) before and while it syncs, which must not hold the write lock; the sync is idempotent so a partial bind is repaired by running it again, and the audit row and event are written in one db.transaction
   "onboard_repos", // asks GitHub for the installation's repos first; all writes are one inner transaction (all or nothing)
+  "release_init_key", // same: a lane channel round trip; the key is generated and sealed in the lane's own directory, not in this database
+  "release_pin_repo", // a message to the release lane over its channel must not hold the DB write lock; the lane's own file is what changes, not this database
+  "release_publish_target_delete", // same: a lane channel round trip
+  "release_publish_target_set", // same: a lane channel round trip
+  "release_secret_set", // same: a lane channel round trip, and the vault write is the lane's own
+  "release_set_project_signing", // lane channel round trips (check the key, bump the version) around one project row write: they must not hold the DB write lock
   "resync_installation", // makes GitHub API calls, which must not hold the write transaction
   "run_default_branch", // forge round trips (head, workflow) must not hold the DB write lock; the run is written in the poller path's own transaction
   "run_dispatch", // forge round trips (ref resolve, workflow fetch) must not hold the DB write lock; all writes are in one inner transaction

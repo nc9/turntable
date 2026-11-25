@@ -246,7 +246,14 @@ beforeEach(async () => {
   orgId = org.id;
   scope = { orgId, projectId: project.id };
   // A real-minted token and the real clock: nothing here uses a fixed epoch.
-  env = { registry, db, webauthn: RP };
+  // The challenge binds the lane's configuration version, read from the lane. This test signs
+  // with the service directly (no lane), so the lane is a fixed version 3.
+  env = {
+    registry,
+    db,
+    webauthn: RP,
+    releaseConfig: { call: async () => ({ ok: true, result: { config_version: 3 } }) },
+  };
   operatorTok = (await mintToken(db, { orgId }, "operator")).secret;
   await setProjectSigning(db, scope, { signingKey: "builtin:release", environment: "release" });
   for (const environment of ["release", "production"]) {

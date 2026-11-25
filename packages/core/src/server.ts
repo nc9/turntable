@@ -16,6 +16,7 @@ import {
 } from "./transport";
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
+import type { LaneConfigClient } from "./release/channel-client";
 import type { GithubFacts, GithubUserLookup } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { AuthHandler } from "./auth/github-login";
@@ -161,6 +162,10 @@ export type ServeOptions = {
   settings?: SettingsRuntime;
   /** WebAuthn relying party for human approvals. Absent: only offline ed25519 approvals work. */
   webauthn?: RelyingParty;
+  /** The release lane's config channel, when configured (the instance's `release_*` ops). */
+  releaseConfig?: LaneConfigClient;
+  /** The operator org (TURNTABLE_BOOTSTRAP_ORG, default `local`): its owners configure the release lane. */
+  operatorOrgSlug?: string;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
   cache?: CacheService;
   /** The artifact service for jobs (the twirp API and `/_artifacts/...`), when a URL is configured. */
@@ -192,6 +197,8 @@ export function startServer(options: ServeOptions) {
     defaultBranchRunner: options.defaultBranchRunner,
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
+    releaseConfig: options.releaseConfig,
+    operatorOrgSlug: options.operatorOrgSlug,
     instanceOrgCap: options.instanceOrgCap,
     staticPollProjects: options.staticPollProjects,
     doctor: options.doctor,

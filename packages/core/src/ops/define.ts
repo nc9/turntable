@@ -3,6 +3,7 @@ import type { Db } from "../db";
 import type { Scope } from "../db/repos";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
+import type { LaneConfigClient } from "../release/channel-client";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
@@ -71,6 +72,10 @@ export type OpContext = {
   webhooks?: WebhookService | undefined;
   /** WebAuthn relying party (id and allowed origins); absent when not configured. */
   webauthn?: RelyingParty | undefined;
+  /** The release lane's config channel (the `release_*` ops); absent when no lane is configured. */
+  releaseConfig?: LaneConfigClient | undefined;
+  /** Slug of the operator org (the bootstrap org, default `local`): the only org whose owners configure the lane. */
+  operatorOrgSlug?: string | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent (tests inject their own). */
   attestationAnchors?: TrustAnchors | undefined;
   /** Runs the readiness checks against the running server; absent where there is no server. */

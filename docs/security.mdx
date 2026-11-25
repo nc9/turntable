@@ -295,11 +295,13 @@ A project's release environment (its signing environment, `release` unless the p
 ```json
 { "type": "turntable.approve_release.v2", "org": "acme", "project": "api",
   "run_id": "...", "head_sha": "...", "workflow_hash": "...", "environment": "release",
-  "manifest_sha256": "<64 hex>", "approver": "<approver key id>",
+  "manifest_sha256": "<64 hex>", "lane_config_version": 7, "approver": "<approver key id>",
   "expires_at": 1767225600000, "nonce": "..." }
 ```
 
 `manifest_sha256` is the one canonical digest of the artifact set the release lane will sign. The server computes it from the artifacts it has recorded for the run (`release_approval_challenge`, by default every release-class artifact, or the names the caller gives), so the approver signs a digest the server produced, and the challenge is spent when the approval is recorded, for passkeys and offline keys alike. A statement the server did not issue is refused, and so is a challenge for a run with no recorded artifact yet.
+
+`lane_config_version` is the release lane's configuration version (its pin, publish targets and secrets) when the challenge was issued; the server reads it from the lane. The approver therefore signs over the configuration they saw, and the lane refuses to sign or publish when its version has moved since (`release lane config changed since approval; re-approve`). A statement without the field is refused.
 
 The digest is sha256 (lower-case hex) over this UTF-8 text, and nothing else computes it:
 

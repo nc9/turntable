@@ -623,6 +623,7 @@ describe("the release proxy", () => {
       { ...NPM, mode: "strict" } as PublishTarget,
       0,
     );
+    await sign(); // approved again under the new declaration (a change voids the old approval)
     expect(await reg("a4")).toEqual({ ok: false, reason: "no_compat_targets" });
     expect(proxy!.active).toBe(0);
   });
@@ -869,6 +870,8 @@ describe("the release proxy", () => {
       await proxy?.stop();
       attest.removePublishTarget(a.orgId, a.projectId, "npm");
       attest.setPublishTarget(a.orgId, a.projectId, "rel", { ...GH, assets: ["web-1.0.0.tgz"] }, 0);
+      // The targets changed after the approval: approve again, under the new config version (#541).
+      await sign();
       proxy = await ReleaseProxy.start({
         db,
         vault,
@@ -1235,9 +1238,10 @@ describe("the release channel", () => {
     expect(await signedRegister()).toMatchObject({ status: 403, json: { reason: "tag_moved" } });
     tagSha = SHA;
     attest.removePublishTarget(a.orgId, a.projectId, "npm");
+    // the declaration changed after the approval: nothing is registered until it is approved again
     expect(await signedRegister({}, clock + 1)).toMatchObject({
       status: 403,
-      json: { reason: "no_compat_targets" },
+      json: { reason: "release lane config changed since approval; re-approve" },
     });
   });
 

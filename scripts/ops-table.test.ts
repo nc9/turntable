@@ -60,6 +60,24 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: cross-tenant poll health is the operator's view, never an agent's",
   instance_audit_verify:
     "instance administrator ops are REST only: audit integrity is the operator's check, never an agent's",
+  release_set_project_signing:
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
+  release_init_key:
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
+  release_pin_repo:
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
+  release_publish_target_set:
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
+  release_publish_target_delete:
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
+  release_secret_set:
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
+  release_publish_target_list:
+    "web only: the release lane's configuration is the operator org owner's view in the browser, never an agent's",
+  release_key_show:
+    "web only: the release lane's configuration is the operator org owner's view in the browser, never an agent's",
+  release_secret_status:
+    "web only: it shows when and by whom a lane secret was set, never the value, to the operator org owner in the browser",
   set_quotas: "instance administrator ops are REST only, and quotas are a limit-raising setter",
   set_project_settings:
     "instance administrator ops are REST only: a project's snapshot and cap are operator controls, never an agent's",

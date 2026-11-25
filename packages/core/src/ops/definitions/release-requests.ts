@@ -21,6 +21,22 @@ const requestView = z.object({
   key_id: z.string().nullable().describe("The id of the key that signed, when it signed."),
 });
 
+const getView = requestView.extend({
+  provenance: z
+    .string()
+    .nullable()
+    .describe(
+      "The lane's signed DSSE envelope (the provenance) as JSON text, for a signed request; null otherwise. Verify it against the pinned public key (release_public_key, `turntable verify --pubkey`); the server's copy is not trusted, the signature is.",
+    ),
+});
+
+/** The signed envelope the lane recorded in the request's result, as JSON text, or null. */
+function provenanceOf(r: ReleaseRequest): string | null {
+  if (r.status !== "signed" || !r.result) return null;
+  const envelope = (JSON.parse(r.result) as { envelope?: unknown }).envelope;
+  return envelope === undefined || envelope === null ? null : JSON.stringify(envelope);
+}
+
 const view = (r: ReleaseRequest): z.infer<typeof requestView> => ({
   id: r.id,
   run_id: r.runId,
@@ -77,9 +93,11 @@ export const getReleaseRequestOp = defineOp({
   description:
     "Returns one release request by id: its status (pending, claimed, signed, refused, error), the " +
     "refusal reason as a short code when the release lane refused it, and the key id when it " +
-    "signed. Needs one project and release_operator or admin. Read-only.",
+    "signed, and for a signed request `provenance`: the lane's signed DSSE envelope as JSON text " +
+    "(null otherwise), which a consumer verifies against the pinned public key. Needs one " +
+    "project and release_operator or admin. Read-only.",
   input: z.object({ id: z.string().min(1).max(40) }),
-  output: requestView,
+  output: getView,
   effect: "read",
   auth: { type: "token", minRole: "release_operator" },
   untrustedOutput: false,
@@ -88,6 +106,6 @@ export const getReleaseRequestOp = defineOp({
   async handler(ctx, i) {
     const r = await getReleaseRequest(ctx.db, ctx.scope, i.id);
     if (!r) throw new OpError("not_found", "no such release request");
-    return view(r);
+    return { ...view(r), provenance: provenanceOf(r) };
   },
 });

@@ -29,6 +29,7 @@ function issue(over: { manifest?: string; arts?: ManifestArtifact[] } = {}): Rel
     workflow_hash: "ab".repeat(32),
     environment: "release",
     manifest_sha256: over.manifest ?? manifestSha256(artifacts),
+    lane_config_version: 4,
     approver: "ap1",
     expires_at: Date.now() + 600_000,
     nonce: "n".repeat(24),

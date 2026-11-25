@@ -154,6 +154,17 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `list_user_installations` | `GET /api/v1/account/installations` | no |  | read | viewer | account | List the App installations the signed-in GitHub user can reach. |
 | `invite_member` | `POST /api/v1/members/invites` | no |  | write | release_operator | token | Invite a GitHub login to this org. |
 | `session_step_up_challenge` | `POST /api/v1/session/step-up` | no |  | write | viewer | token | Start a passkey step-up for one sensitive action from a web session. |
+| `release_key_show` | `GET /api/v1/release-lane/keys/{name}` | no |  | read | owner | token | The public half of an org's release signing key, for the operator org's owner. |
+| `release_secret_status` | `GET /api/v1/release-lane/secrets` | no |  | read | owner | token | Whether a lane secret was set for a project, when and by whom. Never the value. |
+| `release_pin_repo` | `POST /api/v1/release-lane/pin-repo` | no |  | write | owner | token | Pin the repository a project releases from, in the release lane. |
+| `release_publish_target_set` | `POST /api/v1/release-lane/publish-targets` | no |  | write | owner | token | Declare or replace a publish target of a project, in the release lane. |
+| `release_publish_target_list` | `GET /api/v1/release-lane/publish-targets` | no |  | read | owner | token | A project's release lane configuration: the pin and each publish target. |
+| `release_publish_target_delete` | `POST /api/v1/release-lane/publish-targets/delete` | no |  | destructive | owner | token | Remove a publish target of a project, in the release lane. |
+| `release_secret_set` | `POST /api/v1/release-lane/secrets` | no |  | write | owner | token | Set a lane secret (a publish credential) for a project, in the release lane's vault. |
+| `release_init_key` | `POST /api/v1/release-lane/keys` | no |  | write | owner | token | Create the release lane's signing key for an org, inside the lane. |
+| `release_public_key` | `GET /api/v1/release/keys/{name}` | yes |  | read | reader | token | The public half of an org's release signing key, to pin and verify releases with. |
+| `release_set_project_signing` | `POST /api/v1/release-lane/project-signing` | no |  | write | owner | token | Set how a project signs releases: its signing key, approval environment and ref patterns. |
+| `release_project_signing` | `GET /api/v1/release/signing` | yes |  | read | reader | token | The project's effective release signing settings. |
 | `instance_bind_github_login` | none | no |  | write | admin | instance | Grant an org role to a GitHub login (instance administrator only). |
 | `resync_installation` | `POST /api/v1/github/installations/{installation_id}/resync` | yes |  | write | release_operator | token | Re-sync one GitHub App installation of this org with GitHub. |
 | `set_oidc_audiences` | `POST /api/v1/oidc-audiences` | no |  | write | admin | token | Limit the OIDC audiences a project's jobs may ask for, or lift the limit. |

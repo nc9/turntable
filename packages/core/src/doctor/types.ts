@@ -107,6 +107,11 @@ export interface DoctorInputs {
   providerChecks: () => Promise<DoctorCheck[]>;
   /** Whether the release channel answers, when one is configured. */
   channel: (() => Promise<ChannelProbe>) | undefined;
+  /**
+   * The probe of the lane's CONFIG channel, present only when this process holds the main-side
+   * config channel client settings. Release approval challenges need that channel.
+   */
+  configChannel?: (() => Promise<ChannelProbe>) | undefined;
   /** What the running server has seen of forwarded headers; absent from the command line. */
   observed: ForwardedSnapshot | undefined;
   /**

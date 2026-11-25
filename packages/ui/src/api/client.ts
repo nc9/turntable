@@ -34,6 +34,10 @@ import type {
   OrgQuotas,
   RerunResult,
   Setting,
+  LaneAction,
+  LaneConfig,
+  LaneKey,
+  LaneSecretStatus,
   StepUpChallenge,
   StepUpProof,
   Whoami,
@@ -208,9 +212,26 @@ export interface TurntableApi {
   }): Promise<Setting>;
   /** Starts a passkey confirmation for `set_setting` with exactly `input` (`session_step_up_challenge`). */
   stepUpChallenge(args: {
-    action: "set_setting";
+    action: "set_setting" | LaneAction;
     input: Record<string, unknown>;
   }): Promise<StepUpChallenge>;
+  /**
+   * The release lane's configuration (operator org owners only). A write carries the passkey
+   * step-up for exactly this `input` (snake_case, as the op takes it; a secret `value` is bound by
+   * `value_sha256` in the challenge, never sent to it).
+   */
+  laneWrite(args: {
+    action: LaneAction;
+    input: Record<string, unknown>;
+    stepUp: StepUpProof;
+  }): Promise<Record<string, unknown>>;
+  laneConfig(args: { targetOrg: string; targetProject: string }): Promise<LaneConfig>;
+  laneKey(args: { targetOrg: string; name: string }): Promise<LaneKey>;
+  laneSecretStatus(args: {
+    targetOrg: string;
+    targetProject: string;
+    name: string;
+  }): Promise<LaneSecretStatus>;
   /** Whether scheduling is frozen for the org (or the project, when given), and why. */
   incidentStatus(args?: { project?: string }): Promise<IncidentStatus>;
   cancel(args: { runId: string }): Promise<void>;

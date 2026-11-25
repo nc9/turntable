@@ -3426,9 +3426,22 @@
                     },
                     "expires_at": {
                       "type": ["string", "null"]
+                    },
+                    "operator_org": {
+                      "type": "boolean",
+                      "description": "True when this org is the operator org, whose owners configure the release lane."
                     }
                   },
-                  "required": ["kind", "id", "name", "role", "org", "project", "expires_at"],
+                  "required": [
+                    "kind",
+                    "id",
+                    "name",
+                    "role",
+                    "org",
+                    "project",
+                    "expires_at",
+                    "operator_org"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -7489,7 +7502,7 @@
       "post": {
         "operationId": "release_approval_challenge",
         "summary": "Issue the statement an approver signs to approve a release's artifacts.",
-        "description": "Builds the turntable.approve_release.v2 statement for a run whose jobs wait on the project's release environment, and its single-use challenge. The statement binds the org, project, run, head sha, workflow hash, environment, the approver's key id, an expiry, a nonce and manifest_sha256: the digest the server computes from the artifacts it has recorded for the run (the run's release-class artifacts, or the names given), as name, sha256 and size. The release lane signs only an artifact set with exactly that digest, once. Refused when no artifact is recorded yet. A passkey signs `challenge` in the browser; an offline ed25519 key signs `canonical`. Issuing a statement approves nothing. Not available over MCP.\n\nRequired role: operator. Side effects: write; audited.",
+        "description": "Builds the turntable.approve_release.v2 statement for a run whose jobs wait on the project's release environment, and its single-use challenge. The statement binds the org, project, run, head sha, workflow hash, environment, the approver's key id, an expiry, a nonce and manifest_sha256: the digest the server computes from the artifacts it has recorded for the run (the run's release-class artifacts, or the names given), as name, sha256 and size. The release lane signs only an artifact set with exactly that digest, once. Refused when no artifact is recorded yet. A passkey signs `challenge` in the browser; an offline ed25519 key signs `canonical`. The statement also binds `lane_config_version`, read from the release lane when it is issued: the lane refuses to sign or publish if its configuration (pin, targets, secrets) changed since, with `release lane config changed since approval; re-approve`. Refused when the lane's config channel is not configured or cannot be reached. Issuing a statement approves nothing. Not available over MCP.\n\nRequired role: operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -9325,7 +9338,7 @@
       "get": {
         "operationId": "get_release_request",
         "summary": "The state of a release request: pending, signed, or refused with a reason.",
-        "description": "Returns one release request by id: its status (pending, claimed, signed, refused, error), the refusal reason as a short code when the release lane refused it, and the key id when it signed. Needs one project and release_operator or admin. Read-only.\n\nRequired role: release_operator. Read-only.",
+        "description": "Returns one release request by id: its status (pending, claimed, signed, refused, error), the refusal reason as a short code when the release lane refused it, and the key id when it signed, and for a signed request `provenance`: the lane's signed DSSE envelope as JSON text (null otherwise), which a consumer verifies against the pinned public key. Needs one project and release_operator or admin. Read-only.\n\nRequired role: release_operator. Read-only.",
         "parameters": [
           {
             "name": "id",
@@ -9411,6 +9424,10 @@
                     "key_id": {
                       "description": "The id of the key that signed, when it signed.",
                       "type": ["string", "null"]
+                    },
+                    "provenance": {
+                      "description": "The lane's signed DSSE envelope (the provenance) as JSON text, for a signed request; null otherwise. Verify it against the pinned public key (release_public_key, `turntable verify --pubkey`); the server's copy is not trusted, the signature is.",
+                      "type": ["string", "null"]
                     }
                   },
                   "required": [
@@ -9422,7 +9439,8 @@
                     "reason",
                     "created_at",
                     "finished_at",
-                    "key_id"
+                    "key_id",
+                    "provenance"
                   ],
                   "additionalProperties": false
                 }
@@ -9846,6 +9864,183 @@
         ],
         "x-turntable-effect": "write",
         "x-turntable-min-role": "viewer",
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/release/keys/{name}": {
+      "get": {
+        "operationId": "release_public_key",
+        "summary": "The public half of an org's release signing key, to pin and verify releases with.",
+        "description": "Returns the public key of the org's release signing key `name`: `keyid`, `public_key_pem` (SPKI PEM, Ed25519), `created_at` and `status`. It is public material: anyone who can read the org may call it, over REST or MCP, and it is what `turntable verify --pubkey` checks a release against. Compare its fingerprint with the one recorded out of band when the key was created (release_init_key); never trust it from this response alone. Read-only. Refused when the release lane is not configured or has no such key. Rate limited per token (30 reads a minute): past that it is refused with rate_limited and a retry_after_seconds.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The key's name, as a project's `builtin:<name>` signing key setting.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keyid": {
+                      "type": "string",
+                      "description": "Hex sha256 of the public key (SPKI DER): its stable id."
+                    },
+                    "public_key_pem": {
+                      "type": "string",
+                      "description": "The public key, SPKI PEM, Ed25519."
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "description": "When the lane sealed the key, as an ISO timestamp."
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["active"],
+                      "description": "The key's state."
+                    }
+                  },
+                  "required": ["keyid", "public_key_pem", "created_at", "status"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/release/signing": {
+      "get": {
+        "operationId": "release_project_signing",
+        "summary": "The project's effective release signing settings.",
+        "description": "Returns how this project signs releases, with defaults applied: `signing_key` (the key reference, or null when none is set), `keyid` (the hex sha256 of the public key for a `builtin:` key the release lane holds; null for any other key, or when the lane cannot be asked), `signing_environment` (default `release`) and `release_refs` (default `refs/tags/v*`). Nothing secret. Read-only, over REST and MCP. Rate limited per token (30 reads a minute): past that it is refused with rate_limited and a retry_after_seconds.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug. Required unless the token is scoped to one project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "signing_key": {
+                      "type": ["string", "null"]
+                    },
+                    "keyid": {
+                      "type": ["string", "null"]
+                    },
+                    "signing_environment": {
+                      "type": "string"
+                    },
+                    "release_refs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": ["signing_key", "keyid", "signing_environment", "release_refs"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
         "x-turntable-untrusted-output": false
       }
     },
@@ -11065,6 +11260,11 @@
                         "type": "string",
                         "pattern": "^[0-9a-f]{64,64}$"
                       },
+                      "lane_config_version": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
                       "approver": {
                         "type": "string",
                         "minLength": 1,
@@ -11089,6 +11289,7 @@
                       "workflow_hash",
                       "environment",
                       "manifest_sha256",
+                      "lane_config_version",
                       "approver",
                       "expires_at",
                       "nonce"
