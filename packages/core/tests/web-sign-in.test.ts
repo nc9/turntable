@@ -207,6 +207,52 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     return { h, cookie: r.session! };
   }
 
+  describe("return target", () => {
+    const GOOD = "/onboarding?step=repos&org=tenant";
+    const via = async (h: Awaited<ReturnType<typeof harness>>, next: string) => {
+      const go = (await h.handler.handle(
+        new Request(`${ORIGIN}${LOGIN_PATH}?${new URLSearchParams({ next })}`),
+      ))!;
+      const state = new URL(go.headers.get("location")!).searchParams.get("state")!;
+      const cookie = valueOf(cookieOf(go, `${LOGIN_COOKIE}_`, true)!);
+      return h.callback(state, "code-alice", cookie);
+    };
+
+    test("a wizard step round-trips through the sign-in", async () => {
+      const h = await harness();
+      h.users.set("code-alice", { id: "1001", login: "alice" });
+      expect((await h.bind({ role: "owner" })).ok).toBe(true);
+      const done = await via(h, GOOD);
+      expect(done.status).toBe(303);
+      expect(done.headers.get("location")).toBe(GOOD);
+      expect(cookieOf(done, SESSION_COOKIE)).toBeDefined();
+    });
+
+    test("a hostile or off-list target is dropped: the sign-in lands on /", async () => {
+      for (const bad of [
+        "//evil.example",
+        "https://evil.example",
+        "/\\evil.example",
+        "/\\/evil.example",
+        "/onboarding\\..\\x",
+        "/runs",
+        "/onboarding?step=repos&org=tenant&x=1",
+        "/onboarding?step=nope",
+        "/onboarding?org=../x",
+        "/onboarding?step=repos#frag",
+        "/onboarding?step=repos&step=run",
+        "javascript:alert(1)",
+        "/onboarding\nx",
+      ]) {
+        const h = await harness();
+        h.users.set("code-alice", { id: "1001", login: "alice" });
+        expect((await h.bind({ role: "owner" })).ok).toBe(true);
+        const done = await via(h, bad);
+        expect([bad, done.status, done.headers.get("location")]).toEqual([bad, 303, "/"]);
+      }
+    });
+  });
+
   test("login round trip: authorize redirect, callback, session cookie, membership from the DB", async () => {
     const h = await harness();
     h.users.set("code-alice", { id: "1001", login: "Alice" });

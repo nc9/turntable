@@ -6,6 +6,7 @@ import type {
   ClaimStatus,
   InstallationRepo,
   OnboardRepoRow,
+  OrgInstallation,
   PreviewWorkflow,
   StartedClaim,
 } from "@/api/onboarding";
@@ -273,3 +274,87 @@ jobs:
 
 const FINISHED_STATES = ["success", "failure", "infra_error", "cancelled", "skipped"];
 export const runFinished = (state: string): boolean => FINISHED_STATES.includes(state);
+
+// ---- the repos step: the org's own installation first -----------------------------------------
+
+/** The installations of an org that can be used now (not suspended or deleted), in the given order. */
+export function activeInstallations(list: readonly OrgInstallation[]): OrgInstallation[] {
+  return list.filter((i) => i.status === "active");
+}
+
+export type ReposStepView =
+  | { kind: "loading" }
+  | { kind: "error" }
+  | { kind: "install" }
+  | { kind: "repos"; installation: string };
+
+/**
+ * What the repos step shows. An installation in the URL wins. Without one the org's own bound
+ * installations are looked up first: the first active one goes straight to its repos, and the
+ * install modal is for an org that has none. While the lookup runs or after it failed, nothing
+ * offers an install (that would be the wrong answer for an org that has one).
+ */
+export function reposStepView(
+  installation: string | undefined,
+  lookup: { data: readonly OrgInstallation[] | null; error: string | null },
+): ReposStepView {
+  if (installation) return { kind: "repos", installation };
+  if (lookup.error) return { kind: "error" };
+  if (lookup.data === null) return { kind: "loading" };
+  const first = activeInstallations(lookup.data)[0];
+  return first ? { kind: "repos", installation: first.installation_id } : { kind: "install" };
+}
+
+// ---- reconnecting GitHub in place -------------------------------------------------------------
+
+/** `list_user_installations` and `bind_installation` answer this when the session has no sealed GitHub token. */
+export const TOKEN_MISSING_CODE = "github_user_token_missing";
+export const RECONNECT_MESSAGE = "Reconnect GitHub to see your installations";
+
+export const isTokenMissing = (code: string | null | undefined): boolean =>
+  code === TOKEN_MISSING_CODE;
+
+const GITHUB_LOGIN_PATH = "/auth/github/login";
+const STEP_NAMES = ["org", "repos", "preview", "run"];
+
+/**
+ * The same-origin path the GitHub sign-in returns to: the onboarding route with a validated
+ * query, nothing else. A value that is not exactly that (a full URL, `//host`, `/\host`, another
+ * route, an odd query) gives `undefined`.
+ */
+export function onboardingReturnPath(next: unknown): string | undefined {
+  if (typeof next !== "string" || next.length === 0 || next.length > 512) return undefined;
+  if (!next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return undefined;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting them is the point
+  if (/[\u0000-\u001f\u007f\\]/.test(next)) return undefined;
+  let u: URL;
+  try {
+    u = new URL(next, "http://turntable.invalid");
+  } catch {
+    return undefined;
+  }
+  if (u.origin !== "http://turntable.invalid" || u.hash !== "" || u.pathname !== "/onboarding")
+    return undefined;
+  const seen = new Set<string>();
+  for (const [k, v] of u.searchParams) {
+    if (seen.has(k)) return undefined;
+    seen.add(k);
+    const ok =
+      (k === "step" && STEP_NAMES.includes(v)) ||
+      (k === "org" && /^[a-z0-9][a-z0-9-]{0,62}$/.test(v)) ||
+      (k === "installation" && /^\d{1,20}$/.test(v));
+    if (!ok) return undefined;
+  }
+  return next;
+}
+
+/**
+ * The link that runs the existing GitHub sign-in and comes back to this wizard step. When the
+ * step cannot be named safely it is the plain sign-in link.
+ */
+export function reconnectHref(step: { step: string; org: string; installation?: string }): string {
+  const q = new URLSearchParams({ step: step.step, org: step.org });
+  if (step.installation) q.set("installation", step.installation);
+  const back = onboardingReturnPath(`/onboarding?${q}`);
+  return back ? `${GITHUB_LOGIN_PATH}?next=${encodeURIComponent(back)}` : GITHUB_LOGIN_PATH;
+}

@@ -26,6 +26,13 @@ export type UserInstallation = {
   repository_selection: "all" | "selected";
   bound: "this_org" | "other_org" | "none";
 };
+/** One installation this org holds, from `github_app_status` (no tokens, no other org's). */
+export type OrgInstallation = {
+  installation_id: string;
+  account_login: string;
+  account_type: string;
+  status: string;
+};
 export type BoundInstallation = {
   installation_id: string;
   account_login: string;
@@ -77,6 +84,8 @@ export interface OnboardingApi {
   /** `installationId` opens that installation's configure page instead of a fresh install. */
   startClaim(args: { org: string; popup: boolean; installationId?: string }): Promise<StartedClaim>;
   getClaim(args: { org: string; claimId: string }): Promise<ClaimStatus>;
+  /** The installations this org has bound (any status); the wizard uses the active ones. */
+  listOrgInstallations(args: { org: string }): Promise<OrgInstallation[]>;
   listUserInstallations(): Promise<UserInstallation[]>;
   bindInstallation(args: { org: string; installationId: string }): Promise<BoundInstallation>;
   listInstallationRepos(args: { org: string; installationId: string }): Promise<InstallationRepo[]>;
@@ -177,6 +186,10 @@ export function createOnboardingApi(options: OnboardingApiOptions = {}): Onboard
           org,
         },
       );
+    },
+    async listOrgInstallations({ org }) {
+      return (await call<{ installations: OrgInstallation[] }>("GET", "/github/app", { org }))
+        .installations;
     },
     async listUserInstallations() {
       return (await call<{ installations: UserInstallation[] }>("GET", "/account/installations"))

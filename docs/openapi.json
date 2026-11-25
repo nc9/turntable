@@ -15431,6 +15431,7 @@
                   "not_found",
                   "method_not_allowed",
                   "conflict",
+                  "github_user_token_missing",
                   "payload_too_large",
                   "rate_limited",
                   "internal",

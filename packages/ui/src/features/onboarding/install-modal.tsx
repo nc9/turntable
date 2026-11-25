@@ -4,7 +4,15 @@ import type { OnboardingApi, UserInstallation } from "@/api/onboarding";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { useAsync } from "@/lib/use-async";
-import { beginInstall, type ClaimOutcome, type PopupHandle, watchClaim } from "@/lib/onboarding";
+import {
+  beginInstall,
+  type ClaimOutcome,
+  isTokenMissing,
+  type PopupHandle,
+  RECONNECT_MESSAGE,
+  reconnectHref,
+  watchClaim,
+} from "@/lib/onboarding";
 import { cn } from "@/lib/utils";
 
 const msg = (e: unknown, fallback: string): string => (e instanceof Error ? e.message : fallback);
@@ -42,6 +50,8 @@ export type InstallPanelProps = {
   onPick: (id: string) => void;
   bindingId: string | null;
   bindError: string | null;
+  /** The session has no GitHub authorization: the link that reconnects, or null when it has one. */
+  reconnect: string | null;
   onClose: () => void;
   /** The modal passes the dialog's own title and description so assistive tech reads them. */
   Title?: ComponentType<{ className?: string; children?: ReactNode }>;
@@ -155,7 +165,21 @@ function InstallationPicker(p: InstallPanelProps) {
   return (
     <div className="space-y-2">
       <h3 className="text-[13px] font-semibold">Your installations</h3>
-      {error ? (
+      {p.reconnect ? (
+        <div role="alert" className="space-y-2 text-[13px]" data-testid="reconnect">
+          <p>
+            {RECONNECT_MESSAGE}. This sign-in was made before Turntable kept your GitHub
+            authorization.
+          </p>
+          <a
+            href={p.reconnect}
+            data-testid="reconnect-link"
+            className={cn(buttonVariants({ variant: "secondary", size: "sm" }))}
+          >
+            Reconnect GitHub
+          </a>
+        </div>
+      ) : error ? (
         <p role="alert" className="text-[13px] text-st-failure">
           {error}
         </p>
@@ -195,7 +219,7 @@ function InstallationPicker(p: InstallPanelProps) {
           })}
         </ul>
       )}
-      {p.bindError ? (
+      {p.bindError && !p.reconnect ? (
         <p role="alert" className="text-[13px] text-st-failure">
           {p.bindError}
         </p>
@@ -229,6 +253,7 @@ export function InstallModal(props: InstallModalProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [bindingId, setBindingId] = useState<string | null>(null);
   const [bindError, setBindError] = useState<string | null>(null);
+  const [bindNeedsReconnect, setBindNeedsReconnect] = useState(false);
   const popupRef = useRef<PopupHandle | null>(null);
   const installed = useRef(onInstalled);
   installed.current = onInstalled;
@@ -310,6 +335,7 @@ export function InstallModal(props: InstallModalProps) {
   const pick = (id: string) => {
     setBindingId(id);
     setBindError(null);
+    setBindNeedsReconnect(false);
     api.bindInstallation({ org, installationId: id }).then(
       () => {
         setBindingId(null);
@@ -317,6 +343,7 @@ export function InstallModal(props: InstallModalProps) {
       },
       (e: unknown) => {
         setBindingId(null);
+        if (isTokenMissing((e as { code?: string } | null)?.code)) setBindNeedsReconnect(true);
         setBindError(msg(e, "Could not connect that installation."));
       },
     );
@@ -353,6 +380,11 @@ export function InstallModal(props: InstallModalProps) {
           onPick={pick}
           bindingId={bindingId}
           bindError={bindError}
+          reconnect={
+            bindNeedsReconnect || isTokenMissing(installations.errorCode)
+              ? reconnectHref({ step: "repos", org })
+              : null
+          }
           onClose={() => change(false)}
           Title={DialogTitle}
           Description={DialogDescription}

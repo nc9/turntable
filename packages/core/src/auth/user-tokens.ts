@@ -230,7 +230,8 @@ export interface UserGithub {
   isOrgAdmin(sessionHash: string, org: string): Promise<boolean>;
 }
 
-const NEEDS_SIGN_IN = "your GitHub authorization has expired: sign in again";
+/** The session is fine; only the GitHub authorization is gone. Never a 401: that ends the session. */
+const NEEDS_RECONNECT = "this session has no GitHub authorization: reconnect GitHub";
 
 export function githubUserApi(o: {
   db: Db;
@@ -245,7 +246,7 @@ export function githubUserApi(o: {
       const app = await getGithubApp(o.db);
       if (!app) throw new OpError("unavailable", "no GitHub App is configured");
       const token = await o.tokens.access(hash);
-      if (!token) throw new OpError("unauthenticated", NEEDS_SIGN_IN);
+      if (!token) throw new OpError("github_user_token_missing", NEEDS_RECONNECT);
       const out: UserInstallationFact[] = [];
       for (let page = 1; page <= 20; page += 1) {
         const res = await f(`${api}/user/installations?per_page=100&page=${page}`, {
@@ -260,7 +261,7 @@ export function githubUserApi(o: {
         });
         if (res.status === 401) {
           await o.tokens.remove(hash);
-          throw new OpError("unauthenticated", NEEDS_SIGN_IN);
+          throw new OpError("github_user_token_missing", NEEDS_RECONNECT);
         }
         if (!res.ok) throw new OpError("unavailable", `GitHub answered HTTP ${res.status}`);
         const j = (await res.json()) as {
@@ -291,7 +292,7 @@ export function githubUserApi(o: {
     async isOrgAdmin(hash, org) {
       if (!/^[A-Za-z0-9-]{1,39}$/.test(org)) return false;
       const token = await o.tokens.access(hash);
-      if (!token) throw new OpError("unauthenticated", NEEDS_SIGN_IN);
+      if (!token) throw new OpError("github_user_token_missing", NEEDS_RECONNECT);
       const res = await f(`${api}/user/memberships/orgs/${encodeURIComponent(org)}`, {
         headers: {
           authorization: `Bearer ${token}`,

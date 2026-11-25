@@ -31,6 +31,7 @@ import { selfServeAllows } from "./self-serve";
 import { parseTokenResponse, type UserTokens, type UserTokenSet } from "./user-tokens";
 import type { SecretStore } from "../secrets/store";
 import { sanitizeAvatarUrl } from "../github/avatar";
+import { sanitizeReturnTarget } from "./return-target";
 import {
   excessFlowCookies,
   flowCookieName,
@@ -183,7 +184,10 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
     createHmac("sha256", k).update(`login.v1.${body}`).digest();
 
   /** The nonce of a state whose signature and expiry hold. */
-  async function verifyState(state: string, appOrg: string): Promise<string | undefined> {
+  async function verifyState(
+    state: string,
+    appOrg: string,
+  ): Promise<{ nonce: string; next: string | undefined } | undefined> {
     const parts = state.split(".");
     if (parts.length !== 3 || parts[0] !== "v1") return undefined;
     const [, body, sig] = parts as [string, string, string];
@@ -197,11 +201,13 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
       const p = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as {
         n?: unknown;
         e?: unknown;
+        x?: unknown;
       };
       if (typeof p.n !== "string" || typeof p.e !== "number" || p.e <= o.sessions.now()) {
         return undefined;
       }
-      return p.n;
+      // The return target is inside the signed body, and checked again here.
+      return { nonce: p.n, next: sanitizeReturnTarget(p.x) };
     } catch {
       return undefined;
     }
@@ -214,7 +220,9 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
     const nonce = randomBytes(18).toString("base64url");
     const expiresAt = now + LOGIN_TTL_MS;
     await createLoginState(o.db, nonce, expiresAt, now);
-    const body = b64u(JSON.stringify({ n: nonce, e: expiresAt }));
+    // An optional return target, validated here and again at the callback. A bad one is dropped.
+    const next = sanitizeReturnTarget(new URL(req.url).searchParams.get("next") ?? undefined);
+    const body = b64u(JSON.stringify({ n: nonce, e: expiresAt, ...(next ? { x: next } : {}) }));
     const state = `v1.${body}.${b64u(sign(await key(app.orgId), body))}`;
     const target =
       `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(app.clientId)}` +
@@ -241,7 +249,8 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
     if (!app) return note(503, "Sign-in unavailable", "No GitHub App is configured.");
     const state = url.searchParams.get("state") ?? "";
     const code = url.searchParams.get("code") ?? "";
-    const stateNonce = await verifyState(state, app.orgId);
+    const verified = await verifyState(state, app.orgId);
+    const stateNonce = verified?.nonce;
     // Exactly this sign-in's cookie: its name is derived from the state's nonce.
     // The cookie must carry this state's nonce exactly, not merely sit under its name.
     const held = stateNonce ? readFlowCookie(req, LOGIN_COOKIE_PREFIX, stateNonce) : undefined;
@@ -309,7 +318,10 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
         );
       }
     }
-    const headers = new Headers({ location: "/", "cache-control": "no-store" });
+    const headers = new Headers({
+      location: verified?.next ?? "/",
+      "cache-control": "no-store",
+    });
     headers.append("set-cookie", o.sessions.setCookie(id, absoluteMs));
     for (const c of clearThis) headers.append("set-cookie", c);
     return new Response(null, { status: 303, headers });
