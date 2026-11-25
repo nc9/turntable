@@ -131,7 +131,8 @@ export function AddRepositoriesPage() {
   const api = getOnboardingApi();
   const org = scope.orgSlug ?? "";
   const installations = useAsync(
-    () => (org ? api.listOrgInstallations({ org }) : Promise.resolve([])),
+    async () =>
+      org ? (await api.listOrgInstallations({ org })).filter((i) => i.status === "active") : [],
     [api, org],
   );
   return (

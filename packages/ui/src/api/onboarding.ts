@@ -48,12 +48,6 @@ export type InstallationRepo = {
   mode: ChecksMode | null;
   paused: boolean;
 };
-/** An installation this org has claimed (`github_app_status`). */
-export type OrgInstallation = {
-  installation_id: string;
-  account_login: string;
-  status: string;
-};
 export type AddedProject = {
   project: string;
   repo: string;
@@ -147,8 +141,6 @@ export interface OnboardingApi {
     installationId: string;
     repos: OnboardRepoRow[];
   }): Promise<OnboardedProject[]>;
-  /** The installations this org has claimed, for the Add repositories page. */
-  listOrgInstallations(args: { org: string }): Promise<OrgInstallation[]>;
   /** Makes one repo the installation reaches a project (`add_project`); `project` names its slug. */
   addProject(args: {
     org: string;
@@ -311,20 +303,6 @@ export function createOnboardingApi(options: OnboardingApiOptions = {}): Onboard
           { org, installation_id: installationId, repos },
         )
       ).projects;
-    },
-    async listOrgInstallations({ org }) {
-      const w = await call<{ installations: (OrgInstallation & { status: string })[] }>(
-        "GET",
-        "/github/app",
-        { org },
-      );
-      return w.installations
-        .filter((i) => i.status === "active")
-        .map((i) => ({
-          installation_id: i.installation_id,
-          account_login: i.account_login,
-          status: i.status,
-        }));
     },
     addProject({ org, installationId, repo, project }) {
       return call<AddedProject>(

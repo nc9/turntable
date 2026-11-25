@@ -127,9 +127,6 @@ export function createFixtureOnboarding(): OnboardingApi {
           paused: r.paused,
         }));
     },
-    async listOrgInstallations() {
-      return [{ installation_id: "100", account_login: "acme", status: "active" }];
-    },
     async addProject({ repo }) {
       const r = repos.find((x) => x.repo === repo);
       if (!r)
