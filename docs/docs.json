@@ -35,7 +35,8 @@
           "tenant-isolation",
           "postgres",
           "instance-admin",
-          "deploy/railway"
+          "deploy/railway",
+          "deploy/cd"
         ]
       },
       {

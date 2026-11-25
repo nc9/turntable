@@ -14,3 +14,10 @@ scripts/page-css.test.ts
 scripts/test-groups.test.ts
 scripts/compare-test-groups.test.ts
 scripts/pg-concurrency.test.ts
+scripts/cd-migrations.test.ts
+scripts/cd-preflight.test.ts
+scripts/cd-backup.test.ts
+scripts/cd-verify.test.ts
+scripts/cd-notes.test.ts
+scripts/cd-gate.test.ts
+scripts/cd-api-surface.test.ts

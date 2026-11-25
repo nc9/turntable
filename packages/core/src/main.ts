@@ -1066,6 +1066,7 @@ async function serve(args: string[]): Promise<void> {
         port,
         host: values.host,
         db,
+        trustedProxies: parseTrustedProxies(process.env.TURNTABLE_TRUSTED_PROXIES),
         allowedOrigins,
         ...(webhooks ? { webhooks } : {}),
         ...(vault ? { vault } : {}),

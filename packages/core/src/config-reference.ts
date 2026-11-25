@@ -543,6 +543,12 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Build",
     description: "UI build default backend (`fixture` or `http`); set by `bun run dev`.",
   },
+  {
+    name: "TURNTABLE_BUILD_SHA",
+    area: "Build",
+    description:
+      "The commit the binary was built from. Stamped into the binary by `scripts/build.ts` from the `BUILD_SHA` file that CD writes, and reported by `/healthz` as `build_sha`. Never set by hand; `unknown` when the build had no stamp.",
+  },
   // ---- the checkout child (control plane fetches a run's commit without git) ----
   {
     name: "TURNTABLE_CHECKOUT_TIMEOUT_SECONDS",

@@ -1,0 +1,1764 @@
+[
+  {
+    "name": "approval_status",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["run_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "approve_run",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "head_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{40,64}$"
+        },
+        "workflow_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "statement": {
+          "description": "The signed approve_run statement; required with signature.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "turntable.approve_run.v1"
+            },
+            "org": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "project": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "run_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "head_sha": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40,64}$"
+            },
+            "workflow_hash": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64,64}$"
+            },
+            "trust_class": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "approver": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "expires_at": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "nonce": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{16,128}$"
+            }
+          },
+          "required": [
+            "type",
+            "org",
+            "project",
+            "run_id",
+            "head_sha",
+            "workflow_hash",
+            "trust_class",
+            "approver",
+            "expires_at",
+            "nonce"
+          ],
+          "additionalProperties": false
+        },
+        "signature": {
+          "description": "The approver's WebAuthn assertion or ed25519 signature over the statement.",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "ed25519"
+                },
+                "signature": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                }
+              },
+              "required": ["kind", "signature"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "webauthn"
+                },
+                "credential_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                },
+                "client_data_json": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                },
+                "authenticator_data": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                },
+                "signature": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                }
+              },
+              "required": [
+                "kind",
+                "credential_id",
+                "client_data_json",
+                "authenticator_data",
+                "signature"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["run_id", "head_sha", "workflow_hash"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "approvers_overview",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "cancel",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "reason": {
+          "description": "Why (optional, up to 500 characters). Trimmed; blank counts as absent. Recorded in the audit entry.",
+          "type": "string",
+          "maxLength": 500
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["run_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "check_artifact_consumption",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "consumer_run_id": {
+          "description": "The run that would consume them; its class comes from its stored decision.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "consumer_class": {
+          "description": "Instead of a run: ask whether a build of this class may take them.",
+          "type": "string",
+          "enum": ["untrusted_pr", "trusted_pr", "protected", "release"]
+        },
+        "sources": {
+          "minItems": 1,
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": ["run_id", "name"]
+          }
+        },
+        "quarantine": {
+          "description": "Sources the consumer explicitly asks to receive from a lower class.",
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": ["run_id", "name"]
+          }
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["sources"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "checks_for_sha",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{40,64}$",
+          "description": "Full commit sha."
+        },
+        "repo": {
+          "description": "owner/name of a bound repo, to narrow to its project.",
+          "type": "string",
+          "pattern": "^[^/\\s]+\\/[^/\\s]+$"
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["sha"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "delete_proxy_passthrough_host",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "description": "An exact host (github.com) or *.suffix for any subdomain (*.githubusercontent.com)."
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["host"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "delete_proxy_rule",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "delete_secret",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Name, e.g. DEPLOY_KEY."
+        },
+        "environment": {
+          "description": "Limit to jobs that run in this environment.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "ref_pattern": {
+          "description": "Limit to this ref pattern (main, release/*, refs/tags/v*).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "events",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "after": {
+          "default": 0,
+          "description": "Cursor: only events after this one. \"now\" returns no events and sets next_after to the newest event, so a new subscriber starts at the tip.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "string",
+              "const": "now"
+            }
+          ]
+        },
+        "types": {
+          "description": "Only these event types. Comma-separated in a query string.",
+          "maxItems": 23,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "run.queued",
+              "run.started",
+              "run.finished",
+              "job.state_changed",
+              "attempt.step",
+              "attempt.cut",
+              "attempt.infra_retry",
+              "approval.required",
+              "infra.error",
+              "quota.warning",
+              "quota.reached",
+              "webhook.disabled",
+              "approver.bootstrapped",
+              "approvers.depleted",
+              "approval.policy_loosened",
+              "org.token_reminted",
+              "org.token_minted",
+              "org.tokens_exhausted",
+              "org.token_revoked",
+              "org.installation_claim_started_by_instance",
+              "org.member_invited",
+              "org.member_joined",
+              "installation_claim.updated"
+            ]
+          }
+        },
+        "limit": {
+          "default": 50,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "wait_ms": {
+          "default": 0,
+          "description": "Wait up to this long for an event when there is none yet.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "failure_digest",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "job_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_action_pins",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_artifacts",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["run_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_project_settings",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_quotas",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_release_request",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_run",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["run_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_setting",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The setting's key."
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["key"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "github_app_status",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "incident_freeze",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500,
+          "description": "Why. Shown in the UI and the audit log."
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["reason"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "incident_status",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ingest_status",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "job_cuts",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "attempt": {
+          "description": "Attempt number. Defaults to the latest attempt.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["job_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "job_log",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "attempt": {
+          "description": "Attempt number. Defaults to the latest attempt.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mode": {
+          "default": "tail",
+          "type": "string",
+          "enum": ["head", "tail", "range", "grep"]
+        },
+        "pattern": {
+          "description": "Text or regex to find, for mode=grep.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "regex": {
+          "default": false,
+          "description": "Treat pattern as a regex (safe subset), for mode=grep.",
+          "type": "boolean"
+        },
+        "ignore_case": {
+          "default": false,
+          "description": "Case-insensitive match, for mode=grep.",
+          "type": "boolean"
+        },
+        "context": {
+          "default": 2,
+          "description": "Lines around each hit, for mode=grep.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "max_matches": {
+          "default": 20,
+          "description": "Most hits to return, for mode=grep.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "lines": {
+          "default": 100,
+          "description": "Lines for head and tail.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000
+        },
+        "offset": {
+          "default": 0,
+          "description": "Byte offset to start at, for mode=range.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "max_bytes": {
+          "default": 65536,
+          "description": "Byte cap on the response.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["job_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "job_steps",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "attempt": {
+          "description": "Attempt number. Defaults to the latest attempt.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["job_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_api_tokens",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "default": 20,
+          "description": "Page size, 1 to 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_installation_repos",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "installation_id": {
+          "type": "string",
+          "pattern": "^\\d{1,20}$",
+          "description": "GitHub installation id (decimal digits)."
+        },
+        "limit": {
+          "description": "Most repos to return. Default 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["installation_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_orgs",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "default": 20,
+          "description": "Page size, 1 to 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_projects",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "default": 20,
+          "description": "Page size, 1 to 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_proxy_passthrough_hosts",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "default": 20,
+          "description": "Page size, 1 to 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_proxy_rules",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "default": 20,
+          "description": "Page size, 1 to 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_runs",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "description": "Branch name, e.g. main. Matches a ref of main or refs/heads/main.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "sha": {
+          "description": "Full commit sha.",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{7,64}$"
+        },
+        "event": {
+          "description": "Trigger event, e.g. push or pull_request.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "state": {
+          "description": "Run state.",
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "success",
+            "failure",
+            "infra_error",
+            "awaiting_approval",
+            "cancelled",
+            "skipped"
+          ]
+        },
+        "since": {
+          "description": "ISO 8601 time; only runs created at or after it.",
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Page size, 1 to 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_secrets",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "default": 20,
+          "description": "Page size, 1 to 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_settings",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "description": "Most settings to return. Default 50.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page.",
+          "type": "string",
+          "maxLength": 64
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "preview_workflows",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "rerun",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "jobs": {
+          "default": "failed",
+          "description": "'failed', or a list of job keys.",
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "failed"
+            },
+            {
+              "minItems": 1,
+              "maxItems": 50,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              }
+            }
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "Why. Recorded with the attempt and audited."
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["run_id", "reason"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "resync_installation",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "installation_id": {
+          "type": "string",
+          "pattern": "^[0-9]{1,20}$",
+          "description": "The GitHub installation id (numeric)."
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["installation_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "revoke_api_token",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The id from list_api_tokens."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "Why: recorded in the audit log."
+        },
+        "cascade": {
+          "description": "Also revoke every token the target minted, transitively. Self-revoke: default false keeps a rotation's successor (true when compromised). Revoking a descendant: default true. An admin's revoke always cascades.",
+          "type": "boolean"
+        },
+        "confirm_lockout": {
+          "default": false,
+          "description": "Needed when a token revokes itself as the org's last usable token.",
+          "type": "boolean"
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["token_id", "reason"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "run_dispatch",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workflow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Workflow file under .github/workflows/, e.g. .github/workflows/release.yml."
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "A branch or tag name (or refs/heads/..., refs/tags/...)."
+        },
+        "inputs": {
+          "default": {},
+          "description": "String inputs by name, at most 25 and 65536 bytes in total.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "repo": {
+          "description": "owner/name; only needed when the project ingests more than one repo.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["workflow", "ref"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "sandbox_usage",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "days": {
+          "default": 7,
+          "description": "How many UTC days, ending today.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 92
+        },
+        "group_by": {
+          "description": "`project` adds a per-project breakdown under `projects`.",
+          "type": "string",
+          "enum": ["project"]
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "secret_usage",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "since": {
+          "type": "string",
+          "description": "Start of the range, ISO 8601."
+        },
+        "until": {
+          "description": "End of the range, ISO 8601. Default: now.",
+          "type": "string"
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["name", "since"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_setting",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The setting's key."
+        },
+        "value": {
+          "description": "The new value, of the type `list_settings` shows."
+        },
+        "unset": {
+          "description": "True to remove the stored value, so the default applies again.",
+          "type": "boolean"
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["key"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "submit_approval",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "statement": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "longshore.approve_environment.v1"
+            },
+            "org": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "project": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "run_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "head_sha": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40,64}$"
+            },
+            "workflow_hash": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64,64}$"
+            },
+            "environment": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "approver": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "expires_at": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "nonce": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{16,128}$"
+            }
+          },
+          "required": [
+            "type",
+            "org",
+            "project",
+            "run_id",
+            "head_sha",
+            "workflow_hash",
+            "environment",
+            "approver",
+            "expires_at",
+            "nonce"
+          ],
+          "additionalProperties": false
+        },
+        "signature": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "ed25519"
+                },
+                "signature": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                }
+              },
+              "required": ["kind", "signature"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "webauthn"
+                },
+                "credential_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                },
+                "client_data_json": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                },
+                "authenticator_data": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                },
+                "signature": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                }
+              },
+              "required": [
+                "kind",
+                "credential_id",
+                "client_data_json",
+                "authenticator_data",
+                "signature"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug. Required unless the token is scoped to one project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["statement", "signature"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "whoami",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+]

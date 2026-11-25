@@ -1,5 +1,6 @@
 node_modules/
 dist/
+BUILD_SHA
 data/
 *.tsbuildinfo
 *.db
