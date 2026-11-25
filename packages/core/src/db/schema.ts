@@ -33,6 +33,7 @@ export const proxyRules = (DIALECT === "pg" ? pg.proxyRules : sqlite.proxyRules)
 export const proxyPassthroughHosts = (DIALECT === "pg" ? pg.proxyPassthroughHosts : sqlite.proxyPassthroughHosts) as unknown as typeof sqlite.proxyPassthroughHosts;
 export const githubApps = (DIALECT === "pg" ? pg.githubApps : sqlite.githubApps) as unknown as typeof sqlite.githubApps;
 export const githubInstallations = (DIALECT === "pg" ? pg.githubInstallations : sqlite.githubInstallations) as unknown as typeof sqlite.githubInstallations;
+export const githubInstallationInstallers = (DIALECT === "pg" ? pg.githubInstallationInstallers : sqlite.githubInstallationInstallers) as unknown as typeof sqlite.githubInstallationInstallers;
 export const webhookDeliveries = (DIALECT === "pg" ? pg.webhookDeliveries : sqlite.webhookDeliveries) as unknown as typeof sqlite.webhookDeliveries;
 export const actionPins = (DIALECT === "pg" ? pg.actionPins : sqlite.actionPins) as unknown as typeof sqlite.actionPins;
 export const actionVerdicts = (DIALECT === "pg" ? pg.actionVerdicts : sqlite.actionVerdicts) as unknown as typeof sqlite.actionVerdicts;

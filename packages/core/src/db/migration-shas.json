@@ -200,6 +200,10 @@
     {
       "tag": "0049_avatars",
       "sha256": "9533b1e8f21dc7746aeca73ec59bad40d0532a5e5d629e51577ceed34eafe685"
+    },
+    {
+      "tag": "0050_installation_installer",
+      "sha256": "8099738932b5529359567d4f37cc7f89ef9152f83b4a8ce7c281cfff085876f7"
     }
   ],
   "pg": [
@@ -286,6 +290,10 @@
     {
       "tag": "0020_avatars",
       "sha256": "c3b89845217d2d92a220dfb90b47665084beb23a751b7558e523b52b82ee987f"
+    },
+    {
+      "tag": "0021_installation_installer",
+      "sha256": "ace2209310e9e936215e8f6a27806a8280f8995d9aa1af9a0eb5482da6032eff"
     }
   ]
 }

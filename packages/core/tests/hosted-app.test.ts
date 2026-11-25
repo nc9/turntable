@@ -803,7 +803,8 @@ describe("the installation claim flow", () => {
     // role=admin and state=active, read with the user's token, and nothing else counts
     expect(await u.isOrgAdmin("acme")).toBe(true);
     expect(await u.isOrgAdmin("pending")).toBe(false);
-    expect(await u.isOrgAdmin("other")).toBe(false);
+    // a failed call is not "not an admin": it throws so the caller can say so (#573)
+    await expect(u.isOrgAdmin("other")).rejects.toThrow(/HTTP 404/);
     expect(await u.isOrgAdmin("../etc")).toBe(false);
     const bad = githubUserVerifier({
       db: h.db,

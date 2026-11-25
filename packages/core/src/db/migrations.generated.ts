@@ -560,5 +560,12 @@ export const migrations: Migration[] = [
       "ALTER TABLE `github_installations` ADD `avatar_url` text;",
       "ALTER TABLE `github_installations` ADD `avatar_synced_at` integer;"
     ]
+  },
+  {
+    "tag": "0050_installation_installer",
+    "when": 1795594473595,
+    "statements": [
+      "CREATE TABLE `github_installation_installers` (\n\t`installation_id` text PRIMARY KEY NOT NULL,\n\t`installer_github_id` text NOT NULL,\n\t`installer_login` text NOT NULL,\n\t`recorded_at` integer NOT NULL\n);"
+    ]
   }
 ];

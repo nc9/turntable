@@ -56,6 +56,7 @@ export const EVENT_TYPES = [
   "org.tokens_exhausted",
   "org.token_revoked",
   "org.installation_claim_started_by_instance",
+  "org.installation_bound_by_instance",
   "org.member_invited",
   "org.member_joined",
   "installation_claim.updated",
@@ -852,6 +853,18 @@ export const githubInstallations = sqliteTable(
   },
   () => [check("github_installations_status_check", inList("status", INSTALLATION_STATUSES))],
 );
+
+/**
+ * Who installed the App, per installation, from a signature-verified `installation` webhook (#573).
+ * No org column: it is recorded before any org claims the installation, and read only by the
+ * ownership check, keyed by installation id. GitHub's numeric user id is what is compared.
+ */
+export const githubInstallationInstallers = sqliteTable("github_installation_installers", {
+  installationId: text("installation_id").primaryKey(),
+  installerGithubId: text("installer_github_id").notNull(),
+  installerLogin: text("installer_login").notNull(),
+  recordedAt: integer("recorded_at", { mode: "number" }).notNull(),
+});
 
 export const DELIVERY_STATUSES = ["received", "processed", "ignored", "failed"] as const;
 export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];

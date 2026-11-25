@@ -69,6 +69,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: moving a repo between tenants is the operator's act, never an agent's",
   instance_start_installation_claim:
     "instance administrator ops are REST only: starting a tenant's GitHub claim is the operator's act, never an agent's",
+  instance_bind_installation:
+    "instance administrator ops are REST only: binding a tenant's GitHub installation is the operator's act, never an agent's",
   instance_drain:
     "instance administrator ops are REST only: pausing every tenant's scheduling for a deploy is the operator's act, never an agent's",
   instance_drain_status:

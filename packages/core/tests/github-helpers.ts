@@ -82,6 +82,8 @@ export interface FakeClaimUser {
   installations: { id: string; accountId: string; accountLogin: string; accountType: string }[];
   /** Organizations where this user is an active admin. */
   adminOf: string[];
+  /** The App cannot read org membership: the call fails (#573). */
+  membershipFails?: boolean;
 }
 
 /** Codes map to users; an unknown code is refused like GitHub refuses a bad code. */
@@ -101,7 +103,10 @@ export function fakeUserVerifier(users: Map<string, FakeClaimUser>): {
         id: u.id,
         login: u.login,
         installations: u.installations,
-        isOrgAdmin: async (org) => u.adminOf.includes(org),
+        isOrgAdmin: async (org) => {
+          if (u.membershipFails) throw new Error("org membership: HTTP 403");
+          return u.adminOf.includes(org);
+        },
       };
     },
   };

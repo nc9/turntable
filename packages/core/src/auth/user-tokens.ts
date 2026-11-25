@@ -226,6 +226,7 @@ export interface UserGithub {
   /**
    * Whether the user is an active admin of a GitHub organization (`GET /user/memberships/orgs`),
    * read afresh. Access to an installation is not ownership: any member of the organization sees it.
+   * Throws when the call fails (the App cannot read org membership): that is not "not an admin".
    */
   isOrgAdmin(sessionHash: string, org: string): Promise<boolean>;
 }
@@ -303,7 +304,8 @@ export function githubUserApi(o: {
         timeoutMs: 15_000,
         maxBytes: 64 * 1024,
       });
-      if (!res.ok) return false;
+      // A failed call is not "not an admin": the caller tells the two apart (#573).
+      if (!res.ok) throw new OpError("unavailable", `GitHub answered HTTP ${res.status}`);
       const j = (await res.json().catch(() => ({}))) as { role?: string; state?: string };
       return j.role === "admin" && j.state === "active";
     },

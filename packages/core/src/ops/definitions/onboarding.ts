@@ -20,7 +20,12 @@ import {
   listMembershipsOfUser,
 } from "../../db/repos";
 import { syncInstallation } from "../../github/installations";
-import { notInstallationOwnerMessage, POPUP_NEW_PROJECT_MAX_CONCURRENT } from "../../github/claim";
+import { POPUP_NEW_PROJECT_MAX_CONCURRENT } from "../../github/claim";
+import {
+  notInstallationOwnerMessage,
+  ownershipUnverifiableMessage,
+  proveInstallationOwnership,
+} from "../../github/ownership";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
 import {
@@ -225,15 +230,23 @@ export const bindInstallationOp = defineOp({
     if (!inst)
       throw new OpError("not_found", "that installation was not found for your GitHub account");
     // Access is not ownership: every member of a GitHub organization sees its installation.
-    let owns = false;
-    if (inst.accountType === "Organization") {
-      owns = await ctx.userGithub.isOrgAdmin(sessionHash, inst.accountLogin);
-    } else {
-      const who = await getIdentityByUserId(ctx.db, p.id);
-      owns = who !== undefined && inst.accountId === who.githubUserId;
-    }
-    if (!owns) {
-      throw new OpError("forbidden", notInstallationOwnerMessage(inst.accountLogin));
+    const who = await getIdentityByUserId(ctx.db, p.id);
+    const verdict = await proveInstallationOwnership(ctx.db, {
+      installationId: i.installation_id,
+      accountType: inst.accountType,
+      accountId: inst.accountId,
+      claimantGithubId: who?.githubUserId ?? "",
+      isOrgAdmin: () => ctx.userGithub!.isOrgAdmin(sessionHash, inst.accountLogin),
+    });
+    if (!verdict.owns) {
+      throw new OpError(
+        "forbidden",
+        verdict.reason === "ownership_unverifiable"
+          ? ownershipUnverifiableMessage(inst.accountLogin)
+          : notInstallationOwnerMessage(inst.accountLogin),
+        undefined,
+        { reason: verdict.reason, installation_id: i.installation_id, account: inst.accountLogin },
+      );
     }
     const held = await getInstallation(ctx.db, i.installation_id);
     if (held && held.orgId !== ctx.scope.orgId) {

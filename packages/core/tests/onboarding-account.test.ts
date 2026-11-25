@@ -18,6 +18,7 @@ import {
   createUser,
   type Db,
   getInstallation,
+  getInstallationInstaller,
   getOrgBySlug,
   getOrgQuotas,
   listAudit,
@@ -26,12 +27,13 @@ import {
   openDatabase,
   schema,
   setProjectSandboxSettings,
+  recordInstallationInstaller,
   upsertInstallation,
 } from "../src/db";
 import { testDb } from "../src/db/dialect";
 import { openPostgres } from "../src/db/pg";
 import { SECRET_CLIENT } from "../src/github/app-auth";
-import { notInstallationOwnerMessage } from "../src/github/claim";
+import { notInstallationOwnerMessage, ownershipUnverifiableMessage } from "../src/github/ownership";
 import { dispatch, type DispatchEnv, ERROR_STATUS, registry } from "../src/ops";
 import type { Principal } from "../src/ops/principal";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
@@ -63,6 +65,8 @@ afterAll(() => {
 
 type FakeUser = {
   id: string;
+  /** The App cannot read org membership: the call answers 403 (#573). */
+  membershipFails?: boolean;
   login: string;
   /** What the token endpoint gives for this user's code. */
   access: string;
@@ -146,6 +150,7 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
       const m = /^\/user\/memberships\/orgs\/(.+)$/.exec(url.pathname);
       if (m) {
         calls.memberships += 1;
+        if (u.membershipFails) return json({ message: "Resource not accessible" }, 403);
         return u.adminOf.includes(decodeURIComponent(m[1]!))
           ? json({ role: "admin", state: "active" })
           : json({ role: "member", state: "active" });
@@ -1033,6 +1038,74 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
       );
       expect(viaMcp.ok).toBe(false);
       expect((await bind2()).ok).toBe(true);
+    });
+
+    describe("ownership of an organization (#573)", () => {
+      const record = (h: { db: Db }, githubId: string) =>
+        recordInstallationInstaller(h.db, {
+          installationId: "100",
+          githubId,
+          login: "whoever",
+          recordedAt: 1,
+        });
+      const refusalOf = async (h: { db: Db; tenant: { id: string } }) => {
+        const chain = await listAudit(h.db, { orgId: h.tenant.id });
+        const row = chain.find((e) => e.op === "bind_installation" && e.outcome !== "ok");
+        return row ? (JSON.parse(row.input) as { reason?: string }).reason : undefined;
+      };
+
+      test("the recorded installer is the claimant: accepted although the membership call is 403", async () => {
+        const { h, alice, bind } = await binder();
+        alice.adminOf = [];
+        alice.membershipFails = true;
+        await record(h, "1001");
+        expect((await bind()).ok).toBe(true);
+        expect((await getInstallationRow(h, "100"))?.orgId).toBe(h.tenant.id);
+      });
+
+      test("another recorded installer and a failing membership call: refused as unverifiable", async () => {
+        const { h, alice, bind } = await binder();
+        alice.adminOf = [];
+        alice.membershipFails = true;
+        await record(h, "2002");
+        const r = await bind();
+        expect(r.ok).toBe(false);
+        if (!r.ok) {
+          expect(r.error.code).toBe("forbidden");
+          expect(r.error.message).toBe(ownershipUnverifiableMessage("acme"));
+        }
+        expect(await getInstallationRow(h, "100")).toBeUndefined();
+        expect(await refusalOf(h)).toBe("ownership_unverifiable");
+      });
+
+      test("membership admin and no installer recorded: accepted", async () => {
+        const { h, bind } = await binder();
+        expect(await getInstallationInstaller(h.db, "100")).toBeUndefined();
+        expect((await bind()).ok).toBe(true);
+      });
+
+      test("membership answers member and the installer is someone else: not_owner", async () => {
+        const { h, alice, bind } = await binder();
+        alice.adminOf = [];
+        await record(h, "2002");
+        const r = await bind();
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error.message).toBe(notInstallationOwnerMessage("acme"));
+        expect(await refusalOf(h)).toBe("not_owner");
+      });
+
+      test("a login that matches is not enough: only the numeric id counts", async () => {
+        const { h, alice, bind } = await binder();
+        alice.adminOf = [];
+        alice.membershipFails = true;
+        await recordInstallationInstaller(h.db, {
+          installationId: "100",
+          githubId: "9999",
+          login: "alice",
+          recordedAt: 1,
+        });
+        expect((await bind()).ok).toBe(false);
+      });
     });
 
     test("is audited with the installation, its GitHub account and who bound it", async () => {

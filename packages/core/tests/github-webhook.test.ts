@@ -234,4 +234,10 @@ describe("webhooks create no runs and record no sender (#416)", () => {
     expect(src).not.toMatch(/\.sender\b|\[\s*["']sender["']\s*\]/);
     expect(src).not.toMatch(/\bactor\s*:/);
   });
+  test("the installer record (#573) is for installation events only and touches no runs or actor", () => {
+    const rec = readFileSync(new URL("../src/github/installer-record.ts", import.meta.url), "utf8");
+    expect(rec).not.toMatch(/\bcreate(Polled)?Run\s*\(/);
+    expect(rec).not.toMatch(/\bactor\s*:/);
+    expect(src).toMatch(/event === "installation"/);
+  });
 });
