@@ -188,7 +188,27 @@ To make your own secret scanner catch a leaked one too, register these as custom
 
 ## Web sessions and sign-in
 
-The web UI signs people in with GitHub through the instance's own GitHub App ([Signing in to the web UI](/web-sign-in)). The identity is the numeric GitHub user id; roles come only from Turntable's membership rows, created by an invite or by the instance administrator, never from GitHub org membership or repo access. The OAuth `state` is an HMAC with a single-use nonce that is also bound to the browser by a `__Host-` cookie, and the nonce is spent before the code is exchanged. The session cookie is `__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`; only its hash is stored; it has an idle and an absolute lifetime and is revoked on sign-out. Every state-changing request from a session must carry an `Origin` equal to the configured public origin. A session is a REST credential only, and may make one write (`invite_member`) until passkey step-up lands: every other write is refused by default.
+The web UI signs people in with GitHub through the instance's own GitHub App ([Signing in to the web UI](/web-sign-in)). The identity is the numeric GitHub user id; roles come only from Turntable's membership rows, created by an invite or by the instance administrator, never from GitHub org membership or repo access. The OAuth `state` is an HMAC with a single-use nonce that is also bound to the browser by a `__Host-` cookie, and the nonce is spent before the code is exchanged. The session cookie is `__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`; only its hash is stored; it has an idle and an absolute lifetime and is revoked on sign-out. Every state-changing request from a session must carry an `Origin` equal to the configured public origin. A session is a REST credential only, and may make a few named writes with no step-up (`invite_member` for a viewer or member, and the onboarding writes below): every other write is refused by default or needs a fresh passkey step-up.
+
+### The account principal and self-serve orgs
+
+A web session reaches an org op as the `session` principal, in one org, with the role Turntable's membership row gives. Onboarding adds a second shape, the `account` principal: a signed-in GitHub user who has not picked an org (`githubUserId`, `login`, the session hash). It holds no org grant and no role.
+
+- It is built only from a valid session cookie, only when the call names no org, and only for an op that declares `auth.type: "account"`. It is never built from a token and never over MCP.
+- Three ops declare it: `onboarding_create_org`, `list_user_installations` and `list_my_orgs`. The dispatcher refuses an `account` principal for every other op, and refuses every other principal, every token and every MCP call for these three. A registry-wide test checks both directions for every op.
+- Self-serve org creation is closed by default. The instance settings `self_serve_orgs` (`off`, `allowlist`, `any`; default `allowlist`) and `self_serve_org_logins` (at most 200 GitHub logins, compared without regard to case) decide who may create an org, and the environment and `turntable.toml` lock them like any setting. Under `allowlist` a GitHub login that is not listed gets no session at all unless it already holds a membership or an invite. A GitHub user may create 3 orgs in 24 hours (counted from the audit chain). The new org starts with the instance default quotas, the creator is its owner, and the creation is audited in the new org's chain and in the system chain.
+- The `account` principal can be refused sign-in or org creation, but it never reads or changes an org's data: an org op still needs the org `session` principal and Turntable's own membership row.
+
+### The user-to-server token
+
+Sign-in receives the person's GitHub user-to-server token. It is kept only so onboarding can ask GitHub which installations that person can reach, and it is handled as a secret:
+
+- It is sealed in the secret store, one record per web session, named by the session row's hash. The database never holds the token in the clear.
+- It is bound to the session: deleted on sign-out, and deleted once its session is revoked, expired or idle (a sweep at every sign-in and hourly). When it expires it is refreshed with GitHub's refresh token (single-flight, because GitHub rotates the refresh token on every use); a refresh GitHub refuses deletes it and the person is asked to sign in again.
+- It is never logged, never audited and never returned by an op. `list_user_installations` and `bind_installation` return GitHub's facts, not the token, and both read `GET /user/installations` afresh on every call, never from a cache.
+- `bind_installation` binds an installation only to an owner or admin session, only when GitHub lists it for that person at that moment, and only when they own the account (an admin of the GitHub organization, or the user the personal account belongs to), because every member of a GitHub organization sees its installation. An installation held by another Turntable org is refused and never moved, and the refusal does not name that org. Projects the bind creates start paused; existing projects keep every setting.
+
+Give agents AGENT tokens: person tokens bypass agent policies.
 
 ## Transport: https only
 

@@ -137,6 +137,8 @@ export function createRestApi(
     ...env.registry.tokenOps(),
     ...env.registry.signatureOps(),
     ...env.registry.instanceOps(),
+    // Account ops are routed for a web session cookie; a bearer token reaches them and is refused.
+    ...env.registry.accountOps(),
   ].map(compile);
   const restEnv: DispatchEnv = { ...env, allowInstance: true, transport: "rest" };
   return async (req, peer) => {

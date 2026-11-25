@@ -28,6 +28,7 @@ import {
   type ClaimHandler,
 } from "./github/claim";
 import { type AuthHandler, createAuthHandler, githubIdentityVerifier } from "./auth/github-login";
+import { githubUserApi, type UserGithub, UserTokens } from "./auth/user-tokens";
 import { WebSessions } from "./auth/web-sessions";
 import { AuditAnchor } from "./audit/anchor";
 import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
@@ -827,7 +828,7 @@ async function serve(args: string[]): Promise<void> {
   // Creating the GitHub App from this instance, for a host with no shell (github/hosted-manifest.ts).
   let appManifest: HostedManifestHandler | undefined;
   // Sign in with GitHub and web sessions (auth/github-login.ts); needs the store and a public URL.
-  let webAuth: { sessions: WebSessions; handler: AuthHandler } | undefined;
+  let webAuth: { sessions: WebSessions; handler: AuthHandler; userGithub?: UserGithub } | undefined;
   // Set once the poller exists: a push or pull request webhook wakes it for that repo.
   let wake: ((repo: string) => void) | undefined;
   // Set once the poller exists: `run_dispatch` starts workflow_dispatch runs through it.
@@ -937,12 +938,20 @@ async function serve(args: string[]): Promise<void> {
         );
       } else {
         const sessions = new WebSessions({ db, publicUrl: signInUrl, settings });
+        // The user's GitHub token is sealed per session (auth/user-tokens.ts); a timer sweeps the
+        // tokens of sessions that ended without a sign-out.
+        const userTokens = new UserTokens({ db, store, sessions });
+        const sweep = setInterval(() => void userTokens.sweep().catch(() => {}), 3_600_000);
+        sweep.unref();
         webAuth = {
           sessions,
+          userGithub: githubUserApi({ db, tokens: userTokens }),
           handler: createAuthHandler({
             db,
             store,
             sessions,
+            userTokens,
+            settings,
             identity: githubIdentityVerifier({ db, store }),
             log: (m) => console.warn(`[turntable] ${m}`),
           }),

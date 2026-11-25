@@ -56,7 +56,13 @@ import { rerun } from "./definitions/rerun";
 import { runDispatch } from "./definitions/run-dispatch";
 import { signRelease } from "./definitions/sign-release";
 import { getReleaseRequestOp, requestReleaseOp } from "./definitions/release-requests";
-import { startInstallationClaim } from "./definitions/installation-claim";
+import { getInstallationClaimOp, startInstallationClaim } from "./definitions/installation-claim";
+import {
+  bindInstallationOp,
+  listMyOrgsOp,
+  listUserInstallationsOp,
+  onboardingCreateOrgOp,
+} from "./definitions/onboarding";
 import { whoami } from "./definitions/whoami";
 import { instanceBindGithubLoginOp, inviteMemberOp } from "./definitions/members";
 import { sessionStepUpChallenge } from "./definitions/session-step-up";
@@ -187,6 +193,11 @@ export const registry = createRegistry([
   requestReleaseOp,
   getReleaseRequestOp,
   startInstallationClaim,
+  getInstallationClaimOp,
+  bindInstallationOp,
+  listMyOrgsOp,
+  onboardingCreateOrgOp,
+  listUserInstallationsOp,
   inviteMemberOp,
   sessionStepUpChallenge,
   instanceBindGithubLoginOp,

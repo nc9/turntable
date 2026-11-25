@@ -51,6 +51,8 @@ export async function guardSettingChange(
   // An org principal on a setting with a strictness order may still tighten it: the value check
   // below refuses loosening, after the role and MCP refusals.
   const oneWay = def.instanceAdminOnly === true && def.strictness !== undefined;
+  if (p?.kind === "account")
+    throw new OpError("forbidden", "an account session cannot change settings");
   if (p && p.kind !== "instance") {
     if (def.instanceAdminOnly && !def.strictness) {
       throw new OpError("forbidden", `only the instance administrator can change ${def.key}`);

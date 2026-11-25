@@ -19,6 +19,7 @@ import type { RelyingParty } from "./approvals/webauthn";
 import type { GithubFacts, GithubUserLookup } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { AuthHandler } from "./auth/github-login";
+import type { UserGithub } from "./auth/user-tokens";
 import type { WebSessions } from "./auth/web-sessions";
 import type { HostedManifestHandler } from "./github/hosted-manifest";
 import { processDrain } from "./scheduler/drain";
@@ -108,7 +109,7 @@ export type ServeOptions = {
    * Sign in with GitHub and web sessions (#430), when a master key and an https public URL are
    * set. Without it no session cookie is a credential and every `/auth/*` path falls through.
    */
-  webAuth?: { sessions: WebSessions; handler: AuthHandler };
+  webAuth?: { sessions: WebSessions; handler: AuthHandler; userGithub?: UserGithub };
   /** GitHub API facts, for `resync_installation`. */
   githubFacts?: GithubFacts;
   /** Starts `workflow_dispatch` runs (the poller), for `run_dispatch`. */
@@ -148,6 +149,7 @@ export function startServer(options: ServeOptions) {
     vault: options.vault,
     claims: options.claims?.starter,
     sessions: options.webAuth?.sessions,
+    userGithub: options.webAuth?.userGithub,
     githubFacts: options.githubFacts,
     githubUsers: options.githubUsers,
     runDispatcher: options.runDispatcher,

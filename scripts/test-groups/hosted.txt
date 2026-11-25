@@ -1,2 +1,3 @@
 packages/core/tests/hosted-app.test.ts
 packages/core/tests/hosted-e2e.test.ts
+packages/core/tests/onboarding-claim.test.ts

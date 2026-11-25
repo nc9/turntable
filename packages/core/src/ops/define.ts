@@ -6,6 +6,7 @@ import type { RelyingParty } from "../approvals/webauthn";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
+import type { UserGithub } from "../auth/user-tokens";
 import type { RunDispatcher } from "../poll/dispatch";
 import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
@@ -22,8 +23,10 @@ export type Effect = "read" | "write" | "destructive";
  * How the caller must prove itself. `token`: a bearer token or session holding at least
  * `minRole`. `signature`: a human-signed assertion (offline statement or WebAuthn). No bearer
  * token can ever satisfy `signature`, so those ops are never exposed over MCP or token REST.
+ * `account`: a signed-in GitHub user's web session with no org picked (onboarding); no token, no
+ * member and no org session satisfies it, and it is never an MCP tool. `minRole` is unused.
  */
-export type OpAuth = { type: "token" | "signature" | "instance"; minRole: Role };
+export type OpAuth = { type: "token" | "signature" | "instance" | "account"; minRole: Role };
 
 export type HttpBinding = {
   method: "GET" | "POST" | "DELETE";
@@ -49,6 +52,8 @@ export type OpContext = {
   runDispatcher?: RunDispatcher | undefined;
   /** Resolves a GitHub login to its numeric id (invites); absent without a GitHub App. */
   githubUsers?: GithubUserLookup | undefined;
+  /** Calls GitHub with a signed-in user's own token (onboarding); absent without sign-in. */
+  userGithub?: UserGithub | undefined;
   /** The adapter that carried the call; undefined for in-process callers. */
   transport?: "mcp" | "rest" | undefined;
   /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */
@@ -191,7 +196,7 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
   // An instance op has no org or project scope: it names its target in its own input. The org and
   // project fields would only invite a caller to think an org grant matters.
   const input =
-    spec.auth.type === "instance"
+    spec.auth.type === "instance" || spec.auth.type === "account"
       ? spec.input.strict()
       : spec.input
           .extend({

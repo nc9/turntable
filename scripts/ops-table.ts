@@ -34,7 +34,8 @@ const cell = (s: string): string => s.replaceAll("|", "\\|").replaceAll("\n", " 
 
 /** Where an operation can be reached. MCP is what the server lists, not what the flag says. */
 export function surfaces(op: Op): { rest: string; mcp: boolean; cli: string } {
-  const routed = op.auth.type === "token" || registry.signatureOps().includes(op);
+  const routed =
+    op.auth.type === "token" || op.auth.type === "account" || registry.signatureOps().includes(op);
   return {
     rest: routed ? `${op.http.method} /api/v1${op.http.path}` : "",
     mcp: registry.mcpOps().includes(op),

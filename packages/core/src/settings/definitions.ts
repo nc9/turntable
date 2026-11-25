@@ -302,6 +302,48 @@ export const preemptWindowMinutesSetting = defineSetting({
   toml: "scheduler.preempt_window_minutes",
 });
 
+/** Who may create an org for themselves from the web (`self_serve_orgs`). */
+export const SELF_SERVE_ORGS = ["off", "allowlist", "any"] as const;
+export type SelfServeOrgs = (typeof SELF_SERVE_ORGS)[number];
+export const MAX_SELF_SERVE_ORG_LOGINS = 200;
+
+export const selfServeOrgsSetting = defineSetting({
+  key: "self_serve_orgs",
+  scope: "instance",
+  type: z.enum(SELF_SERVE_ORGS),
+  default: "allowlist",
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides who may create orgs on this instance, so only a person changes it",
+  description:
+    "Who may create an org for themselves after signing in with GitHub: `off` (nobody; only the instance administrator creates orgs), `allowlist` (only the GitHub logins in `self_serve_org_logins`) or `any` (any GitHub account that signs in).",
+  warning:
+    "`any` lets every GitHub account that can reach this instance create an org and use its sandbox quota.",
+  env: ["TURNTABLE_SELF_SERVE_ORGS"],
+  toml: "auth.self_serve_orgs",
+});
+
+export const selfServeOrgLoginsSetting = defineSetting({
+  key: "self_serve_org_logins",
+  scope: "instance",
+  type: z.array(z.string().regex(/^[A-Za-z0-9-]{1,39}$/)).max(MAX_SELF_SERVE_ORG_LOGINS),
+  default: [] as string[],
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides who may create orgs on this instance, so only a person changes it",
+  description:
+    "GitHub logins (at most 200, compared without regard to case) that may create an org when `self_serve_orgs` is `allowlist`. In the environment, a comma-separated list.",
+  env: ["TURNTABLE_SELF_SERVE_ORG_LOGINS"],
+  envParse: (raw) =>
+    raw
+      .split(",")
+      .map((v) => v.trim())
+      .filter((v) => v !== ""),
+  toml: "auth.self_serve_org_logins",
+});
+
 /** Web sessions (#430): how long one may sit idle, and how long it lives at most. */
 export const DEFAULT_SESSION_IDLE_HOURS = 12;
 export const DEFAULT_SESSION_ABSOLUTE_DAYS = 7;
@@ -421,6 +463,8 @@ export const settingsRegistry = createSettingsRegistry([
   drainTimeoutSecondsSetting,
   sessionIdleHoursSetting,
   sessionAbsoluteDaysSetting,
+  selfServeOrgsSetting,
+  selfServeOrgLoginsSetting,
   orgRunnerLabelsSetting,
   projectRunnerLabelsSetting,
 ]);

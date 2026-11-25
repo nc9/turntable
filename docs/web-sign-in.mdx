@@ -44,7 +44,7 @@ Every state-changing request from a session must carry an `Origin` header equal 
 
 ### What a session may do
 
-A session may call every read operation its role allows, and two writes with no step-up: `invite_member` for a viewer or member, and `session_step_up_challenge`. A few sensitive writes are open to it only with a fresh passkey step-up (see below). Every other write is refused, and the refusal is audited. The rules are default-deny lists in the dispatcher (`SESSION_WRITE_OPS`, `SESSION_STEP_UP_OPS`), so a new write operation is closed to sessions until someone opens it.
+A session may call every read operation its role allows, and these writes with no step-up: `invite_member` for a viewer or member, `session_step_up_challenge`, and the onboarding writes `onboarding_create_org` (an account session, gated by `self_serve_orgs` and a rate limit), `start_installation_claim` (an owner or admin; it only produces a link) and `bind_installation` (an owner or admin, checked against GitHub with the person's own token at that moment). See [the account principal](/security#the-account-principal-and-self-serve-orgs). A few sensitive writes are open to it only with a fresh passkey step-up (see below). Every other write is refused, and the refusal is audited. The rules are default-deny lists in the dispatcher (`SESSION_WRITE_OPS`, `SESSION_STEP_UP_OPS`), so a new write operation is closed to sessions until someone opens it.
 
 ## In the web UI
 
@@ -61,12 +61,14 @@ Two things differ from token mode:
 
 ## Who may join: invites and the bootstrap
 
-Membership is created in one of two ways, never automatically.
+Membership is created in one of two ways, or by creating an org yourself when the instance allows it (below), never automatically.
 
 - **`invite_member`** (`POST /api/v1/members/invites`, not an MCP tool): `{github_login, role}`. Callable by a person's own token with `release_operator` or above, or by a signed-in admin or owner. A token may invite a viewer or member only; a signed-in **session** may also invite only a viewer or member unless it carries a passkey step-up for that exact invite (so a stolen session cannot mint a persistent owner); a member may not invite above their own role; an agent token is refused. The invite lasts 7 days, and a newer invite for the same account replaces the older one. The org feed gets `org.member_invited`.
 - **`instance_bind_github_login`** (`POST /api/v1/instance/member-bindings`, a `tti_` token only, REST only): `{target_org, github_login, role, reason}`. The instance administrator uses it to give a new org its first admin or owner. It is audited in the system org's chain and in the org's own, and the org's feed gets `org.member_invited`. This is the only root of an admin or owner on an org with no admin who can invite.
 
-Both resolve the login to its **numeric GitHub user id when the invite is created** (`GET /users/{login}` with the App's credentials, through the guarded outbound client) and store the id on the invite. If GitHub cannot be asked, or has no such user, the invite is refused. At the invitee's first sign-in, Turntable matches on that id (the login is only for display), so an account renamed since the invite still gets in and a different account that now holds the old login does not. It binds the identity, consumes the invite and adds the membership in one transaction, emits `org.member_joined` and audits it as `member_joined`. An existing member keeps the role they have.
+A third way, off for everyone not listed: with `self_serve_orgs` set to `allowlist` (the default, with an empty `self_serve_org_logins`) or `any`, a GitHub account with no org may sign in and create one with `onboarding_create_org`, becoming its owner. With `off`, or for a login that is not on the allowlist, an account with no membership and no invite is refused at sign-in as before. See [the account principal](/security#the-account-principal-and-self-serve-orgs).
+
+The first two resolve the login to its **numeric GitHub user id when the invite is created** (`GET /users/{login}` with the App's credentials, through the guarded outbound client) and store the id on the invite. If GitHub cannot be asked, or has no such user, the invite is refused. At the invitee's first sign-in, Turntable matches on that id (the login is only for display), so an account renamed since the invite still gets in and a different account that now holds the old login does not. It binds the identity, consumes the invite and adds the membership in one transaction, emits `org.member_joined` and audits it as `member_joined`. An existing member keeps the role they have.
 
 ## Passkey step-up
 

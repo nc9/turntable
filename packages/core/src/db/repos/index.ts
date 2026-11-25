@@ -118,7 +118,8 @@ export function getOrgBySlug(db: Db, slug: string) {
 export function createProject(
   db: Db,
   scope: Scope,
-  input: { slug: string; name: string },
+  /** `maxConcurrent` 0 creates the project paused: it holds every job until someone raises it. */
+  input: { slug: string; name: string; maxConcurrent?: number },
 ): Promise<Project> {
   return db.run(async (h) => {
     const id = ulid();

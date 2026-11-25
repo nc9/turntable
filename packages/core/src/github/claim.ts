@@ -33,12 +33,14 @@ import { type SafeFetch, safeFetch } from "@turntable/net";
 import type { Db } from "../db";
 import {
   appendAudit,
+  appendEvent,
   consumeInstallationClaim,
   createInstallationClaim,
   getGithubApp,
   getInstallation,
   getInstallationClaim,
   getOrgById,
+  latestAuditContaining,
 } from "../db/repos";
 import { esc, pageResponse } from "../pages/server-pages";
 import {
@@ -78,11 +80,25 @@ const b64u = (b: Buffer | string): string => Buffer.from(b).toString("base64url"
 
 export class ClaimError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** Set when the claim was identified before it was refused: a popup tells its opener. */
+  readonly claimId: string | undefined;
+  constructor(status: number, message: string, claimId?: string) {
     super(message);
     this.status = status;
+    this.claimId = claimId;
   }
 }
+
+/**
+ * A claim started for a popup carries `popup.` in front of its nonce (the nonce is random and
+ * never holds a dot otherwise). The mark survives the configure-page redirect, which carries no
+ * state, and needs no column. The claim id the ops show is the nonce.
+ */
+export const POPUP_NONCE_PREFIX = "popup.";
+export const isPopupClaim = (nonce: string): boolean => nonce.startsWith(POPUP_NONCE_PREFIX);
+
+/** `max_concurrent` of a project a popup claim creates: paused until onboarding enables it. */
+export const POPUP_NEW_PROJECT_MAX_CONCURRENT = 0;
 
 /** An installation a GitHub user can reach, with the account it is on. */
 export interface UserInstallation {
@@ -155,11 +171,11 @@ export class InstallationClaims {
   async start(
     orgId: string,
     startedBy: string,
-    opts: { expectedLogin?: string; installationId?: string } = {},
-  ): Promise<{ url: string; expiresAt: number }> {
+    opts: { expectedLogin?: string; installationId?: string; popup?: boolean } = {},
+  ): Promise<{ url: string; expiresAt: number; claimId: string }> {
     const app = await getGithubApp(this.#o.db);
     if (!app) throw new ClaimError(503, "no GitHub App is configured");
-    const nonce = randomBytes(18).toString("base64url");
+    const nonce = `${opts.popup ? POPUP_NONCE_PREFIX : ""}${randomBytes(18).toString("base64url")}`;
     const expiresAt = this.#now() + CLAIM_TTL_MS;
     const body = b64u(
       JSON.stringify({
@@ -186,7 +202,65 @@ export class InstallationClaims {
     );
     const state = `v1.${body}.${b64u(sig)}`;
     const base = this.#o.publicUrl?.trim().replace(/\/+$/, "") ?? "";
-    return { url: `${base}${CLAIM_START_PATH}?state=${encodeURIComponent(state)}`, expiresAt };
+    return {
+      url: `${base}${CLAIM_START_PATH}?state=${encodeURIComponent(state)}`,
+      expiresAt,
+      claimId: nonce,
+    };
+  }
+
+  /**
+   * Where a claim of `orgId` stands. A claim of another org is `undefined`, the same as one that
+   * does not exist. `refused` is read back from the org's audit chain: a refusal does not spend
+   * the claim (the person may retry with the right GitHub account), so it is a state of an
+   * unspent claim, and the next success or the expiry replaces it.
+   */
+  async status(
+    orgId: string,
+    claimId: string,
+  ): Promise<
+    | {
+        state: "pending" | "completed" | "expired" | "refused";
+        installationId?: string;
+        accountLogin?: string;
+        reason?: string;
+      }
+    | undefined
+  > {
+    const claim = await getInstallationClaim(this.#o.db, claimId);
+    if (!claim || claim.orgId !== orgId) return undefined;
+    if (claim.usedAt !== null) {
+      const inst = claim.installationId
+        ? await getInstallation(this.#o.db, claim.installationId)
+        : undefined;
+      return {
+        state: "completed",
+        ...(claim.installationId ? { installationId: claim.installationId } : {}),
+        ...(inst ? { accountLogin: inst.accountLogin } : {}),
+      };
+    }
+    if (claim.expiresAt <= this.#now()) return { state: "expired" };
+    const refusal = await latestAuditContaining(
+      this.#o.db,
+      { orgId },
+      {
+        op: "claim_installation",
+        outcome: "error:forbidden",
+        contains: `"claim_id":${JSON.stringify(claimId)}`,
+        since: claim.createdAt,
+      },
+    );
+    if (refusal) {
+      let reason: string | undefined;
+      try {
+        const r = (JSON.parse(refusal.input) as { reason?: unknown }).reason;
+        if (typeof r === "string") reason = r;
+      } catch {
+        reason = undefined;
+      }
+      return { state: "refused", ...(reason ? { reason } : {}) };
+    }
+    return { state: "pending" };
   }
 
   /** The origin the confirmation form must be submitted from (the public URL's, when set). */
@@ -299,7 +373,7 @@ export class InstallationClaims {
     },
     facts: GithubFacts,
     user: UserVerifier,
-  ): Promise<{ orgId: string; bound: string[]; nonce: string }> {
+  ): Promise<{ orgId: string; bound: string[]; nonce: string; popup: boolean }> {
     if (!/^\d{1,20}$/.test(q.installationId)) throw new ClaimError(400, "bad installation id");
     let st = await this.verify(q.state);
     // The configure redirect (`update`) carries no `state`. The claim is then found by the nonce in
@@ -331,7 +405,8 @@ export class InstallationClaims {
         reason: message,
         ...extra,
       });
-      throw new ClaimError(status, message);
+      await this.#emit(st, "refused");
+      throw new ClaimError(status, message, st.n);
     };
     // The browser that confirmed the claim on Turntable is the one that must finish it.
     // Exactly this claim's cookie: its name is derived from the nonce, so another claim's cookie
@@ -394,7 +469,14 @@ export class InstallationClaims {
     }
     let r;
     try {
-      r = await syncInstallation(this.#o.db, facts, q.installationId, { claimedBy: st.o });
+      r = await syncInstallation(this.#o.db, facts, q.installationId, {
+        claimedBy: st.o,
+        // A popup claim belongs to onboarding: what it creates waits, paused, for the person to
+        // pick repos. The configure-page claim and the hosted claim link keep their behavior.
+        ...(isPopupClaim(st.n)
+          ? { newProjectMaxConcurrent: POPUP_NEW_PROJECT_MAX_CONCURRENT }
+          : {}),
+      });
     } catch (e) {
       throw new ClaimError(409, e instanceof Error ? e.message : "could not bind the installation");
     }
@@ -408,7 +490,21 @@ export class InstallationClaims {
       repositories: r.bound.length,
       ...who,
     });
-    return { orgId: st.o, bound: r.bound, nonce: st.n };
+    await this.#emit(st, "completed");
+    return { orgId: st.o, bound: r.bound, nonce: st.n, popup: isPopupClaim(st.n) };
+  }
+
+  /** Tells the org's live feed where a claim stands. Best effort, like the audit write. */
+  async #emit(st: StatePayload, state: "completed" | "refused"): Promise<void> {
+    try {
+      await appendEvent(
+        this.#o.db,
+        { orgId: st.o },
+        { type: "installation_claim.updated", payload: { claim_id: st.n, state } },
+      );
+    } catch {
+      // A missed notification is not a failed claim: the state is read back with get_installation_claim.
+    }
   }
 
   async #audit(st: StatePayload, outcome: string, input: Record<string, unknown>): Promise<void> {
@@ -422,7 +518,7 @@ export class InstallationClaims {
           op: "claim_installation",
           effect: "write",
           outcome,
-          input: { started_by: st.p, ...input },
+          input: { claim_id: st.n, started_by: st.p, ...input },
         },
       );
     } catch {
@@ -534,6 +630,46 @@ const shell = (status: number, title: string, body: string, cookies: string[] = 
 const page = (status: number, title: string, message: string, cookies: string[] = []): Response =>
   shell(status, title, `<p>${esc(message)}</p>`, cookies);
 
+/**
+ * The page a popup claim ends on: the result for the person, and one script that tells the window
+ * that opened the popup. The message goes to the instance's own origin only, never `*`, so no
+ * other page can receive it, and the script is allowed by a per-response nonce (the CSP has no
+ * other script source). A finished claim closes the window; a refused one stays to say why.
+ */
+export function popupResultPage(o: {
+  status: number;
+  title: string;
+  message: string;
+  origin: string;
+  claimId: string | undefined;
+  state: "completed" | "refused";
+  cookies?: string[];
+}): Response {
+  const nonce = randomBytes(16).toString("base64url");
+  const msg = JSON.stringify({
+    type: "turntable.claim",
+    claim_id: o.claimId ?? "",
+    state: o.state,
+  });
+  // JSON inside a script: `<` and the line separators are escaped so no value can end the script.
+  const lit = (v: string): string =>
+    v.replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+  const script =
+    o.claimId === undefined
+      ? ""
+      : `<script nonce="${nonce}">if(window.opener){window.opener.postMessage(${lit(msg)},${lit(JSON.stringify(o.origin))});}${
+          o.state === "completed" ? "window.close();" : ""
+        }</script>`;
+  return pageResponse({
+    status: o.status,
+    title: o.title,
+    body: `<p>${esc(o.message)}</p>${script}`,
+    cookies: o.cookies ?? [],
+    scriptNonce: nonce,
+    formAction: "'none'",
+  });
+}
+
 const clearClaim = (name: string): string =>
   `${name}=; Max-Age=0; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Lax`;
 const clearCsrf = (name: string): string =>
@@ -579,20 +715,38 @@ export function createClaimHandler(o: {
           o.facts,
           o.user,
         );
-        return page(
-          200,
-          "Installation connected",
-          `The installation is connected${r.bound.length > 0 ? ` (${r.bound.length} repositories)` : ""}. You can close this page.`,
-          // Only this claim's cookies go; a parallel claim in this browser keeps its own.
-          [
-            ...(r.nonce
-              ? [clearClaim(claimCookieName(r.nonce)), clearCsrf(claimCsrfCookieName(r.nonce))]
-              : []),
-          ],
-        );
+        const message = `The installation is connected${r.bound.length > 0 ? ` (${r.bound.length} repositories)` : ""}. You can close this page.`;
+        // Only this claim's cookies go; a parallel claim in this browser keeps its own.
+        const cookies = [
+          ...(r.nonce
+            ? [clearClaim(claimCookieName(r.nonce)), clearCsrf(claimCsrfCookieName(r.nonce))]
+            : []),
+        ];
+        if (r.popup) {
+          return popupResultPage({
+            status: 200,
+            title: "Installation connected",
+            message,
+            origin: o.claims.origin(req),
+            claimId: r.nonce,
+            state: "completed",
+            cookies,
+          });
+        }
+        return page(200, "Installation connected", message, cookies);
       } catch (e) {
         if (e instanceof ClaimError) {
           o.log?.(`installation claim refused: ${e.message}`);
+          if (e.claimId !== undefined && isPopupClaim(e.claimId)) {
+            return popupResultPage({
+              status: e.status,
+              title: "Could not connect the installation",
+              message: e.message,
+              origin: o.claims.origin(req),
+              claimId: e.claimId,
+              state: "refused",
+            });
+          }
           return page(e.status, "Could not connect the installation", e.message);
         }
         o.log?.(`installation claim failed: ${e instanceof Error ? e.message : String(e)}`);

@@ -1750,7 +1750,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 22,
+              "maxItems": 23,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1776,7 +1776,8 @@
                   "org.token_revoked",
                   "org.installation_claim_started_by_instance",
                   "org.member_invited",
-                  "org.member_joined"
+                  "org.member_joined",
+                  "installation_claim.updated"
                 ]
               }
             }
@@ -1891,7 +1892,8 @@
                               "org.token_revoked",
                               "org.installation_claim_started_by_instance",
                               "org.member_invited",
-                              "org.member_joined"
+                              "org.member_joined",
+                              "installation_claim.updated"
                             ]
                           },
                           "project": {
@@ -8734,7 +8736,7 @@
       "post": {
         "operationId": "start_installation_claim",
         "summary": "Get the link that connects a GitHub installation to this org.",
-        "description": "Starts a claim for this org and returns a link carrying a signed, single-use state that binds the installation to the org of the caller. The link opens a confirmation page on this Turntable instance that names the org; confirming sets a cookie that binds the flow to that browser and sends it to GitHub. The person must install (or configure) the App and be signed in to GitHub; Turntable then checks that they OWN the installation (an admin of the organization, or the user the personal account belongs to) before it binds it, and audits who claimed it. The link expires in 15 minutes. Needs an org-level token with release_operator or admin (a project-scoped token is refused with forbidden). Pass installation_id for an installation made without a claim link: the link then opens its configure page (the App needs Redirect on update enabled). Not available over MCP.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "description": "Starts a claim for this org and returns a link carrying a signed, single-use state that binds the installation to the org of the caller. The link opens a confirmation page on this Turntable instance that names the org; confirming sets a cookie that binds the flow to that browser and sends it to GitHub. The person must install (or configure) the App and be signed in to GitHub; Turntable then checks that they OWN the installation (an admin of the organization, or the user the personal account belongs to) before it binds it, and audits who claimed it. The link expires in 15 minutes. Needs an org-level token with release_operator or admin (a project-scoped token is refused with forbidden). Pass installation_id for an installation made without a claim link: the link then opens its configure page (the App needs Redirect on update enabled). A signed-in web session of an org owner or admin may call it too (the onboarding page does): the link only starts a flow, and ownership of the GitHub installation is checked when it binds. With popup the page GitHub sends the person back to closes itself and tells the window that opened it; the projects such a claim creates start paused. claim_id is the id for get_installation_claim. Not available over MCP.\n\nRequired role: release_operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": false,
@@ -8752,6 +8754,10 @@
                     "description": "Claim an installation that already exists: the link opens its configure page instead of a fresh install.",
                     "type": "string",
                     "pattern": "^\\d{1,20}$"
+                  },
+                  "popup": {
+                    "description": "Open the flow in a popup: the callback page then closes itself.",
+                    "type": "boolean"
                   },
                   "org": {
                     "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
@@ -8787,9 +8793,13 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
+                    },
+                    "claim_id": {
+                      "type": "string",
+                      "description": "Poll get_installation_claim with this id."
                     }
                   },
-                  "required": ["url", "expires_at"],
+                  "required": ["url", "expires_at", "claim_id"],
                   "additionalProperties": false
                 }
               }
@@ -8814,6 +8824,102 @@
           }
         ],
         "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/github/installation-claims/{claim_id}": {
+      "get": {
+        "operationId": "get_installation_claim",
+        "summary": "Read where an installation claim of this org stands.",
+        "description": "Returns the state of a claim started with start_installation_claim: pending (the link is live), completed (the installation is bound; its id and GitHub account are returned), expired, or refused (with the reason). A claim of another org is not found. Poll it, or listen for the installation_claim.updated event in the org's feed. Needs a signed-in session of the org or an org-level token with release_operator or higher. Not available over MCP.\n\nRequired role: release_operator. Read-only.",
+        "parameters": [
+          {
+            "name": "claim_id",
+            "in": "path",
+            "required": true,
+            "description": "Id from start_installation_claim.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": ["pending", "completed", "expired", "refused"],
+                      "description": "Where the claim is."
+                    },
+                    "installation_id": {
+                      "type": "string",
+                      "pattern": "^\\d{1,20}$",
+                      "description": "GitHub installation id (decimal digits)."
+                    },
+                    "account_login": {
+                      "description": "GitHub account the App is installed on.",
+                      "type": "string"
+                    },
+                    "reason": {
+                      "description": "Why the claim was refused, when it was.",
+                      "type": "string"
+                    }
+                  },
+                  "required": ["state"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
         "x-turntable-min-role": "release_operator",
         "x-turntable-untrusted-output": false
       }
@@ -13713,6 +13819,238 @@
         ],
         "x-turntable-effect": "write",
         "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/account/orgs": {
+      "get": {
+        "operationId": "list_my_orgs",
+        "summary": "List the orgs the signed-in GitHub user belongs to, with their role.",
+        "description": "Returns every org where the signed-in GitHub user holds a membership, with the role the database gives them there (never anything GitHub says). For the onboarding page, before an org is picked. Needs a signed-in web session with no org named: no token of any kind can call it. Not available over MCP.\n\nA signed-in GitHub user's web session (the session cookie, from an Origin of this instance) with no org named. No bearer token of any kind can call it. Not an MCP tool. Read-only.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "orgs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "slug": {
+                            "type": "string",
+                            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                            "description": "Org slug: lowercase letters, digits, dashes."
+                          },
+                          "display_name": {
+                            "type": "string",
+                            "description": "Org display name."
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": ["owner", "admin", "member", "viewer"],
+                            "description": "The caller's role in the org."
+                          }
+                        },
+                        "required": ["slug", "display_name", "role"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["orgs"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [],
+        "x-turntable-effect": "read",
+        "x-turntable-account-only": true,
+        "x-turntable-untrusted-output": false
+      },
+      "post": {
+        "operationId": "onboarding_create_org",
+        "summary": "Create an org for yourself and become its owner (self-serve).",
+        "description": "Creates an org with the instance's default quotas and makes the signed-in GitHub user its owner. Allowed only when the instance's `self_serve_orgs` setting is `any`, or is `allowlist` and the user's GitHub login is in `self_serve_org_logins` (compared without regard to case); otherwise forbidden. A GitHub user may create 3 orgs in 24 hours. Audited in the new org's chain and in the system chain. Needs a signed-in web session with no org named: no token of any kind can call it. Not available over MCP.\n\nA signed-in GitHub user's web session (the session cookie, from an Origin of this instance) with no org named. No bearer token of any kind can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                    "description": "Org slug: lowercase letters, digits, dashes."
+                  },
+                  "display_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80,
+                    "description": "Human-readable org name, 1 to 80 characters."
+                  }
+                },
+                "required": ["slug", "display_name"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "org": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Org id."
+                        },
+                        "slug": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                          "description": "Org slug: lowercase letters, digits, dashes."
+                        },
+                        "display_name": {
+                          "type": "string",
+                          "description": "Org display name."
+                        }
+                      },
+                      "required": ["id", "slug", "display_name"],
+                      "additionalProperties": false
+                    },
+                    "role": {
+                      "type": "string",
+                      "const": "owner",
+                      "description": "The creator is always the owner."
+                    }
+                  },
+                  "required": ["org", "role"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [],
+        "x-turntable-effect": "write",
+        "x-turntable-account-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/account/installations": {
+      "get": {
+        "operationId": "list_user_installations",
+        "summary": "List the App installations the signed-in GitHub user can reach.",
+        "description": "Asks GitHub (`GET /user/installations`, with the user's own token, on every call and never cached) which installations of this instance's App the signed-in person can reach. `bound` says whether an installation is already connected to one of the orgs this user belongs to (`this_org`), to an org they do not belong to (`other_org`, with no name of it) or to nothing (`none`). Needs a signed-in web session with no org named: no token of any kind can call it. Not available over MCP.\n\nA signed-in GitHub user's web session (the session cookie, from an Origin of this instance) with no org named. No bearer token of any kind can call it. Not an MCP tool. Read-only.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "installations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "installation_id": {
+                            "type": "string",
+                            "pattern": "^\\d{1,20}$",
+                            "description": "GitHub installation id (decimal digits)."
+                          },
+                          "account_login": {
+                            "type": "string",
+                            "description": "GitHub account the App is installed on."
+                          },
+                          "account_type": {
+                            "type": "string",
+                            "enum": ["User", "Organization"],
+                            "description": "Kind of GitHub account."
+                          },
+                          "repository_selection": {
+                            "type": "string",
+                            "enum": ["all", "selected"],
+                            "description": "Repos the App can see."
+                          },
+                          "bound": {
+                            "type": "string",
+                            "enum": ["this_org", "other_org", "none"],
+                            "description": "Whether the installation is bound to this org, another org, or nothing."
+                          }
+                        },
+                        "required": [
+                          "installation_id",
+                          "account_login",
+                          "account_type",
+                          "repository_selection",
+                          "bound"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["installations"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [],
+        "x-turntable-effect": "read",
+        "x-turntable-account-only": true,
         "x-turntable-untrusted-output": false
       }
     }

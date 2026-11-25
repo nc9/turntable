@@ -7,6 +7,7 @@ import type { Db } from "../db";
 import {
   appendAudit,
   findApiTokenByHash,
+  getIdentityByUserId,
   findInstanceTokenByHash,
   getOrgById,
   getOrgBySlug,
@@ -21,6 +22,7 @@ import type { Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
 import type { WebSessions } from "../auth/web-sessions";
+import type { UserGithub } from "../auth/user-tokens";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
@@ -29,7 +31,7 @@ import type { SecretVault } from "../secrets/vault";
 import type { RunDispatcher } from "../poll/dispatch";
 import { OpError } from "./errors";
 import { authenticateSigned } from "./signed";
-import { type Credential, orgRole, type Principal } from "./principal";
+import { type Credential, orgRole, type Principal, principalId } from "./principal";
 import type { OpRegistry } from "./registry";
 import { roleSatisfies } from "./roles";
 import { hashToken, looksLikeInstanceToken, looksLikeToken } from "./tokens";
@@ -83,6 +85,8 @@ export type DispatchEnv = {
   sessions?: WebSessions | undefined;
   /** Set by the MCP adapter alone: the call is an agent's, so MCP-off settings are refused. */
   viaMcp?: boolean | undefined;
+  /** GitHub calls made with a signed-in user's own token; absent when sign-in is not set up. */
+  userGithub?: UserGithub | undefined;
 };
 
 export type DispatchResult =
@@ -165,6 +169,12 @@ const unknownTokenSource = (c: Credential): string =>
 export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   "invite_member",
   "session_step_up_challenge",
+  // Onboarding. Creating an org is gated by `self_serve_orgs` and a rate limit in its handler.
+  // The claim link only starts a flow (ownership of the GitHub installation is checked when it
+  // binds), and `bind_installation` re-checks that with the user's own GitHub token every time.
+  "onboarding_create_org",
+  "start_installation_claim",
+  "bind_installation",
 ]);
 
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
@@ -225,6 +235,30 @@ async function authenticateInstance(env: DispatchEnv, token: string): Promise<Pr
 }
 
 const NO_SUCH_SCOPE = "org or project not found";
+
+/**
+ * A session cookie for an op that takes the `account` principal: the signed-in GitHub user with
+ * no org picked. The call must name no org (an org picks the `session` principal instead).
+ */
+async function authenticateAccount(
+  env: DispatchEnv,
+  cookie: string,
+  org: unknown,
+): Promise<Principal> {
+  const live = await env.sessions?.resolve(cookie);
+  if (!live) throw new AuthFailure();
+  if (org !== undefined) throw new OpError("invalid_input", "this operation takes no org");
+  const identity = await getIdentityByUserId(env.db, live.userId);
+  if (!identity) throw new AuthFailure();
+  return {
+    kind: "account",
+    githubUserId: identity.githubUserId,
+    login: identity.login,
+    sessionHash: live.hash,
+    id: identity.githubUserId,
+    orgId: await systemOrgId(env.db),
+  };
+}
 
 /**
  * A session cookie. The principal is a `member` whose role is the one Turntable's own membership
@@ -367,6 +401,16 @@ export async function dispatch(
         const r = await authenticateSigned(env, signedOp, rawInput as Record<string, unknown>);
         principal = r.principal;
         rawInput = r.raw;
+      } else if (credential.kind === "session" && env.registry.get(name)?.auth.type === "account") {
+        // The account principal comes from a session cookie alone, and only for an op that
+        // declares `account`: every other op with a cookie gets the org `session` principal.
+        principal = await authenticateAccount(
+          env,
+          credential.cookie,
+          rawInput !== null && typeof rawInput === "object"
+            ? (rawInput as Record<string, unknown>).org
+            : undefined,
+        );
       } else {
         principal = await authenticate(
           env,
@@ -395,6 +439,18 @@ export async function dispatch(
     }
     op = env.registry.get(name);
     if (!op) throw new OpError("not_found", `unknown operation: ${name}`);
+    // The account principal and the `account` ops belong together and to nothing else: an op that
+    // does not declare it refuses an account, and an account op refuses every other principal
+    // and every MCP call. This is the first check, so every refusal reads the same.
+    if (principal.kind === "account" && op.auth.type !== "account") {
+      throw new OpError("forbidden", `${op.name} does not take an account session`);
+    }
+    if (op.auth.type === "account" && principal.kind !== "account") {
+      throw new OpError("forbidden", `${op.name} needs a signed-in GitHub web session`);
+    }
+    if (op.auth.type === "account" && (env.viaMcp === true || env.transport === "mcp")) {
+      throw new OpError("forbidden", `${op.name} is not available over MCP`);
+    }
     // Signature ops need a human-signed assertion. No bearer token or in-process principal
     // carries one, so they are refused here, not just left out of adapters.
     if (op.auth.type === "signature" && credential.kind !== "signed") {
@@ -436,10 +492,10 @@ export async function dispatch(
     ) {
       await appendAudit(
         env.db,
-        { orgId: principal.orgId },
+        { orgId: principal.kind === "account" ? await systemOrgId(env.db) : principal.orgId },
         {
           principalKind: principal.kind,
-          principalId: principal.id,
+          principalId: principalId(principal),
           op: op.name,
           effect: op.effect,
           outcome: "error:forbidden",
@@ -454,15 +510,19 @@ export async function dispatch(
         { reason: "step_up_required" },
       );
     }
+    // An account has no org: its calls are scoped to the system org (where an instance call goes
+    // too), and an op that creates something writes its own entry in the new org's chain.
     const scope: Scope =
       principal.kind === "instance"
         ? { orgId: principal.orgId }
-        : await resolveScope(env.db, principal, op, raw);
+        : principal.kind === "account"
+          ? { orgId: await systemOrgId(env.db) }
+          : await resolveScope(env.db, principal, op, raw);
     const audited = op.effect !== "read";
     const audit = (outcome: string, input: unknown) =>
       appendAudit(env.db, scope, {
         principalKind: principal.kind,
-        principalId: principal.id,
+        principalId: principalId(principal),
         op: op!.name,
         effect: op!.effect,
         outcome,
@@ -472,6 +532,7 @@ export async function dispatch(
     if (
       op.auth.type !== "signature" &&
       op.auth.type !== "instance" &&
+      op.auth.type !== "account" &&
       !roleSatisfies(orgRole(principal), op.auth.minRole)
     ) {
       if (audited) await audit("error:forbidden", raw);
@@ -526,6 +587,7 @@ export async function dispatch(
       auditStore: env.auditStore,
       settings: env.settings,
       viaMcp: env.viaMcp,
+      userGithub: env.userGithub,
     });
     const target = op;
     if (!audited) {
@@ -547,7 +609,7 @@ export async function dispatch(
         async (tx) => {
           await appendAudit(tx, scope, {
             principalKind: principal.kind,
-            principalId: principal.id,
+            principalId: principalId(principal),
             op: target.name,
             effect: target.effect,
             outcome: "ok",
@@ -564,7 +626,7 @@ export async function dispatch(
           const out = validateOutput(target, await target.handler(ctx(tx), input));
           await appendAudit(tx, scope, {
             principalKind: principal.kind,
-            principalId: principal.id,
+            principalId: principalId(principal),
             op: target.name,
             effect: target.effect,
             outcome: "ok",

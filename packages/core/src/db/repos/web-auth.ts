@@ -74,6 +74,18 @@ export function getIdentityByUserId(db: Db, userId: string): Promise<GithubIdent
   });
 }
 
+/** The user a GitHub numeric id signed in as, or undefined when it never has. */
+export function getUserIdByGithubUserId(db: Db, githubUserId: string): Promise<string | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select({ userId: s.githubIdentities.userId })
+      .from(s.githubIdentities)
+      .where(eq(s.githubIdentities.githubUserId, githubUserId))
+      .limit(1);
+    return row?.userId;
+  });
+}
+
 /** The member of `scope`'s org whose GitHub account has this numeric id. */
 export function findMemberByGithubUserId(
   db: Db,
@@ -208,7 +220,8 @@ export type SignInResult =
  * links (or creates) the user for the numeric id, consumes the live invites for the login (each
  * atomically, so two tabs cannot both spend one), adds the memberships and opens the session.
  * A person with no membership and no live invite gets nothing written: there is no auto-join, and
- * no user row is made for a stranger.
+ * no user row is made for a stranger, unless `allowNoMembership` says the instance lets this
+ * login create an org for itself.
  */
 export function completeSignIn(
   db: Db,
@@ -218,6 +231,8 @@ export function completeSignIn(
     now: number;
     sessionHash: string;
     absoluteMs: number;
+    /** Open a session for an account that holds no org and no invite (self-serve orgs). */
+    allowNoMembership?: boolean;
   },
 ): Promise<SignInResult> {
   return db.transaction(async (tx) => {
@@ -244,7 +259,9 @@ export function completeSignIn(
           .from(s.orgMembers)
           .where(eq(s.orgMembers.userId, identity.userId))
       : [];
-    if (held.length === 0 && invites.length === 0) return { ok: false, reason: "no_access" };
+    if (held.length === 0 && invites.length === 0 && input.allowNoMembership !== true) {
+      return { ok: false, reason: "no_access" };
+    }
 
     let userId = identity?.userId;
     if (identity) {

@@ -27,6 +27,12 @@ const MCP_OFF: Record<string, string> = {
   session_step_up_challenge: "a passkey step-up is a human act in a browser session",
   request_release: "releasing is a human decision; the release lane re-checks everything anyway",
   start_installation_claim: "binding a GitHub installation to an org is a human act in a browser",
+  get_installation_claim: "a claim belongs to the person who started it in a browser",
+  bind_installation:
+    "binding a GitHub installation needs the person's own GitHub authorization: a human act in a browser",
+  onboarding_create_org: "an account session (a person in a browser) creates it: never a token",
+  list_my_orgs: "an account session (a person in a browser) reads it: never a token",
+  list_user_installations: "an account session (a person in a browser) reads it: never a token",
   set_proxy_rule: "decides where a secret may be sent: a limit-raising setter",
   add_proxy_passthrough_host: "widens the egress of secret-bearing jobs: a limit-raising setter",
   accept_action_move: "a trust decision: it blesses a moved action tag for protected runs",

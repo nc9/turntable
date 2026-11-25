@@ -84,6 +84,12 @@ export class WebSessions {
     return { userId: row.userId, hash };
   }
 
+  /** Whether the session row with this hash is live (not revoked, expired or idle past its limit). */
+  async isLive(hash: string): Promise<boolean> {
+    const { idleMs } = await this.lifetimes();
+    return (await findLiveSession(this.#o.db, hash, this.now(), idleMs)) !== undefined;
+  }
+
   async revoke(cookie: string): Promise<void> {
     await revokeSession(this.#o.db, sessionHash(cookie), this.now());
   }

@@ -14,6 +14,8 @@ export type OpRegistry = {
    * role reaches them, and they are not MCP tools.
    */
   instanceOps(): Op[];
+  /** Ops for a signed-in GitHub user's web session with no org picked (onboarding). */
+  accountOps(): Op[];
   /**
    * Ops worth listing for an agent: token ops that at least one token role can actually call. An
    * op that needs a role no token holds (create_api_token needs admin) can only be refused, so
@@ -46,6 +48,7 @@ export function createRegistry(ops: readonly Op[]): OpRegistry {
     get: (name) => byName.get(name),
     tokenOps: () => ops.filter((op) => op.auth.type === "token"),
     instanceOps: () => ops.filter((op) => op.auth.type === "instance"),
+    accountOps: () => ops.filter((op) => op.auth.type === "account"),
     // Only signature ops that take a signed statement are routed and documented. Others (such
     // as sign_release, which only refuses) have no unauthenticated route.
     signatureOps: () =>

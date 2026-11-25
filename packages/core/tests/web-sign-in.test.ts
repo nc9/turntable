@@ -751,7 +751,13 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     // instance ops are not for a session either
     const inst = await h.as(cookie, "instance_whoami");
     expect(inst.ok).toBe(false);
-    expect([...SESSION_WRITE_OPS]).toEqual(["invite_member", "session_step_up_challenge"]);
+    expect([...SESSION_WRITE_OPS]).toEqual([
+      "invite_member",
+      "session_step_up_challenge",
+      "onboarding_create_org",
+      "start_installation_claim",
+      "bind_installation",
+    ]);
   });
 
   test("REST: a cookie needs the exact public Origin on a state-changing request; a bearer is unaffected", async () => {

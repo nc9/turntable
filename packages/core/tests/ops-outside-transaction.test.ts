@@ -3,6 +3,7 @@ import { registry } from "../src/ops";
 
 // Edit this list only after review. Every entry gives up the dispatcher's atomic op + audit row.
 const ALLOWED_OUTSIDE_TRANSACTION = [
+  "bind_installation", // reads GitHub with the user's token (several calls) before and while it syncs; a partial bind is repaired by running it again (sync is idempotent)
   "db_backup", // cannot run inside a transaction
   "resync_installation", // makes GitHub API calls, which must not hold the write transaction
   "run_dispatch", // forge round trips (ref resolve, workflow fetch) must not hold the DB write lock; all writes are in one inner transaction

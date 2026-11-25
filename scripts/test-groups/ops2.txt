@@ -23,3 +23,4 @@ packages/core/tests/pr-text-not-exposed.test.ts
 packages/core/tests/dispatch-inputs-not-exposed.test.ts
 packages/core/tests/run-dispatch-agents.test.ts
 packages/core/tests/onboarding-schemas.test.ts
+packages/core/tests/onboarding-account.test.ts

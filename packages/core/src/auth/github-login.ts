@@ -26,6 +26,9 @@ import {
 import { SECRET_CLIENT } from "../github/app-auth";
 import { esc, pageResponse } from "../pages/server-pages";
 import { KeyCache } from "../secrets/ensure-key";
+import type { SettingsRuntime } from "../settings/resolve";
+import { selfServeAllows } from "./self-serve";
+import { parseTokenResponse, type UserTokens, type UserTokenSet } from "./user-tokens";
 import type { SecretStore } from "../secrets/store";
 import {
   excessFlowCookies,
@@ -59,13 +62,21 @@ export const loginCookieName = (nonce: string): string =>
 const b64u = (b: Buffer | string): string => Buffer.from(b).toString("base64url");
 
 /** A GitHub user proven by an OAuth code. Only what sign-in needs: the numeric id and the login. */
-export type GithubIdentity = { id: string; login: string };
+export type GithubIdentity = {
+  id: string;
+  login: string;
+  /** The user-to-server token set the exchange gave, to be sealed for the session. */
+  tokens?: UserTokenSet | undefined;
+};
 
 export interface IdentityVerifier {
   verify(code: string, redirectUri: string): Promise<GithubIdentity>;
 }
 
-/** The OAuth exchange through the guarded client. The user's token is read once and dropped. */
+/**
+ * The OAuth exchange through the guarded client. The user's token set is handed back to the
+ * caller, which seals it for the session (auth/user-tokens.ts); nothing here stores or logs it.
+ */
 export function githubIdentityVerifier(o: {
   db: Db;
   store: SecretStore;
@@ -98,11 +109,12 @@ export function githubIdentityVerifier(o: {
         timeoutMs: 15_000,
         maxBytes: 64 * 1024,
       });
-      const tj = (await tok.json().catch(() => ({}))) as { access_token?: unknown };
-      if (!tok.ok || typeof tj.access_token !== "string") throw new Error("code not accepted");
+      const tj = (await tok.json().catch(() => ({}))) as unknown;
+      const tokens = tok.ok ? parseTokenResponse(tj, Date.now()) : undefined;
+      if (!tokens) throw new Error("code not accepted");
       const me = await f(`${api}/user`, {
         headers: {
-          authorization: `Bearer ${tj.access_token}`,
+          authorization: `Bearer ${tokens.access}`,
           accept: "application/vnd.github+json",
           "x-github-api-version": "2022-11-28",
           "user-agent": "turntable",
@@ -114,7 +126,7 @@ export function githubIdentityVerifier(o: {
       const mj = (await me.json()) as { id?: unknown; login?: unknown };
       if (typeof mj.id !== "number" || typeof mj.login !== "string") throw new Error("bad user");
       if (!/^[A-Za-z0-9-]{1,39}$/.test(mj.login)) throw new Error("bad login");
-      return { id: String(mj.id), login: mj.login };
+      return { id: String(mj.id), login: mj.login, tokens };
     },
   };
 }
@@ -143,6 +155,10 @@ export interface AuthHandlerOptions {
   store: SecretStore;
   sessions: WebSessions;
   identity: IdentityVerifier;
+  /** Seals the user's GitHub token for the session; without it the token is dropped as before. */
+  userTokens?: UserTokens | undefined;
+  /** For `self_serve_orgs`: a GitHub account with no org may sign in when it allows them. */
+  settings?: SettingsRuntime | undefined;
   log?: (line: string) => void;
 }
 
@@ -259,6 +275,9 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
       now: o.sessions.now(),
       sessionHash: sessionHash(id),
       absoluteMs,
+      // An account with no org and no invite still gets a session when the instance lets that
+      // login create an org. The session holds no org, so it reaches the account ops only.
+      allowNoMembership: await selfServeAllows(o.settings, o.db, who.login),
     });
     if (!result.ok) {
       o.log?.(`sign-in refused: GitHub user ${who.id} has no membership and no invite`);
@@ -268,6 +287,18 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
         "This GitHub account is not a member of any org on this instance. Ask an org admin to invite your GitHub login, then sign in again.",
         clearThis,
       );
+    }
+    if (o.userTokens) {
+      // Best effort: without the sealed token the person is asked to sign in again when an
+      // onboarding step needs GitHub, which is safe.
+      try {
+        if (who.tokens) await o.userTokens.save(sessionHash(id), who.tokens);
+        await o.userTokens.sweep();
+      } catch (e) {
+        o.log?.(
+          `sign-in: could not store the GitHub user token: ${e instanceof Error ? e.name : "error"}`,
+        );
+      }
     }
     const headers = new Headers({ location: "/", "cache-control": "no-store" });
     headers.append("set-cookie", o.sessions.setCookie(id, absoluteMs));
@@ -344,6 +375,8 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
         return note(403, "Request refused", "The sign-out form expired. Reload and try again.");
       }
       await o.sessions.revoke(cookie);
+      // The user's GitHub token goes with the session it was bound to.
+      await o.userTokens?.remove(sessionHash(cookie)).catch(() => {});
     }
     const headers = new Headers({ location: AUTH_PAGE_PATH, "cache-control": "no-store" });
     headers.append("set-cookie", o.sessions.clearCookie());

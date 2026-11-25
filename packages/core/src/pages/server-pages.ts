@@ -57,9 +57,11 @@ export function servePageAsset(req: Request): Response | undefined {
  * page with no form, `'self'` for one that posts to this server, and an origin for one that posts
  * to GitHub.
  */
-export function pageCsp(formAction: string = "'none'"): string {
+export function pageCsp(formAction: string = "'none'", scriptNonce?: string): string {
   return [
     "default-src 'none'",
+    // A page with one inline script allows exactly that script, by a per-response nonce.
+    ...(scriptNonce ? [`script-src 'nonce-${scriptNonce}'`] : []),
     "style-src 'self'",
     "font-src 'self'",
     "base-uri 'none'",
@@ -88,6 +90,8 @@ ${o.body}
 export interface PageResponseOptions extends PageOptions {
   status?: number;
   formAction?: string;
+  /** The nonce of the page's one inline script (the body carries `<script nonce="...">`). */
+  scriptNonce?: string;
   cookies?: readonly string[];
   /** Pages that carry or follow a one-time state are never cached. Default true. */
   noStore?: boolean;
@@ -97,7 +101,7 @@ export interface PageResponseOptions extends PageOptions {
 export function pageHeaders(o: Omit<PageResponseOptions, "title" | "body"> = {}): Headers {
   const h = new Headers({
     "content-type": "text/html; charset=utf-8",
-    "content-security-policy": pageCsp(o.formAction),
+    "content-security-policy": pageCsp(o.formAction, o.scriptNonce),
     "x-content-type-options": "nosniff",
     "referrer-policy": "no-referrer",
   });
