@@ -212,7 +212,11 @@ export interface TurntableApi {
   }): Promise<Setting>;
   /** Starts a passkey confirmation for `set_setting` with exactly `input` (`session_step_up_challenge`). */
   stepUpChallenge(args: {
-    action: "set_setting" | LaneAction | "instance_rotate_webhook_secret" | "instance_replace_app_private_key";
+    action:
+      | "set_setting"
+      | LaneAction
+      | "instance_rotate_webhook_secret"
+      | "instance_replace_app_private_key";
     input: Record<string, unknown>;
   }): Promise<StepUpChallenge>;
   /**

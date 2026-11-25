@@ -37,7 +37,7 @@ import {
   releaseSetProjectSigning,
 } from "./release-config";
 import type { Op } from "../define";
-import { resolveLaneOrg, resolveLaneTarget } from "../lane-target";
+import { resolveLaneOrg, resolveLaneTarget, secretDigest } from "../lane-target";
 
 const MAX_OPEN_STEP_UPS = 10;
 
@@ -107,6 +107,12 @@ export const sessionStepUpChallenge = defineOp({
       throw new OpError("unavailable", "WebAuthn is not configured on this server");
     }
     const schema = SCHEMAS[i.action];
+    // The dispatcher binds every op's secret fields by digest. A non-lane op (the App private key)
+    // is challenged with its value, as the person's own session sends it, and bound by the same digest.
+    const plainSecretFields =
+      i.action === instanceReplaceAppPrivateKeyOp.name
+        ? instanceReplaceAppPrivateKeyOp.secretInputFields
+        : [];
     if (!schema || !SESSION_STEP_UP_OPS.has(i.action)) {
       throw new OpError("invalid_input", `${i.action} does not take a step-up`);
     }
@@ -138,6 +144,9 @@ export const sessionStepUpChallenge = defineOp({
       delete given[`${f}_sha256`];
       given[f] = "x";
     }
+    for (const f of plainSecretFields) {
+      if (typeof given[f] === "string") digests[`${f}_sha256`] = secretDigest(f, given[f]);
+    }
     const parsed = schema.safeParse(given);
     if (!parsed.success) {
       throw new OpError("invalid_input", "input does not match that action's schema");
@@ -146,6 +155,7 @@ export const sessionStepUpChallenge = defineOp({
     const { org, project, ...restAll } = parsed.data as Record<string, unknown>;
     const rest = { ...restAll };
     for (const f of lane?.secretInputFields ?? []) delete rest[f];
+    for (const f of plainSecretFields) delete rest[f];
     // The target org and project must exist as a pair, as the op itself will resolve them.
     if (lane) {
       if (lane.name === "release_init_key") await resolveLaneOrg(ctx.db, rest);
