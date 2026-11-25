@@ -67,6 +67,9 @@ export type SchedulerOptions = {
   log?: (message: string) => void;
 };
 
+/** The longest an infra retry waits for a forge's rate limit to reset (#621). */
+export const MAX_RETRY_AFTER_MS = 3_600_000;
+
 /** The fixed wait before an infra retry (#517). */
 export const INFRA_RETRY_BACKOFF_MS = 10_000;
 
@@ -405,8 +408,12 @@ export class Scheduler {
         !this.#cutting.has(attempt.id);
       try {
         if (retryable) {
+          const waitMs = Math.max(
+            this.#o.infraRetryBackoffMs,
+            Math.min(outcome.retryAfterMs ?? 0, MAX_RETRY_AFTER_MS),
+          );
           await new Promise<void>((resolve) => {
-            const t = setTimeout(resolve, this.#o.infraRetryBackoffMs);
+            const t = setTimeout(resolve, waitMs);
             controller.signal.addEventListener(
               "abort",
               () => {

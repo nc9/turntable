@@ -50,7 +50,7 @@ export function githubReachability(o: GithubReachabilityOptions = {}): Reachabil
         : await f(`${base}${path}`, init);
     } catch (e) {
       if (e instanceof RateLimitedError) {
-        throw new InfraError(`verifying an action commit: ${e.message}`);
+        throw new InfraError(`verifying an action commit: ${e.message}`, e);
       }
       throw new InfraError(`cannot reach GitHub to verify an action commit`, e);
     }
