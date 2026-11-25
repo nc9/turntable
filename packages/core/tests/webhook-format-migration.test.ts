@@ -10,6 +10,9 @@ import { applyMigrations } from "../src/db/migrate";
 import { migrations } from "../src/db/migrations.generated";
 import { migrations as pgMigrations } from "../src/db/migrations.pg.generated";
 import { applyPgMigrations } from "../src/db/pg";
+import { createOutboundEndpoint } from "../src/db/repos/webhooks";
+import type { WebhookFormat } from "../src/db/schema";
+import { seedWorld } from "./ops-helpers";
 
 const TAG = "_notifications";
 
@@ -61,4 +64,37 @@ test("postgres: an existing endpoint gets format json and keeps its deliveries",
   } finally {
     await client.close();
   }
+});
+
+test("the write path refuses an unknown format (sqlite has no CHECK on the column)", async () => {
+  const { db, a } = await seedWorld();
+  await expect(
+    createOutboundEndpoint(
+      db,
+      { orgId: a.scope.orgId },
+      {
+        url: "https://example.com/h",
+        description: "",
+        eventTypes: null,
+        format: "xml" as unknown as WebhookFormat,
+        createdBy: "test",
+        fromStart: true,
+        now: Date.now(),
+      },
+    ),
+  ).rejects.toThrow("unknown webhook format: xml");
+  const ok = await createOutboundEndpoint(
+    db,
+    { orgId: a.scope.orgId },
+    {
+      url: "https://example.com/h",
+      description: "",
+      eventTypes: null,
+      format: "slack",
+      createdBy: "test",
+      fromStart: true,
+      now: Date.now(),
+    },
+  );
+  expect(ok.format).toBe("slack");
 });
