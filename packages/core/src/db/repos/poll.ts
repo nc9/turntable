@@ -364,12 +364,166 @@ export function getProjectChecksMode(db: Db, scope: Scope): Promise<ChecksMode> 
 export function setProjectChecksMode(db: Db, scope: Scope, mode: ChecksMode): Promise<void> {
   return db.run(async (h) => {
     const { projectId } = requireProject(scope);
+    const [cur] = await h.orm
+      .select({ mode: s.projects.checksMode })
+      .from(s.projects)
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .limit(1);
+    const before: ChecksMode = cur?.mode === "shadow" || cur?.mode === "live" ? cur.mode : "off";
     await h.orm
       .update(s.projects)
       .set({ checksMode: mode })
       .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
     // Checks turned on: skips dismissed while they were off get their check on the next sweep.
     if (mode !== "off") await clearRecentDismissals(h, { ...scope, projectId }, ["checks_off"]);
+    // Off to on, or shadow to live: the latest run of each ref gets every job's current state
+    // posted under the new mode (#630). A flip to off, or to the same mode, posts nothing.
+    if (before !== mode && (mode === "live" || (mode === "shadow" && before === "off"))) {
+      await markChecksBackfill(h, { ...scope, projectId }, before === "shadow");
+    }
+  });
+}
+
+/** The marker on an attempt whose current state is still to be posted after a mode flip. */
+export const BACKFILL_MARKER = "backfill";
+/** Runs older than this are not backfilled (the same bound as the skipped-check sweep). */
+export const BACKFILL_WINDOW_MS = 3 * 24 * 3600_000;
+
+/**
+ * Marks, for the reporter's next sweep, the jobs of the project's latest run per repo, ref and
+ * workflow (within the window) that ran or are running. Skipped-without-attempt jobs need no mark:
+ * the skip sweep posts them. Moving to `live` from `shadow` also forgets the stored check ids of
+ * those attempts (and skips), so the real `turntable / <job>` checks are created, not the neutral
+ * ones updated. The marker is the bookkeeping: it is cleared once the check is posted, so a
+ * restart neither loses nor repeats the backfill.
+ */
+async function markChecksBackfill(
+  h: Db,
+  scope: Required<Scope>,
+  forgetIds: boolean,
+  now = Date.now(),
+): Promise<number> {
+  const runs = await h.run((x) =>
+    x.orm
+      .select({
+        id: s.runs.id,
+        repo: s.runs.repo,
+        ref: s.runs.ref,
+        workflowPath: s.runs.workflowPath,
+      })
+      .from(s.runs)
+      .where(
+        and(
+          eq(s.runs.orgId, scope.orgId),
+          eq(s.runs.projectId, scope.projectId),
+          eq(s.runs.local, false),
+          gte(s.runs.createdAt, now - BACKFILL_WINDOW_MS),
+        ),
+      )
+      .orderBy(desc(s.runs.createdAt), desc(s.runs.id)),
+  );
+  const latest = new Map<string, string>();
+  for (const r of runs) {
+    if (!r.repo) continue;
+    const key = JSON.stringify([r.repo, r.ref, r.workflowPath]);
+    if (!latest.has(key)) latest.set(key, r.id);
+  }
+  const runIds = [...latest.values()];
+  if (runIds.length === 0) return 0;
+  const rows = await h.run((x) =>
+    x.orm
+      .select({ attempt: s.jobAttempts })
+      .from(s.jobAttempts)
+      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .where(and(eq(s.jobs.projectId, scope.projectId), inArray(s.jobs.runId, runIds))),
+  );
+  const newest = new Map<string, JobAttempt>();
+  for (const { attempt } of rows) {
+    const cur = newest.get(attempt.jobId);
+    if (!cur || attempt.attempt > cur.attempt) newest.set(attempt.jobId, attempt);
+  }
+  const ran: string[] = [];
+  const skipped: string[] = [];
+  for (const a of newest.values()) {
+    if (a.state === "queued") continue; // its start event posts it
+    if (a.state === "skipped" && a.startedAt === null) skipped.push(a.id);
+    else ran.push(a.id);
+  }
+  for (let i = 0; i < ran.length; i += 200) {
+    const ids = ran.slice(i, i + 200);
+    await h.run((x) =>
+      x.orm
+        .update(s.jobAttempts)
+        .set({
+          checkDismissedAt: null,
+          checkDismissedReason: BACKFILL_MARKER,
+          ...(forgetIds ? { checkRunId: null } : {}),
+        })
+        .where(and(eq(s.jobAttempts.projectId, scope.projectId), inArray(s.jobAttempts.id, ids))),
+    );
+  }
+  if (forgetIds) {
+    for (let i = 0; i < skipped.length; i += 200) {
+      const ids = skipped.slice(i, i + 200);
+      await h.run((x) =>
+        x.orm
+          .update(s.jobAttempts)
+          .set({ checkRunId: null, skipCheckClaimedAt: null, checkDismissedAt: null })
+          .where(and(eq(s.jobAttempts.projectId, scope.projectId), inArray(s.jobAttempts.id, ids))),
+      );
+    }
+  }
+  return ran.length + (forgetIds ? skipped.length : 0);
+}
+
+/** Attempts marked for backfill and not yet settled, newest first. */
+export function listBackfillAttempts(
+  db: Db,
+  opts: { limit: number },
+): Promise<{ attempt: JobAttempt; job: Job; run: Run }[]> {
+  return db.run((h) =>
+    h.orm
+      .select({ attempt: s.jobAttempts, job: s.jobs, run: s.runs })
+      .from(s.jobAttempts)
+      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
+      .where(
+        and(
+          eq(s.jobAttempts.checkDismissedReason, BACKFILL_MARKER),
+          isNull(s.jobAttempts.checkDismissedAt),
+        ),
+      )
+      .orderBy(desc(s.jobAttempts.id))
+      .limit(opts.limit),
+  );
+}
+
+/** Settles a backfill mark: the check is posted (no reason) or there is nothing to post (why). */
+export function settleBackfill(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  now: number,
+  nothing?: DismissReason,
+): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm
+      .update(s.jobAttempts)
+      .set(
+        nothing
+          ? { checkDismissedAt: now, checkDismissedReason: nothing }
+          : { checkDismissedAt: null, checkDismissedReason: null },
+      )
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          and(
+            eq(s.jobAttempts.id, attemptId),
+            eq(s.jobAttempts.checkDismissedReason, BACKFILL_MARKER),
+          )!,
+        ),
+      );
   });
 }
 
