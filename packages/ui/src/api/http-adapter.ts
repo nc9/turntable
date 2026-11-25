@@ -8,6 +8,9 @@ import type {
   ReleaseStatement,
   ApprovalStatus,
   ApproversOverview,
+  AppNotification,
+  NotificationPage,
+  NotificationPrefs,
   PendingApproval,
   SandboxUsage,
   PolicyStatement,
@@ -45,7 +48,9 @@ import type {
   WireApprovalStatus,
   WireReleaseChallenge,
   WireApprovers,
+  WireMyNotifications,
   WireMyPendingApprovals,
+  WireNotificationPrefs,
   WireChallenge,
   WireEnrolmentApproval,
   WireEnrolmentRequest,
@@ -831,6 +836,70 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         ...(i.expires_at !== undefined ? { expiresAt: i.expires_at } : {}),
         link: i.link,
       }));
+    },
+
+    async myNotifications(f = {}): Promise<NotificationPage> {
+      // Like the feed: it spans the person's orgs, so no `org()` is needed.
+      const w = await call<WireMyNotifications>("GET", "/my/notifications", {
+        unread: f.unread ? "true" : undefined,
+        ...(f.kinds && f.kinds.length > 0 ? { kinds: f.kinds.join(",") } : {}),
+        limit: f.limit ? Math.min(100, f.limit) : undefined,
+        cursor: f.cursor,
+      });
+      return {
+        notifications: w.notifications.map((n): AppNotification => ({
+          id: n.id,
+          kind: n.kind,
+          org: n.org,
+          project: n.project,
+          runId: n.run_id,
+          count: n.count,
+          title: n.title,
+          createdAt: ms(n.created_at) ?? 0,
+          readAt: ms(n.read_at),
+          link: n.link,
+        })),
+        unreadCount: w.unread_count,
+        nextCursor: w.next_cursor,
+      };
+    },
+
+    async notificationsAck({ ids, org: named }): Promise<number> {
+      const w = await call<{ acked: number }>(
+        "POST",
+        "/my/notifications/ack",
+        {},
+        { org: named ?? org(), ...(ids ? { ids } : {}) },
+      );
+      return w.acked;
+    },
+
+    async getNotificationPrefs({ org: named } = {}): Promise<NotificationPrefs> {
+      const w = await call<WireNotificationPrefs>("GET", "/my/notification-prefs", {
+        org: named ?? org(),
+      });
+      return {
+        prefs: w.prefs,
+        defaults: w.defaults.map((d) => ({
+          kind: d.kind,
+          enabled: d.enabled,
+          operatorOnly: d.operator_only,
+        })),
+      };
+    },
+
+    async setNotificationPref({ kind, enabled, org: named, scopeOrg }): Promise<void> {
+      await call(
+        "POST",
+        "/my/notification-prefs/set",
+        {},
+        {
+          org: named ?? org(),
+          kind,
+          ...(enabled === null ? {} : { enabled }),
+          ...(scopeOrg ? { scope_org: scopeOrg } : {}),
+        },
+      );
     },
 
     async approversOverview(): Promise<ApproversOverview> {

@@ -447,3 +447,43 @@ export type WireActivity = {
   }[];
   next_cursor: string | null;
 };
+
+/** `my_notifications`. */
+export type WireMyNotifications = {
+  notifications: {
+    id: string;
+    kind:
+      | "run_failed"
+      | "infra_errors"
+      | "work_held"
+      | "approval_waiting"
+      | "checkout_auth_failed"
+      | "dogfood_red"
+      | "deploy_failed";
+    org: string;
+    project: string | null;
+    run_id: string | null;
+    count: number;
+    title: string;
+    created_at: string;
+    read_at: string | null;
+    link: string;
+  }[];
+  unread_count: number;
+  next_cursor: string | null;
+};
+
+/** `get_notification_prefs`. */
+export type WireNotificationPrefs = {
+  prefs: {
+    kind: WireMyNotifications["notifications"][number]["kind"];
+    org: string | null;
+    project: string | null;
+    enabled: boolean;
+  }[];
+  defaults: {
+    kind: WireMyNotifications["notifications"][number]["kind"];
+    enabled: boolean;
+    operator_only: boolean;
+  }[];
+};

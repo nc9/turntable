@@ -19,6 +19,7 @@ import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { IncidentBanner } from "./incident-banner";
 import { ApprovalNotifyBanner, useApprovalNotifications } from "./approval-notifications";
+import { NotificationBell } from "./notification-bell";
 import {
   Dialog,
   DialogClose,
@@ -497,6 +498,7 @@ function ShellInner() {
               {dark ? <Sun /> : <Moon />}
             </Button>
           </Tooltip>
+          <NotificationBell />
           <AccountMenu />
         </div>
       </header>
