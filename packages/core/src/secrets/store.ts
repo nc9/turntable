@@ -24,6 +24,11 @@ export class SecretStore {
     this.#key = masterKey;
   }
 
+  /** The same store on another handle, so its writes join a caller's transaction. */
+  withDb(db: Db): SecretStore {
+    return new SecretStore(db, this.#key);
+  }
+
   /**
    * `audit: false` is for a caller that writes its own, more specific audit row (the sealed GitHub
    * user token). The row is then not a tenant-secret event and gets no `secret_set`.

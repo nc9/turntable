@@ -73,7 +73,6 @@ export const instanceRotateWebhookSecretOp = defineOp({
   http: { method: "POST", path: "/app-secrets/webhook-secret/rotate" },
   mcp: false,
   oneTimeSecretFields: ["secret"],
-  outsideTransaction: true,
   auditDetail: (o) => ({
     fingerprint: o.fingerprint,
     overlap_until: o.overlap_until,
@@ -83,7 +82,9 @@ export const instanceRotateWebhookSecretOp = defineOp({
     await requireOperatorOwner(ctx);
     let r;
     try {
-      r = await sealRotatedWebhookSecret(ctx.db, ctx.auditStore, {
+      // Runs in the dispatcher's transaction: the store is rebound to it, so the two seals, the
+      // expiry and the audit row commit together or not at all.
+      r = await sealRotatedWebhookSecret(ctx.db, ctx.auditStore.withDb(ctx.db), {
         overlapMs: i.overlap_minutes * 60_000,
         now: ctx.now,
       });
@@ -164,7 +165,10 @@ export const instanceReplaceAppPrivateKeyOp = defineOp({
     if (String(body.id ?? "") !== app.appId) {
       throw new OpError("invalid_input", "that key belongs to another App: the old key stays");
     }
-    await store.set(app.orgId, SECRET_PRIVATE_KEY, pem);
+    // One transaction for the seal; the dispatcher audits right after.
+    await ctx.db.transaction(async (tx) => {
+      await store.withDb(tx).set(app.orgId, SECRET_PRIVATE_KEY, pem);
+    });
     auth.dropCached();
     return { fingerprint: fp, app_id: app.appId };
   },
