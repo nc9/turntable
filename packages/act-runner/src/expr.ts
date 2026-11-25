@@ -414,3 +414,43 @@ export function referencedContexts(expr: string): Set<string> {
   walk(parse(expr));
   return out;
 }
+
+const STATUS_FUNCTIONS = ["success", "failure", "always", "cancelled"];
+
+/** True when the expression calls a status function (success, failure, always, cancelled). */
+export function hasStatusFunction(expr: string): boolean {
+  const walk = (n: Node): boolean => {
+    switch (n.k) {
+      case "call":
+        return STATUS_FUNCTIONS.includes(n.name.toLowerCase()) || n.args.some(walk);
+      case "get":
+        return walk(n.obj) || walk(n.key);
+      case "not":
+        return walk(n.a);
+      case "bin":
+        return walk(n.a) || walk(n.b);
+      default:
+        return false;
+    }
+  };
+  return walk(parse(expr));
+}
+
+/**
+ * Evaluates a job `if:` the way GitHub does: with no status function in it, the condition gets an
+ * implicit `success() &&`, so a failed, cancelled or skipped need makes it false.
+ */
+export function evaluateJobCondition(
+  cond: string | boolean | undefined,
+  ctx: ExprContext,
+): boolean {
+  if (cond === undefined) return call("success", [], ctx) as boolean;
+  if (typeof cond === "boolean") return call("success", [], ctx) === true && cond;
+  const whole = wholeExpression(cond);
+  if (whole === undefined && cond.includes("${{")) {
+    throw new ExprError("mixed if", `if: mixes text and \${{ }}: ${cond}`);
+  }
+  const expr = whole ?? cond;
+  if (!hasStatusFunction(expr) && call("success", [], ctx) !== true) return false;
+  return truthy(evaluate(expr, ctx));
+}
