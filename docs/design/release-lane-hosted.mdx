@@ -117,6 +117,7 @@ Whichever option is chosen, these hold before the lane serves a hosted project:
 
 - **No lane credential for a project that is not live** ([#645](https://github.com/turntable-ci/turntable/issues/645)): `request_release` and release-class jobs in a project whose `checks_mode` is not `live` are refused before any lane secret (npm token, signing key, publish token) is decrypted or injected.
 - **Shadow jobs hold read-only GitHub tokens** ([#641](https://github.com/turntable-ci/turntable/issues/641)).
+- **Check posts are serialised in the database, not per process** ([#650](https://github.com/turntable-ci/turntable/issues/650)): options C and D run more than one process against one database, and the check create gate's in-process lock does not cover that.
 
 ## Recommendation
 
