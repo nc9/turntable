@@ -5,6 +5,9 @@ import { redactString } from "@turntable/redact";
 import { foldShardStates } from "@turntable/act-runner";
 import type { Db } from "../db";
 import {
+  appendAudit,
+  listBackfillAttempts,
+  settleBackfill,
   claimSkippedCheck,
   type DismissReason,
   dismissSkippedCheck,
@@ -131,6 +134,7 @@ export class CheckReporter {
         do {
           this.#resweep = false;
           more = await this.sweepSkipped();
+          await this.sweepBackfill();
         } while (more || this.#resweep);
       } finally {
         this.#sweeping = false;
@@ -171,6 +175,70 @@ export class CheckReporter {
       });
     }
     return rows.length >= SKIP_BATCH && settled > 0;
+  }
+
+  /**
+   * Posts the current state of each job marked by a checks-mode flip (#630): off to shadow or
+   * live, or shadow to live. The marker is set in the database by the flip itself, for the latest
+   * run per ref only, and is cleared once the job has its check, so a restart neither loses nor
+   * repeats it. The post is the event path's own (`#post`), so the external ids are the same and
+   * a later event for the job updates this check. An attempt that already has a check (its own
+   * event posted it after the flip) only has its marker cleared. One audit entry per project and
+   * sweep records what was posted.
+   */
+  async sweepBackfill(): Promise<void> {
+    const rows = await listBackfillAttempts(this.#o.db, { limit: SKIP_BATCH });
+    const tally = new Map<string, { scope: Claim["scope"]; posted: number; dismissed: number }>();
+    for (const row of rows) {
+      const scope = { orgId: row.attempt.orgId, projectId: row.attempt.projectId };
+      const claim: Claim = { attempt: row.attempt, job: row.job, run: row.run, scope };
+      await this.#enqueue(chainKey(claim), async () => {
+        const { db } = this.#o;
+        const now = (this.#o.now ?? Date.now)();
+        const t = tally.get(scope.projectId) ?? { scope, posted: 0, dismissed: 0 };
+        tally.set(scope.projectId, t);
+        const gate = await this.#gate(claim);
+        if ("reason" in gate) {
+          await settleBackfill(db, scope, row.attempt.id, now, gate.reason);
+          t.dismissed++;
+          return;
+        }
+        const state = row.attempt.state;
+        if ((await getAttemptCheckRunId(db, scope, row.attempt.id)) === null) {
+          if (
+            state === "success" ||
+            state === "failure" ||
+            state === "infra_error" ||
+            state === "cancelled" ||
+            state === "skipped"
+          ) {
+            await this.#post(claim, { state, reason: row.attempt.errorClass ?? "" });
+            t.posted++;
+          } else if (state !== "queued") {
+            await this.#post(claim, undefined); // running: its own finish event completes it
+            t.posted++;
+          }
+        }
+        await settleBackfill(db, scope, row.attempt.id, now);
+      });
+    }
+    for (const t of tally.values()) {
+      if (t.posted === 0 && t.dismissed === 0) continue;
+      const mode = await effectiveChecksMode(
+        this.#o.settings,
+        this.#o.db,
+        t.scope.orgId,
+        t.scope.projectId,
+      );
+      await appendAudit(this.#o.db, t.scope, {
+        principalKind: "system",
+        principalId: "checks-reporter",
+        op: "checks_backfill",
+        effect: "write",
+        outcome: "ok",
+        input: { mode, posted: t.posted, nothing_to_post: t.dismissed },
+      }).catch((err) => this.#log(`checks backfill audit not written: ${msg(err)}`));
+    }
   }
 
   /** Resolves when everything queued so far has been attempted (tests, shutdown). */
