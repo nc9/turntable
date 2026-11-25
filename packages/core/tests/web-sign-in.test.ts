@@ -33,6 +33,7 @@ import { testDb } from "../src/db/dialect";
 import { openPostgres } from "../src/db/pg";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { SESSION_WRITE_OPS } from "../src/ops/dispatch";
+import { LANE_CONFIG_READ_OPS, LANE_CONFIG_WRITE_OPS } from "../src/ops/step-up";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { createRestApi } from "../src/ops/rest";
 import { buildManifest } from "../src/github/manifest";
@@ -777,7 +778,11 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     const writes = registry
       .tokenOps()
       .filter(
-        (o) => o.auth.type === "token" && o.effect !== "read" && !SESSION_WRITE_OPS.has(o.name),
+        (o) =>
+          o.auth.type === "token" &&
+          o.effect !== "read" &&
+          !SESSION_WRITE_OPS.has(o.name) &&
+          !LANE_CONFIG_WRITE_OPS.has(o.name),
       );
     const names = writes.map((o) => o.name);
     // the step-up actions of #430 are among them
@@ -790,6 +795,17 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       if (!r.ok) {
         expect(r.error.code, op.name).toBe("forbidden");
         expect(r.error.message, op.name).toContain("step-up");
+      }
+    }
+    // the release lane config ops (#541) take a session of an operator org owner plus a step-up;
+    // this session is not one, so each is refused for its own reason, before any step-up check
+    expect(LANE_CONFIG_WRITE_OPS.size).toBeGreaterThan(0);
+    for (const op of [...LANE_CONFIG_WRITE_OPS, ...LANE_CONFIG_READ_OPS]) {
+      const r = await h.as(cookie, op, { org: "tenant" });
+      expect(r.ok, op).toBe(false);
+      if (!r.ok) {
+        expect(r.error.code, op).toBe("forbidden");
+        expect(r.error.details, op).toEqual({ reason: "lane_operator_owner_only" });
       }
     }
     // nothing was minted
