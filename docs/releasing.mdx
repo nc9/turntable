@@ -123,7 +123,7 @@ turntable release publish-target list --org acme --project web
 Release vault secrets are set with `turntable secret set --master-key-file <release key>`, with the release master key.
 
 <Warning>
-  These are CLI commands only. No REST or MCP operation and no instance setting does the same, and `request_release` cannot pin a repository or declare a target. A hosted instance image has no shell, so there the instance operator has to run them. This is not available yet for shell-less instances.
+  These are CLI commands only. No REST or MCP operation and no instance setting does the same, and `request_release` cannot pin a repository or declare a target. A hosted instance image has no shell, so there the instance operator has to run them. Release lane configuration ops for shell-less instances are planned ([#541](https://github.com/turntable-ci/turntable/issues/541)): pin the repository, publish targets, lane secrets, create the release key. Until then this is not available for shell-less instances.
 </Warning>
 
 ## Publishing to npm
@@ -164,6 +164,24 @@ turntable verify app-linux-x64 --provenance provenance.intoto.json --pubkey rele
 Exit code 0 means verified, 1 not verified, 2 a usage error or an unreadable file. It checks the signature under the key you give, that the statement is SLSA v1, and that the artifact's digest is one of its subjects. See [Signing](/signing#verifying).
 
 `get_release_request` returns the status, the reason and the key id, not the envelope. Getting the envelope when there is no GitHub release target is not available yet.
+
+## If your clients pin a signing key
+
+Some projects' clients accept a release only if a file, such as a manifest, is signed by a key pinned in the client. A key held by Turntable would be rejected. There are two ways to handle that.
+
+### Verify on Turntable, sign externally
+
+1. Run the release on Turntable with no publish targets, as in the [dry run](#dry-run-first). The lane signs its provenance and records `signed`, and publishes nothing.
+2. The project's existing publisher downloads the artifacts and the provenance, then runs `turntable verify <artifact> --provenance <file> --pubkey <file>` against the lane's public key. Pin that key out of band, not next to the artifacts.
+3. If verification passes, the publisher signs with its own pinned key and publishes.
+
+Two parts of this path are planned. Fetching the provenance envelope from the release request is planned ([#541](https://github.com/turntable-ci/turntable/issues/541)), and so is reading the lane's public key (`release_public_key`, [#541](https://github.com/turntable-ci/turntable/issues/541)). Until then, the envelope is not available yet when there is no GitHub release target. The public key is the one `turntable release init-key` printed when the key was created; there is no other command to read it again.
+
+### A stepping stone
+
+A new client release pins a Turntable-held key in the client's spare (`next`) key slot. Once deployed clients trust it, Turntable signs the releases that follow.
+
+The key type matters. Turntable's provenance signature is Ed25519. Clients that pin an ECDSA P-256 key need a P-256 signer, which is planned ([#427](https://github.com/turntable-ci/turntable/issues/427), an AWS KMS P-256 signer). A lane-verified co-signature by the pinned key is planned too ([#544](https://github.com/turntable-ci/turntable/issues/544)).
 
 ## Common refusals
 

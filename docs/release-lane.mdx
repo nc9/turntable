@@ -37,7 +37,7 @@ Publish credentials are vault secrets for `release`-class jobs. The main lane's 
 ## How a release flows
 
 0. An incident freeze of the org or project stops all of it: the lane does not claim requests of a frozen scope, re-checks the freeze when it decides and again just before it signs (`frozen`), and `request_release` is refused while frozen. Requests wait and are processed when the freeze clears.
-1. An operator or pipeline with `release_operator` calls `request_release` (REST and CLI only, never an MCP tool) with a run, the tag and the artifact names. The main process writes a `pending` row in `release_requests` and does nothing else.
+1. An operator or pipeline with `release_operator` calls `request_release` (`POST /api/v1/release-requests`; REST only, never an MCP tool, and there is no CLI command for it) with `run_id`, `tag` and `artifacts` (the artifact names, 1 to 50). The outcome is read with `get_release_request`. The main process writes a `pending` row in `release_requests` and does nothing else.
 2. The release lane claims the oldest pending request. It trusts nothing in that row or in the main database for what to sign:
    - the run must have been built from `refs/tags/<tag>`;
    - the run's repository must equal the one **pinned for the project in the lane's own file** (`turntable release pin-repo --org <slug> --project <slug> --repo <owner/name>`); a project with no pin, or a run row naming another repository, is refused before the forge is asked;
