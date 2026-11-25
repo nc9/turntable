@@ -89,15 +89,22 @@ To call the [instance operations](/instance-admin) on a hosted instance, generat
 
 ## The first approver on a host with no shell
 
-`turntable approvals bootstrap` needs a shell on the server, which a hosted instance does not have. Instead, the instance administrator calls `POST /api/v1/instance/approvers/bootstrap` (the `bootstrap_approver` op) with a `tti_` token, once per org. Generate the key pair on the approver's own machine with `turntable approvals keygen --out alice.key`, which prints the public key, and send only that:
+On a hosted instance the first approver of an org is the org's own owner, with a passkey, in the web UI. Nobody needs a shell or an instance token.
 
-```bash
-curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/approvers/bootstrap" \
-  -H "Authorization: Bearer $TURNTABLE_INSTANCE_TOKEN" -H "content-type: application/json" \
-  -d '{"target_org":"acme","person":"Alice","forge_login":"alice-gh","public_key":"<alice.pub text>"}'
-```
+1. Sign in with GitHub as an **owner** of the org. Turntable's own membership row decides the role, never GitHub.
+2. Open the org's **Approvers** page. While the org has no active approver, an owner sees **Enrol as first approver** (the onboarding wizard links to it as an optional last step after the first CI run).
+3. The browser creates a passkey for the instance's relying party id. It is bound to your own GitHub login and numeric id, so it can also step up your session.
 
-It works only while the org has no active approver, and it never adds to an existing set. If every approver of an org was revoked, it is refused until a delay has passed since the last revocation (24 hours by default, the `approver_rebootstrap_delay_hours` setting, at least 1; see [Settings registry](/configuration#settings-registry)), so a stolen instance token cannot revoke all approvers and enrol its own key at once. The refusal says when it becomes possible. An org that never had an approver has no delay, and the host's CLI is not delayed. The setting is an org setting whose default is the instance-wide 24 hours; only the instance administrator changes it (`instance_set_setting` with `target_org`), never over MCP, and `TURNTABLE_APPROVER_REBOOTSTRAP_DELAY_HOURS` or `turntable.toml` locks it. Revoking an org's last approver emits an `approvers.depleted` event and each bootstrap an `approver.bootstrapped` event; both reach the org's outbound webhooks (subscribe by type), and both are audited in the org's chain and the system chain. Enrol a passkey next as a second key, signed by the bootstrap key as usual. The op is REST only: an org token of any role is refused, and instance tokens are not MCP credentials. See [Human approvals](/security#human-approvals).
+The server checks all of these, in one transaction, and refuses the call if any fails:
+
+- the org has no active approver: it never had one, or more than the `approver_rebootstrap_delay_hours` setting (24 hours by default, at least 1; see [Settings registry](/configuration#settings-registry)) has passed since the last revocation. Two concurrent enrolments, or one racing a CLI or instance bootstrap, cannot both win;
+- your role in the org is `owner`;
+- your web session was authenticated by a GitHub sign-in in the last 10 minutes. If it was not, the page sends you through GitHub sign-in again and you come back to the page;
+- the passkey satisfies the org's key policy (`hardware` needs a verified attestation).
+
+It is a web-session action. Every token, org or instance, and every MCP call is refused (`first_approver_challenge` and `enrol_first_approver` are not MCP tools). The enrolment is audited in the org's chain without the passkey data, and emits an `approver.bootstrapped` event that reaches the org's outbound webhooks and the browser's notifications. Revoking an org's last approver emits `approvers.depleted`. After the first approver exists, every further key needs a quorum of existing approvers, as described in [Human approvals](/security#human-approvals).
+
+Self-hosted instances can still enrol the first approver with an offline ed25519 key, from the host's CLI or through the instance administrator's `bootstrap_approver` op; see [Human approvals](/security#human-approvals).
 
 ## Webhooks wake the poller
 

@@ -39,6 +39,8 @@ export type FinishViewProps = {
   onGoLive: () => void;
   /** The reserved slot for the "Connect an agent" step. */
   agentSlot: ReactNode;
+  /** Link to the Approvers page, where an owner enrols the first approver passkey (#587). */
+  passkeySlot?: ReactNode;
 };
 
 /** Copies text to the clipboard, and says whether it worked. */
@@ -198,6 +200,14 @@ export function FinishView(p: FinishViewProps) {
             and lands in the org. See the web sign-in page of the docs.
           </p>
         </div>
+        {p.passkeySlot ? (
+          <div className="space-y-1">
+            <h3 className="text-[13px] font-semibold">
+              Enrol your passkey (optional, needed to approve releases and sensitive changes)
+            </h3>
+            <p className="text-[13px] text-dim">{p.passkeySlot}</p>
+          </div>
+        ) : null}
         {p.agentSlot}
       </section>
     </div>

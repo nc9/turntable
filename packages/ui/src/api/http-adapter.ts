@@ -942,6 +942,49 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       };
     },
 
+    async firstApproverChallenge() {
+      const w = await call<WireRegisterChallenge>(
+        "POST",
+        "/approvers/first/challenge",
+        {},
+        { org: org() },
+      );
+      return {
+        challenge: w.challenge,
+        rpId: w.rp_id,
+        expiresAt: ms(w.expires_at) ?? 0,
+        attestation: w.attestation,
+      };
+    },
+
+    async enrolFirstApprover({ person, webauthn }) {
+      const w = await call<{
+        approver_id: string;
+        person: string;
+        key_fingerprint: string;
+        warnings: string[];
+      }>(
+        "POST",
+        "/approvers/first",
+        {},
+        {
+          ...(person ? { person } : {}),
+          webauthn: {
+            challenge: webauthn.challenge,
+            client_data_json: webauthn.clientDataJson,
+            attestation_object: webauthn.attestationObject,
+          },
+          org: org(),
+        },
+      );
+      return {
+        approverId: w.approver_id,
+        person: w.person,
+        keyFingerprint: w.key_fingerprint,
+        warnings: w.warnings,
+      };
+    },
+
     async keyPolicyChallenge({ mode, presets, aaguids, approver }) {
       const w = await call<WireChallenge>(
         "POST",

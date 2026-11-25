@@ -23,6 +23,10 @@ const MCP_OFF: Record<string, string> = {
   approve_run_challenge: "an agent may relay a signed statement, never create one for signing",
   enrolment_challenge: "approver enrolment is a human act",
   register_challenge: "approver enrolment is a human act",
+  first_approver_challenge:
+    "the first approver is the org owner's own passkey, from a fresh web session (#587)",
+  enrol_first_approver:
+    "the first approver is the org owner's own passkey, from a fresh web session (#587)",
   request_enrolment: "approver enrolment is a human act",
   session_step_up_challenge: "a passkey step-up is a human act in a browser session",
   request_release: "releasing is a human decision; the release lane re-checks everything anyway",

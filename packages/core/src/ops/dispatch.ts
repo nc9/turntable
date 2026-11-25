@@ -175,6 +175,10 @@ const unknownTokenSource = (c: Credential): string =>
 export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   "invite_member",
   "session_step_up_challenge",
+  // The org owner's own first approver passkey (#587): the ops require an owner session whose
+  // GitHub sign-in is under 10 minutes old, and refuse every token, instance call and MCP.
+  "first_approver_challenge",
+  "enrol_first_approver",
   // Onboarding. Creating an org is gated by `self_serve_orgs` and a rate limit in its handler.
   // The claim link only starts a flow (ownership of the GitHub installation is checked when it
   // binds), and `bind_installation` re-checks that with the user's own GitHub token every time.

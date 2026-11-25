@@ -141,6 +141,18 @@ export interface TurntableApi {
     expiresAt: number;
     attestation: "none" | "direct";
   }>;
+  /** A challenge for the org's first approver passkey: an owner's web session only (#587). */
+  firstApproverChallenge(): Promise<{
+    challenge: string;
+    rpId: string;
+    expiresAt: number;
+    attestation: "none" | "direct";
+  }>;
+  /** Enrols the org's first approver with that passkey. Owner session, fresh GitHub sign-in. */
+  enrolFirstApprover(args: {
+    person?: string;
+    webauthn: { challenge: string; clientDataJson: string; attestationObject: string };
+  }): Promise<{ approverId: string; person: string; keyFingerprint: string; warnings: string[] }>;
   /** The statement an approver signs to change the key policy (a quorum applies it). */
   keyPolicyChallenge(args: {
     mode: "any" | "hardware";

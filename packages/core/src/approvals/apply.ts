@@ -650,13 +650,100 @@ export async function approvalWarnings(
   }
   if (people === 0)
     out.push(
-      "No approver is enrolled, so no protected job can be approved. Enrol the first one with turntable approvals bootstrap.",
+      "No approver is enrolled, so no protected job can be approved. An org owner enrols the first one with a passkey on the Approvers page (self-hosted: turntable approvals bootstrap).",
     );
   else if (people < max)
     out.push(
       `Approvals need ${max} distinct people but only ${people} ${people === 1 ? "is" : "are"} enrolled. Until ${max} people are enrolled, a sole approver can enrol more keys alone, so the two-person rule is not yet a guarantee.`,
     );
   return out;
+}
+
+/**
+ * The preconditions of every first-approver path: the org has no active approver, and (with
+ * `delayMs`) the delay since its last revocation has passed. Callers run it in the same
+ * transaction as the insert, so a concurrent enrolment fails closed.
+ */
+export async function assertFirstApproverAllowed(
+  db: Db,
+  orgId: string,
+  now: number,
+  delayMs?: number,
+): Promise<void> {
+  if ((await listApprovers(db, orgId)).length > 0) {
+    throw new ApprovalConflict(
+      "this org already has approvers. New approvers need a quorum of existing ones: use request_enrolment and approve_enrolment.",
+    );
+  }
+  if (delayMs !== undefined) {
+    const revoked = await lastApproverRevocation(db, orgId);
+    if (revoked !== null && revoked + delayMs > now) {
+      throw new ApprovalConflict(
+        `this org's approvers were revoked recently: a first approver can be bootstrapped again after ${new Date(revoked + delayMs).toISOString()}.`,
+      );
+    }
+  }
+}
+
+/**
+ * Enrols the FIRST approver of an org from a verified passkey registration, for a signed-in org
+ * owner (the self-serve path, #587). The caller has already checked the owner role, the fresh
+ * GitHub sign-in and the key policy; this re-checks "no active approver" and the re-bootstrap
+ * delay, inserts and emits `approver.bootstrapped`, and must run in one transaction.
+ */
+export async function bootstrapFirstPasskey(
+  db: Db,
+  orgId: string,
+  a: {
+    person: string;
+    forgeLogin: string;
+    githubUserId: string;
+    createdBy: string;
+    key: {
+      credentialId: string;
+      publicKey: string;
+      alg: string;
+      signCount: number;
+      aaguid: string | null;
+      attested: boolean;
+    };
+  },
+  now: number,
+  opts: { delayMs: number },
+): Promise<{ id: string; person: string; fingerprint: string }> {
+  await assertFirstApproverAllowed(db, orgId, now, opts.delayMs);
+  const row = await insertApprover(
+    db,
+    orgId,
+    {
+      person: a.person,
+      forgeLogin: a.forgeLogin,
+      githubUserId: a.githubUserId,
+      kind: "webauthn",
+      credentialId: a.key.credentialId,
+      publicKey: a.key.publicKey,
+      alg: a.key.alg,
+      signCount: a.key.signCount,
+      aaguid: a.key.aaguid,
+      attested: a.key.attested,
+      createdBy: a.createdBy,
+    },
+    now,
+  );
+  const fingerprint = keyFingerprint({
+    kind: "webauthn",
+    credentialId: a.key.credentialId,
+    publicKey: a.key.publicKey,
+  });
+  await appendEvent(
+    db,
+    { orgId },
+    {
+      type: "approver.bootstrapped",
+      payload: { approver_id: row.id, person: row.person, key_fingerprint: fingerprint },
+    },
+  );
+  return { id: row.id, person: row.person, fingerprint };
 }
 
 /**
@@ -684,19 +771,7 @@ export async function bootstrapFirstApprover(
   now: number,
   opts: { delayMs?: number } = {},
 ): Promise<{ id: string; person: string; fingerprint: string }> {
-  if ((await listApprovers(db, orgId)).length > 0) {
-    throw new ApprovalConflict(
-      "this org already has approvers. New approvers need a quorum of existing ones: use request_enrolment and approve_enrolment.",
-    );
-  }
-  if (opts.delayMs !== undefined) {
-    const revoked = await lastApproverRevocation(db, orgId);
-    if (revoked !== null && revoked + opts.delayMs > now) {
-      throw new ApprovalConflict(
-        `this org's approvers were revoked recently: a first approver can be bootstrapped again after ${new Date(revoked + opts.delayMs).toISOString()}.`,
-      );
-    }
-  }
+  await assertFirstApproverAllowed(db, orgId, now, opts.delayMs);
   const publicKey = parseEd25519PublicKey(a.publicKey);
   const row = await insertApprover(
     db,
