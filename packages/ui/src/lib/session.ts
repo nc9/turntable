@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { versionAwareFetch } from "./build-version";
 import { lastOrg } from "./last-org";
 
 // Web sign-in (#430, #477). The server owns the session: an HttpOnly cookie the page cannot read.
@@ -183,7 +184,7 @@ export function useSession(): SessionState {
 
 /** Ask the server who is signed in. Safe to call repeatedly: concurrent calls share one request. */
 export function loadSession(
-  f: (input: string, init?: RequestInit) => Promise<Response> = (i, n) => fetch(i, n),
+  f: (input: string, init?: RequestInit) => Promise<Response> = versionAwareFetch,
 ): Promise<void> {
   inflight ??= (async () => {
     try {
@@ -232,7 +233,7 @@ export type SignOutDeps = {
  * cannot be reached; the cookie then simply expires on its own.
  */
 export async function signOut(deps: SignOutDeps = {}): Promise<{ ok: boolean }> {
-  const f = deps.fetch ?? ((i: string, n?: RequestInit) => fetch(i, n));
+  const f = deps.fetch ?? versionAwareFetch;
   let ok = false;
   try {
     let csrf = state.csrf;
