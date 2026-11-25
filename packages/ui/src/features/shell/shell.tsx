@@ -234,6 +234,9 @@ function Switcher() {
             {o.slug === scope.orgSlug ? <Check className="text-accent" /> : null}
           </DropdownMenuItem>
         ))}
+        <DropdownMenuItem onSelect={() => void navigate({ to: "/onboarding" })}>
+          Connect repositories
+        </DropdownMenuItem>
         {scope.orgSlug && scope.projects ? (
           <>
             <DropdownMenuSeparator />

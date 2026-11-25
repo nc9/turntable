@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { Project, Run } from "@/api/types";
 import { runsCollection } from "@/db/collections";
 import { useOrgSync } from "@/db/sync";
+import { ConnectButton } from "@/features/shell/home";
 import { useScope } from "@/features/shell/scope";
 import { formatRelative } from "@/lib/format";
 import { RefChip, RunLink } from "./common";
@@ -119,7 +120,7 @@ export function OrgPage() {
           ))}
         </div>
       ) : scope.projects.length === 0 ? (
-        <EmptyState icon={<FolderGit2 />} title="No projects yet">
+        <EmptyState icon={<FolderGit2 />} title="No projects yet" action={<ConnectButton />}>
           Bind a repo to create the first project.
         </EmptyState>
       ) : (
