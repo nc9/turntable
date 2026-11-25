@@ -1,6 +1,6 @@
 // The audit chain, its checkpoints and export cursors. Like index.ts, part of the only code
 // allowed to name tenant tables.
-import { and, asc, desc, eq, gt, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "..";
 import { entryHash, GENESIS_HASH, type ChainFields } from "../../audit/chain";
 import * as s from "../schema";
@@ -73,6 +73,63 @@ export function listAudit(db: Db, scope: Scope, opts: { limit?: number } = {}) {
       .orderBy(desc(s.auditLog.id))
       .limit(opts.limit ?? 50),
   );
+}
+
+/**
+ * How many entries of one op by one principal an org's chain holds since a time, successes only.
+ * For rate limits that count what was DONE: a refused call is not counted.
+ */
+export function countAuditEntries(
+  db: Db,
+  scope: Scope,
+  q: { op: string; principalKind: string; principalId: string; since: number },
+): Promise<number> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select({ n: sql<number>`count(*)` })
+      .from(s.auditLog)
+      .where(
+        and(
+          eq(s.auditLog.orgId, scope.orgId),
+          eq(s.auditLog.op, q.op),
+          eq(s.auditLog.principalKind, q.principalKind),
+          eq(s.auditLog.principalId, q.principalId),
+          eq(s.auditLog.outcome, "ok"),
+          gte(s.auditLog.createdAt, q.since),
+        ),
+      );
+    return Number(row?.n ?? 0);
+  });
+}
+
+const likeEscape = (v: string): string => v.replaceAll(/[\\%_]/g, (c) => `\\${c}`);
+
+/**
+ * The newest entry of one op and outcome in an org's chain whose recorded input contains a
+ * literal text. For reading back a fact the op recorded (a claim's refusal) without a column.
+ */
+export function latestAuditContaining(
+  db: Db,
+  scope: Scope,
+  q: { op: string; outcome: string; contains: string; since: number },
+): Promise<AuditRow | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.auditLog)
+      .where(
+        and(
+          eq(s.auditLog.orgId, scope.orgId),
+          eq(s.auditLog.op, q.op),
+          eq(s.auditLog.outcome, q.outcome),
+          gte(s.auditLog.createdAt, q.since),
+          sql`${s.auditLog.input} LIKE ${`%${likeEscape(q.contains)}%`} ESCAPE '\\'`,
+        ),
+      )
+      .orderBy(desc(s.auditLog.createdAt), desc(s.auditLog.id))
+      .limit(1);
+    return row;
+  });
 }
 
 /** The newest chained entry of an org, or undefined when it has none. */

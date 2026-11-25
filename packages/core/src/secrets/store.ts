@@ -24,7 +24,16 @@ export class SecretStore {
     this.#key = masterKey;
   }
 
-  async set(orgId: string, name: string, value: string): Promise<void> {
+  /**
+   * `audit: false` is for a caller that writes its own, more specific audit row (the sealed GitHub
+   * user token). The row is then not a tenant-secret event and gets no `secret_set`.
+   */
+  async set(
+    orgId: string,
+    name: string,
+    value: string,
+    opts: { audit?: boolean } = {},
+  ): Promise<void> {
     assertName(name);
     await putSecretRecord(
       this.#db,
@@ -33,7 +42,7 @@ export class SecretStore {
       seal(this.#key, value, secretAad(orgId, name), "system", orgId),
     );
     // Audited by name only: a value never goes near the log.
-    await this.#audit(orgId, "secret_set", name);
+    if (opts.audit !== false) await this.#audit(orgId, "secret_set", name);
     // A new value in this store closes an incident rotation flag it raised (and only this
     // store's flags: a vault secret of the same name is rotated through the vault).
     await clearRotationFlag(this.#db, { orgId }, name, "builtin", Date.now());
@@ -96,9 +105,9 @@ export class SecretStore {
     return (await getSecretRecord(this.#db, { orgId }, name)) !== undefined;
   }
 
-  async delete(orgId: string, name: string): Promise<boolean> {
+  async delete(orgId: string, name: string, opts: { audit?: boolean } = {}): Promise<boolean> {
     const removed = await deleteSecretRecord(this.#db, { orgId }, name);
-    if (removed) await this.#audit(orgId, "secret_delete", name);
+    if (removed && opts.audit !== false) await this.#audit(orgId, "secret_delete", name);
     return removed;
   }
 

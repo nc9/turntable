@@ -450,6 +450,7 @@ const FIELD: Record<string, (w: World) => unknown> = {
   webhook_id: (w) => w.fx.webhookId!,
   enrolment_id: (w) => w.aOnly.runId,
   installation_id: () => "424242",
+  claim_id: () => "a-only-claim", // get_installation_claim
 };
 /** Fields handled by the variant, not here. */
 const VARIANT_FIELDS = new Set(["org", "project"]);
@@ -652,6 +653,10 @@ const UNREACHABLE: Record<string, string> = {
     "a hardware policy needs a counted passkey with an allowed AAGUID, and the fixture approvers are ed25519; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such approver of its own",
   start_installation_claim:
     "needs a configured GitHub App; the claim flow's tenant checks are in hosted-app.test.ts",
+  bind_installation:
+    "web sessions only (a token is refused alike) and needs a configured GitHub App and the person's own GitHub token; B is probed and refused; the binding checks are in onboarding-account.test.ts",
+  get_installation_claim:
+    "needs a configured GitHub App for its claim store; another org's claim is not found for B, which onboarding-claim.test.ts covers",
   resync_installation:
     "needs a configured GitHub App and an installation of A; org B is probed and gets not_found, and the ownership, rate limit and adoption are in github-resync.test.ts",
   doctor:

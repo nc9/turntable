@@ -703,6 +703,20 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Days a web session lives at most, however active it is (1 to 90). The environment name of the `session_absolute_days` setting, which `turntable.toml` and `instance_set_setting` also set. See [Signing in to the web UI](/web-sign-in).",
   },
   {
+    name: "TURNTABLE_SELF_SERVE_ORGS",
+    area: "Server",
+    default: "allowlist",
+    description:
+      "Who may create an org for themselves after signing in with GitHub: `off`, `allowlist` or `any`. The environment name of the `self_serve_orgs` setting, which `turntable.toml` also sets. See [the account principal](/security#the-account-principal-and-self-serve-orgs).",
+  },
+  {
+    name: "TURNTABLE_SELF_SERVE_ORG_LOGINS",
+    area: "Server",
+    default: "",
+    description:
+      "Comma-separated GitHub logins (at most 200, compared without regard to case) that may create an org when `self_serve_orgs` is `allowlist`. The environment name of the `self_serve_org_logins` setting, which `turntable.toml` also sets. See [the account principal](/security#the-account-principal-and-self-serve-orgs).",
+  },
+  {
     name: "TURNTABLE_APPROVAL_POLICY",
     area: "Server",
     description:

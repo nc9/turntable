@@ -82,10 +82,10 @@ export function assertMintable(
     return;
   }
   if (creator.kind === "member") return;
-  if (creator.kind === "approver" || creator.kind === "instance") {
+  if (creator.kind === "approver" || creator.kind === "instance" || creator.kind === "account") {
     throw new OpError(
       "forbidden",
-      `${creator.kind === "approver" ? "an approver key" : "an instance token"} cannot create tokens`,
+      `${creator.kind === "approver" ? "an approver key" : creator.kind === "account" ? "an account session" : "an instance token"} cannot create tokens`,
     );
   }
   if (ROLE_RANK[request.role] > ROLE_RANK[creator.role]) {

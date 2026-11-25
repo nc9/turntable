@@ -43,7 +43,23 @@ export type Principal =
    * system org only so its audit entries land in that chain. It can call `instance` ops and
    * nothing else, and no org principal can call those.
    */
-  | { kind: "instance"; id: string; orgId: string; role: "instance_admin" };
+  | { kind: "instance"; id: string; orgId: string; role: "instance_admin" }
+  /**
+   * A signed-in GitHub user who has not picked an org (onboarding): built ONLY from a valid web
+   * session cookie when the call names no org, never from a token and never over MCP. It holds no
+   * org grant and no org role. The dispatcher accepts it for ops declaring `auth.type ===
+   * "account"` and refuses it everywhere else, so no org op ever sees one.
+   */
+  | {
+      kind: "account";
+      githubUserId: string;
+      login: string;
+      sessionHash: string;
+      /** The GitHub user id again, so audit and labels read it like any principal's id. */
+      id: string;
+      /** The system org, as for `instance`: its audit entries land in that chain. Not a grant. */
+      orgId: string;
+    };
 
 /** What a caller presents to the dispatcher. */
 export type Credential =
@@ -61,7 +77,10 @@ export type Credential =
   /** In-process only: an already-authenticated principal. Adapters never build this. */
   | { kind: "principal"; principal: Principal };
 
-export const principalLabel = (p: Principal): string => `${p.kind}:${p.id}`;
+/** The id an audit entry names: the GitHub user id for an account, else the principal's id. */
+export const principalId = (p: Principal): string => p.id;
+
+export const principalLabel = (p: Principal): string => `${p.kind}:${principalId(p)}`;
 
 /**
  * The org role of a principal. An instance administrator holds none: the dispatcher never gives
@@ -69,5 +88,6 @@ export const principalLabel = (p: Principal): string => `${p.kind}:${p.id}`;
  */
 export function orgRole(p: Principal): Role {
   if (p.kind === "instance") throw new OpError("forbidden", "an instance token holds no org role");
+  if (p.kind === "account") throw new OpError("forbidden", "an account holds no org role");
   return p.role;
 }

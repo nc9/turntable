@@ -30,6 +30,11 @@ export interface SyncOptions {
   claimMode?: boolean;
   /** The org that just claimed the installation (the claim callback); never taken from a payload. */
   claimedBy?: string;
+  /**
+   * `max_concurrent` for a project THIS sync creates (0 pauses it). Existing projects, including
+   * a reattached one, are never touched: only a project made here gets it.
+   */
+  newProjectMaxConcurrent?: number;
 }
 
 export interface SyncResult {
@@ -40,6 +45,8 @@ export interface SyncResult {
   unbound: string[];
   /** Repos left alone because they are already bound elsewhere. */
   conflicts: string[];
+  /** Projects this sync created (a reattached or adopted project is not one), by repo. */
+  created: { repo: string; projectId: string }[];
 }
 
 const slugify = (s: string): string =>
@@ -66,6 +73,7 @@ export async function syncInstallation(
     adopted: [],
     unbound: [],
     conflicts: [],
+    created: [],
   };
   const app = await getGithubApp(db);
   if (!app) throw new Error("no GitHub App is configured");
@@ -150,7 +158,17 @@ export async function syncInstallation(
     const project =
       reattachId !== undefined
         ? { id: reattachId }
-        : await createProjectFor(db, scope, repo.owner, repo.name, repo.id, repo.fullName);
+        : await createProjectFor(
+            db,
+            scope,
+            repo.owner,
+            repo.name,
+            repo.id,
+            repo.fullName,
+            opts.newProjectMaxConcurrent,
+          );
+    if (reattachId === undefined)
+      result.created.push({ repo: repo.fullName, projectId: project.id });
     await bindRepo(
       db,
       { orgId, projectId: project.id },
@@ -222,6 +240,7 @@ async function createProjectFor(
   name: string,
   repoId: string,
   fullName: string,
+  maxConcurrent?: number,
 ) {
   for (const slug of [
     slugify(name),
@@ -229,7 +248,11 @@ async function createProjectFor(
     slugify(`${owner}-${name}-${repoId}`),
   ]) {
     if (!(await getProjectBySlug(db, scope, slug))) {
-      return createProject(db, scope, { slug, name: fullName });
+      return createProject(db, scope, {
+        slug,
+        name: fullName,
+        ...(maxConcurrent !== undefined ? { maxConcurrent } : {}),
+      });
     }
   }
   throw new Error(`no free project slug for ${fullName}`);

@@ -104,6 +104,10 @@ export const runDispatch = defineOp({
       ctx.principal.kind === "token" && ctx.principal.tokenKind === "agent"
         ? await effectiveRunDispatchAgents(ctx.settings, ctx.db, scope.orgId, scope.projectId)
         : undefined;
+    // An account principal is refused by the dispatcher before any handler; this narrows the type.
+    if (ctx.principal.kind === "account") {
+      throw new OpError("forbidden", "not available to this principal");
+    }
     try {
       const out = await ctx.runDispatcher(scope, input.repo, {
         workflow: input.workflow,

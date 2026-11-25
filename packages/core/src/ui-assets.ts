@@ -114,6 +114,10 @@ export function uiCsp(host: string): string {
   ].join("; ");
 }
 
+/** The onboarding route and anything under it. */
+export const isOnboardingPath = (path: string): boolean =>
+  path === "/onboarding" || path.startsWith("/onboarding/");
+
 /**
  * Serve a UI asset, or the app shell for client-side routes. Returns null when no UI is
  * registered, or when the path is not the UI's to answer (API paths, unknown files).
@@ -147,5 +151,9 @@ export function serveUi(
     "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
   };
   if (key === "/index.html" || spa) headers["content-security-policy"] = uiCsp(url.host);
+  // The onboarding page opens the GitHub installation in a popup and listens for its result. The
+  // default same-origin isolation would sever `window.opener`; this keeps it for popups the page
+  // opens itself and still isolates the page from every cross-origin opener.
+  if (isOnboardingPath(path)) headers["cross-origin-opener-policy"] = "same-origin-allow-popups";
   return new Response(method === "HEAD" ? null : Bun.file(file), { headers });
 }

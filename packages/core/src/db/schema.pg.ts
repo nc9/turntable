@@ -71,6 +71,7 @@ export const EVENT_TYPES = [
   "org.installation_claim_started_by_instance",
   "org.member_invited",
   "org.member_joined",
+  "installation_claim.updated",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
