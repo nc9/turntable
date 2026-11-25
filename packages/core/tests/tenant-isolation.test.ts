@@ -672,6 +672,10 @@ const UNREACHABLE: Record<string, string> = {
     "owner web sessions only (every token of A and B is refused alike); a session works in its own org alone, and first-approver-passkey.test.ts covers the gate",
   enrol_first_approver:
     "owner web sessions only (every token of A and B is refused alike); a session works in its own org alone, and first-approver-passkey.test.ts covers the gate",
+  instance_rotate_webhook_secret:
+    "session only (a token is refused alike) and an owner of the org that owns the GitHub App, with a passkey step-up; B is probed and refused; the checks are in instance-app-secrets.test.ts",
+  instance_replace_app_private_key:
+    "session only (a token is refused alike) and an owner of the org that owns the GitHub App, with a passkey step-up; B is probed and refused; the checks are in instance-app-secrets.test.ts",
   start_installation_claim:
     "needs a configured GitHub App; the claim flow's tenant checks are in hosted-app.test.ts",
   bind_installation:

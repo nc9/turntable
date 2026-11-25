@@ -7,7 +7,6 @@ import type { Db } from "../db";
 import {
   appendAudit,
   findApiTokenByHash,
-  getGithubApp,
   getIdentityByUserId,
   findInstanceTokenByHash,
   getOrgById,
@@ -28,6 +27,7 @@ import type { UserGithub } from "../auth/user-tokens";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
+import type { AppAuth } from "../github/app-auth";
 import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
 import type { RunDispatcher } from "../poll/dispatch";
@@ -40,8 +40,6 @@ import { roleSatisfies } from "./roles";
 import { hashToken, looksLikeInstanceToken, looksLikeToken } from "./tokens";
 import { boundInput } from "./lane-target";
 import {
-  INSTANCE_STEP_UP_CHALLENGE_OP,
-  INSTANCE_STEP_UP_OPS,
   inputTarget,
   LANE_CONFIG_READ_OPS,
   LANE_CONFIG_WRITE_OPS,
@@ -49,7 +47,6 @@ import {
   verifyStepUp,
   type VerifiedStepUp,
 } from "./step-up";
-import type { AppAuth } from "../github/app-auth";
 
 export type Transport = "mcp" | "rest";
 
@@ -110,7 +107,7 @@ export type DispatchEnv = {
   viaMcp?: boolean | undefined;
   /** GitHub calls made with a signed-in user's own token; absent when sign-in is not set up. */
   userGithub?: UserGithub | undefined;
-  /** The GitHub App's credential minter; the instance App-secret ops need it. */
+  /** The GitHub App's credential minter; the App-secret ops need it. */
   appAuth?: AppAuth | undefined;
 };
 
@@ -557,20 +554,10 @@ export async function dispatch(
     }
     // A step-up rides beside the input and is judged by the dispatcher, never by the schema.
     const { step_up: stepUpRaw, ...raw } = rawInput as Record<string, unknown>;
-    const instanceStepUp = INSTANCE_STEP_UP_OPS.has(op.name);
-    const instanceCall = instanceStepUp || op.name === INSTANCE_STEP_UP_CHALLENGE_OP;
-    if (
-      stepUpRaw !== undefined &&
-      credential.kind !== "session" &&
-      !(instanceStepUp && credential.kind === "bearer")
-    ) {
+    if (stepUpRaw !== undefined && credential.kind !== "session") {
       throw new OpError("invalid_input", "step_up is only for web sessions");
     }
-    if (
-      stepUpRaw !== undefined &&
-      !SESSION_STEP_UP_OPS.has(op.name) &&
-      !(instanceStepUp && principal.kind === "instance")
-    ) {
+    if (stepUpRaw !== undefined && !SESSION_STEP_UP_OPS.has(op.name)) {
       throw new OpError("invalid_input", `${op.name} does not take a step-up`);
     }
     // Instance ops and org ops never meet: an instance op takes the instance administrator and
@@ -588,43 +575,6 @@ export async function dispatch(
     // (refused above) are not it. This runs before the step-up is looked at and before the scope.
     if (LANE_CONFIG_WRITE_OPS.has(op.name) || LANE_CONFIG_READ_OPS.has(op.name)) {
       await laneGate(env, credential, principal, op.name);
-    }
-    // The instance step-up ops need the signed-in person too: the `tti_` bearer alone is refused.
-    let instanceSession: OpContext["instanceSession"];
-    if (instanceCall && principal.kind === "instance") {
-      const missing = (what: string): OpError =>
-        new OpError(
-          "forbidden",
-          `${op!.name} needs the instance token AND a signed-in web session of a person with a passkey in the operator org: ${what} (step_up_required)`,
-          { reason: "step_up_required" },
-        );
-      const cookie = credential.kind === "bearer" ? credential.sessionCookie : undefined;
-      const live = cookie ? await env.sessions?.resolve(cookie) : undefined;
-      if (!live) {
-        await appendAudit(
-          env.db,
-          { orgId: principal.orgId },
-          {
-            principalKind: "instance",
-            principalId: principal.id,
-            op: op.name,
-            effect: op.effect,
-            outcome: "error:forbidden",
-            input: redactInput(op, raw),
-          },
-        ).catch(() => {});
-        throw missing("no signed-in web session was sent");
-      }
-      const operatorApp = await getGithubApp(env.db);
-      const identity = await getIdentityByUserId(env.db, live.userId);
-      if (!operatorApp || !identity)
-        throw missing("the session has no operator org or GitHub identity");
-      instanceSession = {
-        userId: live.userId,
-        sessionHash: live.hash,
-        login: identity.login,
-        orgId: operatorApp.orgId,
-      };
     }
     // A web session is default-deny for writes: only the named ones, whatever the member's role.
     // It is judged before the scope (a project-scoped op with no project would fail there first);
@@ -692,34 +642,6 @@ export async function dispatch(
       throw err;
     }
     let stepUp: VerifiedStepUp | undefined;
-    if (instanceStepUp && instanceSession && principal.kind === "instance") {
-      try {
-        if (stepUpRaw === undefined) {
-          throw new OpError(
-            "forbidden",
-            `${op.name} needs a fresh passkey step-up (step_up_required): call instance_step_up_challenge`,
-            { reason: "step_up_required" },
-          );
-        }
-        stepUp = await verifyStepUp(
-          {
-            db: env.db,
-            rp: env.webauthn,
-            now: (env.now ?? Date.now)(),
-            orgId: instanceSession.orgId,
-            sessionHash: instanceSession.sessionHash,
-            userId: instanceSession.userId,
-            action: op.name,
-            target: inputTarget(input, undefined),
-            instanceTokenId: principal.id,
-          },
-          stepUpRaw,
-        );
-      } catch (err) {
-        await audit(err instanceof OpError ? `error:${err.code}` : "error:internal", input);
-        throw err;
-      }
-    }
     if (stepUpRaw !== undefined && principal.kind === "session") {
       try {
         stepUp = await verifyStepUp(
@@ -768,7 +690,6 @@ export async function dispatch(
       viaMcp: env.viaMcp,
       userGithub: env.userGithub,
       appAuth: env.appAuth,
-      instanceSession,
     });
     const target = op;
     if (!audited) {

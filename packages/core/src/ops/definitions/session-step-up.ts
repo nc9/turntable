@@ -21,6 +21,10 @@ import {
   stepUpHash,
   stepUpKeys,
 } from "../step-up";
+import {
+  instanceReplaceAppPrivateKeyOp,
+  instanceRotateWebhookSecretOp,
+} from "./instance-app-secrets";
 import { createApiToken } from "./create-api-token";
 import { inviteMemberOp } from "./members";
 import { setSettingOp } from "./settings";
@@ -42,6 +46,8 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   create_api_token: createApiToken.input,
   invite_member: inviteMemberOp.input,
   set_setting: setSettingOp.input,
+  instance_rotate_webhook_secret: instanceRotateWebhookSecretOp.input,
+  instance_replace_app_private_key: instanceReplaceAppPrivateKeyOp.input,
 };
 /** The lane configuration ops (#541), whose schemas and secret fields the challenge honours too. */
 const LANE_OPS: Record<string, Op> = {};
@@ -63,7 +69,7 @@ export const sessionStepUpChallenge = defineOp({
   summary: "Start a passkey step-up for one sensitive action from a web session.",
   description:
     "Web sessions only. Names an action (create_api_token, invite_member for an admin or " +
-    "owner, or set_setting to loosen a trust setting) and the exact `input` the action will be called with (project scope included), and " +
+    "owner, set_setting to loosen a trust setting, or, for an owner of the operator org, instance_rotate_webhook_secret or instance_replace_app_private_key) and the exact `input` the action will be called with (project scope included), and " +
     "returns a single-use WebAuthn challenge. The signed-in person's own enrolled passkey signs " +
     "`challenge`; the sensitive call then carries `step_up: {id, approver, signature}` (the " +
     "assertion's credential_id, client_data_json, authenticator_data and signature). The step-up " +
@@ -90,6 +96,8 @@ export const sessionStepUpChallenge = defineOp({
   scope: "org",
   http: { method: "POST", path: "/session/step-up" },
   mcp: false,
+  // The action input can carry a secret (the App private key): the audit keeps the action name only.
+  logOmitFields: ["input"],
   async handler(ctx, i) {
     const p = ctx.principal;
     if (p.kind !== "session" || !p.sessionHash) {

@@ -212,7 +212,7 @@ export interface TurntableApi {
   }): Promise<Setting>;
   /** Starts a passkey confirmation for `set_setting` with exactly `input` (`session_step_up_challenge`). */
   stepUpChallenge(args: {
-    action: "set_setting" | LaneAction;
+    action: "set_setting" | LaneAction | "instance_rotate_webhook_secret" | "instance_replace_app_private_key";
     input: Record<string, unknown>;
   }): Promise<StepUpChallenge>;
   /**
@@ -232,6 +232,16 @@ export interface TurntableApi {
     targetProject: string;
     name: string;
   }): Promise<LaneSecretStatus>;
+  /** The operator org's owner rotates the App webhook secret (needs `stepUp`). The secret is in this result only. */
+  rotateWebhookSecret(args: {
+    overlapMinutes: number;
+    stepUp: StepUpProof;
+  }): Promise<{ secret: string; fingerprint: string; overlapUntil: string }>;
+  /** The operator org's owner uploads a new private key for the same App (needs `stepUp`). */
+  replaceAppPrivateKey(args: {
+    privateKey: string;
+    stepUp: StepUpProof;
+  }): Promise<{ fingerprint: string; appId: string }>;
   /** Whether scheduling is frozen for the org (or the project, when given), and why. */
   incidentStatus(args?: { project?: string }): Promise<IncidentStatus>;
   cancel(args: { runId: string }): Promise<void>;

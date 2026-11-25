@@ -2,13 +2,6 @@
 // dispatch call and back, and decides nothing about access: authn, scope, roles, validation and
 // audit all live in dispatch().
 import { readCookie, SESSION_COOKIE } from "../auth/web-sessions";
-import { looksLikeInstanceToken } from "./tokens";
-import { INSTANCE_STEP_UP_CHALLENGE_OP, INSTANCE_STEP_UP_OPS } from "./step-up";
-
-const INSTANCE_OPS_WITH_SESSION: ReadonlySet<string> = new Set([
-  ...INSTANCE_STEP_UP_OPS,
-  INSTANCE_STEP_UP_CHALLENGE_OP,
-]);
 import { type DispatchEnv, dispatch } from "./dispatch";
 import type { Credential } from "./principal";
 import type { Op } from "./define";
@@ -197,24 +190,8 @@ export function createRestApi(
       // A bearer token always wins and is judged as before. Only a request with NO Authorization
       // header at all can use the session cookie, and then only when sign-in is configured.
       let credential: Credential | undefined;
-      if (bearer) {
-        credential = { kind: "bearer", token: bearer[1]! };
-        // An instance step-up op also takes the signed-in person's session cookie, beside the
-        // `tti_` bearer. The same CSRF rule as for a session applies to it.
-        if (
-          INSTANCE_OPS_WITH_SESSION.has(route.op.name) &&
-          env.sessions &&
-          looksLikeInstanceToken(bearer[1]!)
-        ) {
-          const cookie = readCookie(req, SESSION_COOKIE);
-          if (cookie) {
-            if (req.method !== "GET" && !env.sessions.sameOrigin(req)) {
-              throw new OpError("forbidden", "cross-origin request refused");
-            }
-            credential = { ...credential, sessionCookie: cookie };
-          }
-        }
-      } else if (!req.headers.has("authorization") && env.sessions) {
+      if (bearer) credential = { kind: "bearer", token: bearer[1]! };
+      else if (!req.headers.has("authorization") && env.sessions) {
         const cookie = readCookie(req, SESSION_COOKIE);
         if (cookie) {
           // CSRF: a cookie is sent by the browser on its own, so a state-changing request must

@@ -17,7 +17,6 @@ const SECTIONS = [
   { to: "/-/instance/quotas", label: "Orgs and quotas" },
   { to: "/-/instance/projects", label: "Projects" },
   { to: "/-/instance/backups", label: "Backups" },
-  { to: "/-/instance/app-secrets", label: "App secrets" },
   { to: "/-/instance/token", label: "Token" },
 ] as const;
 

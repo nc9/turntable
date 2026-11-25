@@ -97,6 +97,9 @@ export const SESSION_STEP_UP_OPS: ReadonlySet<string> = new Set([
   // Only for loosening a trust setting; the settings guard requires it then and no other time.
   "set_setting",
   ...LANE_CONFIG_WRITE_OPS,
+  // The GitHub App's webhook secret and private key (#586): an owner of the operator org only.
+  "instance_rotate_webhook_secret",
+  "instance_replace_app_private_key",
 ]);
 
 /** The principal a step-up challenge row is issued to. */
@@ -117,8 +120,6 @@ type Binding = {
   target: string | undefined;
   nonce: string;
   expiresAt: number;
-  /** Instance-admin step-ups only: the `tti_` token the step-up is bound to. */
-  instanceTokenId?: string | undefined;
 };
 
 /** The statement a step-up binds: its hash is both the stored hash and the WebAuthn challenge. */
@@ -134,8 +135,6 @@ export function stepUpHash(b: Binding): string {
         target: b.target ?? "",
         nonce: b.nonce,
         expires_at: b.expiresAt,
-        // Only an instance step-up carries it, so a session step-up hashes exactly as before.
-        ...(b.instanceTokenId ? { instance_token: b.instanceTokenId } : {}),
       }),
       "utf8",
     )
@@ -170,22 +169,7 @@ export async function stepUpKeys(
   };
 }
 
-export type VerifiedStepUp = { action: string; target: string | undefined; userId: string };
-
-/**
- * The ops the instance administrator may call only with BOTH the `tti_` bearer and the web session
- * of a person holding a passkey in the operator org (the org that owns the GitHub App). The
- * challenge op itself needs the session but no assertion.
- */
-export const INSTANCE_STEP_UP_OPS: ReadonlySet<string> = new Set([
-  "instance_rotate_webhook_secret",
-  "instance_replace_app_private_key",
-]);
-export const INSTANCE_STEP_UP_CHALLENGE_OP = "instance_step_up_challenge";
-
-/** The principal tag stored on a step-up challenge row. */
-export const stepUpPrincipal = (userId: string, instanceTokenId?: string): string =>
-  instanceTokenId ? `instance:${instanceTokenId}:${userId}` : `session:${userId}`;
+export type VerifiedStepUp = { action: string; target: string | undefined };
 
 /**
  * Verifies the step-up a session call carries, for exactly `action` and `target`, and spends it.
@@ -202,8 +186,6 @@ export async function verifyStepUp(
     userId: string;
     action: string;
     target: string | undefined;
-    /** Set for an instance-admin call: the step-up is bound to this `tti_` token too. */
-    instanceTokenId?: string | undefined;
   },
   raw: unknown,
 ): Promise<VerifiedStepUp> {
@@ -214,11 +196,7 @@ export async function verifyStepUp(
   const su = parsed.data;
   const row = await getChallenge(o.db, o.orgId, su.id);
   // Not ours (another kind, another person's session): the same answer as an unknown id.
-  if (
-    !row ||
-    row.kind !== STEP_UP_KIND ||
-    row.principal !== stepUpPrincipal(o.userId, o.instanceTokenId)
-  ) {
+  if (!row || row.kind !== STEP_UP_KIND || row.principal !== `session:${o.userId}`) {
     throw refuse("step_up_unknown", "no such step-up");
   }
   if (row.usedAt !== null) throw refuse("step_up_reused", "that step-up was already used");
@@ -231,7 +209,6 @@ export async function verifyStepUp(
     target: o.target,
     nonce: row.id,
     expiresAt: row.expiresAt,
-    instanceTokenId: o.instanceTokenId,
   });
   if (hash !== row.statementHash) {
     throw refuse("step_up_wrong_action", "that step-up was issued for a different action");
@@ -278,5 +255,5 @@ export async function verifyStepUp(
   });
   if (!spent) throw refuse("step_up_reused", "that step-up was already used");
   await setSignCount(o.db, o.orgId, key.id, signCount);
-  return { action: o.action, target: o.target, userId: o.userId };
+  return { action: o.action, target: o.target };
 }

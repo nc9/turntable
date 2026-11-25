@@ -17,7 +17,6 @@ import { InstanceSettingsPage } from "@/features/instance/settings-page";
 import { InstanceQuotasPage } from "@/features/instance/quotas-page";
 import { InstanceProjectsPage } from "@/features/instance/projects-page";
 import { InstanceBackupsPage } from "@/features/instance/backups-page";
-import { InstanceAppSecretsPage } from "@/features/instance/app-secrets-page";
 import { InstanceTokenPage } from "@/features/instance/token-page";
 import { OnboardingPage, validateOnboardingSearch } from "@/features/onboarding/wizard";
 import { parseFeedSearch } from "@/lib/activity";
@@ -170,7 +169,6 @@ const instanceRoutes = [
   ["quotas", InstanceQuotasPage],
   ["projects", InstanceProjectsPage],
   ["backups", InstanceBackupsPage],
-  ["app-secrets", InstanceAppSecretsPage],
   ["token", InstanceTokenPage],
 ].map(([name, component]) =>
   createRoute({

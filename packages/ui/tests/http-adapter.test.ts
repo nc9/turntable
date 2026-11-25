@@ -986,3 +986,39 @@ describe("operations added for trust, digests, search and ingest", () => {
     });
   });
 });
+
+describe("App-secret calls", () => {
+  const proof = {
+    id: "s".repeat(20),
+    approver: "ap1",
+    signature: {
+      credential_id: "a",
+      client_data_json: "b",
+      authenticator_data: "c",
+      signature: "d",
+    },
+  };
+
+  test("the rotation posts the step-up beside the org and returns the one-time secret", async () => {
+    const { api, calls } = make(() =>
+      json({ secret: "s-1", fingerprint: "SHA256:x", overlap_until: "2026-11-25T10:00:00.000Z" }),
+    );
+    const r = await api.rotateWebhookSecret({ overlapMinutes: 30, stepUp: proof });
+    expect(r.secret).toBe("s-1");
+    expect(calls[0]!.url.pathname).toBe("/api/v1/app-secrets/webhook-secret/rotate");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      org: "acme",
+      overlap_minutes: 30,
+      step_up: proof,
+    });
+  });
+
+  test("the key upload goes in the body, never the URL", async () => {
+    const { api, calls } = make(() => json({ fingerprint: "SHA256:y", app_id: "42" }));
+    const pem = `key-${crypto.randomUUID()}`;
+    const r = await api.replaceAppPrivateKey({ privateKey: pem, stepUp: proof });
+    expect(r).toEqual({ fingerprint: "SHA256:y", appId: "42" });
+    expect(calls[0]!.url.search).toBe("");
+    expect(String(calls[0]!.init.body)).toContain(pem);
+  });
+});

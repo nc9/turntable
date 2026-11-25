@@ -221,6 +221,8 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     laneConfig: () => Promise.reject(new Error("The demo has no release lane to configure.")),
     laneKey: () => Promise.reject(new Error("The demo has no release lane to configure.")),
     laneSecretStatus: () => Promise.reject(new Error("The demo has no release lane to configure.")),
+    rotateWebhookSecret: () => Promise.reject(new Error("The demo has no GitHub App.")),
+    replaceAppPrivateKey: () => Promise.reject(new Error("The demo has no GitHub App.")),
     approvalChallenge: ({ runId, environment, approver }) =>
       delay(() => world.approvalChallenge(runId, environment, approver)),
     // The fixture world has no release environment (its approval is "production").

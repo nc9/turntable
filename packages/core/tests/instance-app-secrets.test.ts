@@ -23,12 +23,11 @@ import {
   schema,
   type Db,
 } from "../src/db";
-import { systemOrgId } from "../src/audit/failures";
 import { AppAuth, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../src/github/app-auth";
 import { createWebhookHandler, WEBHOOK_PATH } from "../src/github/webhook";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
-import { INSTANCE_STEP_UP_OPS } from "../src/ops/step-up";
+import { SESSION_STEP_UP_OPS } from "../src/ops/step-up";
 import { SecretStore } from "../src/secrets/store";
 import { fakeFacts, setup, sign } from "./github-helpers";
 import { mintToken } from "./ops-helpers";
@@ -111,34 +110,41 @@ async function harness() {
   const current = (await store.get(org.id, SECRET_PRIVATE_KEY))!;
   registered.push({ publicKey: pubOf(current), appId: "42" });
 
-  const user = await createUser(db, { displayName: "Alice" });
-  await db.run((h) =>
-    h.orm
-      .insert(schema.githubIdentities)
-      .values({ githubUserId: "1001", userId: user.id, login: "Alice" }),
-  );
-  await addMember(db, { orgId: org.id }, { userId: user.id, role: "owner" });
-  const dev = passkey();
-  const enrol = (orgId: string, d: ReturnType<typeof passkey>) =>
-    insertApprover(
+  const other = await createOrg(db, { slug: "other", name: "Other" });
+  const people: Record<string, { cookie: string; dev: ReturnType<typeof passkey> }> = {};
+  const live: Record<string, { userId: string; hash: string }> = {};
+  let n = 1000;
+  /** A signed-in person: a member of `orgId` with `role`, a passkey enrolled in `keyOrgId`. */
+  async function person(name: string, orgId: string, role: "owner" | "admin", keyOrgId = orgId) {
+    n += 1;
+    const user = await createUser(db, { displayName: name });
+    await db.run((h) =>
+      h.orm
+        .insert(schema.githubIdentities)
+        .values({ githubUserId: String(n), userId: user.id, login: name }),
+    );
+    await addMember(db, { orgId }, { userId: user.id, role });
+    const dev = passkey();
+    await insertApprover(
       db,
-      orgId,
+      keyOrgId,
       {
-        person: "Alice",
-        forgeLogin: "alice",
-        githubUserId: "1001",
+        person: name,
+        forgeLogin: name,
+        githubUserId: String(n),
         kind: "webauthn",
-        credentialId: d.credentialId,
-        publicKey: d.spki,
+        credentialId: dev.credentialId,
+        publicKey: dev.spki,
         alg: "ES256",
         createdBy: "test",
       },
       t,
     );
-  const COOKIE = "cookie-one-aaaaaaaaaaaaaaaaaaaa";
-  const live: Record<string, { userId: string; hash: string }> = {
-    [COOKIE]: { userId: user.id, hash: "hash-one" },
-  };
+    const cookie = `cookie-${name}-aaaaaaaaaaaaaaaaaaaa`;
+    live[cookie] = { userId: user.id, hash: `hash-${name}` };
+    people[name] = { cookie, dev };
+    return { cookie, dev, userId: user.id };
+  }
   const env: DispatchEnv = {
     registry,
     db,
@@ -149,18 +155,14 @@ async function harness() {
     appAuth: auth,
     allowInstance: true,
   };
-  const tti = (await createInstanceTokenFromCli(db, { name: "ops" })).secret;
-  const asInstance = (
-    op: string,
-    input: Record<string, unknown>,
-    cookie: string | undefined = COOKIE,
-  ) => dispatch(env, { kind: "bearer", token: tti, sessionCookie: cookie }, op, input);
+  const as = (cookie: string, op: string, input: Record<string, unknown> = {}) =>
+    dispatch(env, { kind: "session", cookie }, op, input);
   async function stepUp(
+    who: { cookie: string; dev: ReturnType<typeof passkey> },
     action: string,
     input: Record<string, unknown>,
-    device: ReturnType<typeof passkey> = dev,
   ) {
-    const r = await asInstance("instance_step_up_challenge", { action, input });
+    const r = await as(who.cookie, "session_step_up_challenge", { action, input });
     if (!r.ok) throw new Error(`challenge refused: ${r.error.message}`);
     const out = r.output as {
       step_up_id: string;
@@ -170,9 +172,10 @@ async function harness() {
     return {
       id: out.step_up_id,
       approver: out.passkeys[0]!.approver,
-      signature: device.assert(out.challenge),
+      signature: who.dev.assert(out.challenge),
     };
   }
+  const tti = (await createInstanceTokenFromCli(db, { name: "ops" })).secret;
   const handler = createWebhookHandler({
     db,
     store,
@@ -199,18 +202,16 @@ async function harness() {
   return {
     ...s,
     store,
-    dev,
-    enrol,
+    person,
+    other,
     env,
     tti,
-    COOKIE,
-    asInstance,
+    as,
     stepUp,
     registered,
     github,
     post,
     advance: (ms: number) => (t += ms),
-    user,
   };
 }
 
@@ -221,114 +222,93 @@ function pubOf(pem: string): string {
 const reasonOf = (r: Awaited<ReturnType<typeof dispatch>>): unknown =>
   r.ok ? undefined : (r.error.details as { reason?: string } | undefined)?.reason;
 
-describe("instance App-secret ops: who may call", () => {
-  test("the gated ops exist in the registry and are not MCP tools", () => {
-    for (const n of INSTANCE_STEP_UP_OPS) {
-      const op = registry.get(n);
-      expect(op).toBeDefined();
-      expect(op!.mcp).toBe(false);
+const ROTATE = "instance_rotate_webhook_secret";
+const REPLACE = "instance_replace_app_private_key";
+
+describe("App-secret ops: who may call", () => {
+  test("both are step-up ops, REST only, never MCP tools", () => {
+    for (const n of [ROTATE, REPLACE]) {
+      expect(SESSION_STEP_UP_OPS.has(n)).toBe(true);
+      expect(registry.get(n)!.mcp).toBe(false);
     }
   });
 
-  test("the instance token alone is refused, challenge and action alike", async () => {
+  test("an operator-org owner without a step-up is refused", async () => {
     const h = await harness();
-    const c = await h.asInstance(
-      "instance_step_up_challenge",
-      { action: "instance_rotate_webhook_secret", input: {} },
-      undefined,
-    );
-    expect(c.ok).toBe(false);
-    expect(reasonOf(c)).toBe("step_up_required");
-    const r = await h.asInstance("instance_rotate_webhook_secret", {}, undefined);
+    const o = await h.person("olive", h.org.id, "owner");
+    const r = await h.as(o.cookie, ROTATE, {});
     expect(r.ok).toBe(false);
     expect(reasonOf(r)).toBe("step_up_required");
+    const r2 = await h.as(o.cookie, REPLACE, { private_key: "x" });
+    expect(reasonOf(r2)).toBe("step_up_required");
   });
 
-  test("the instance token with a session but no step-up is refused", async () => {
+  test("a tti_ instance token is refused", async () => {
     const h = await harness();
-    await h.enrol(h.org.id, h.dev);
-    const r = await h.asInstance("instance_rotate_webhook_secret", {});
-    expect(r.ok).toBe(false);
-    expect(reasonOf(r)).toBe("step_up_required");
-  });
-
-  test("a session alone is refused: it is not the instance administrator", async () => {
-    const h = await harness();
-    await h.enrol(h.org.id, h.dev);
-    for (const op of ["instance_rotate_webhook_secret", "instance_step_up_challenge"]) {
-      const r = await dispatch(h.env, { kind: "session", cookie: h.COOKIE }, op, {
-        action: "instance_rotate_webhook_secret",
-        input: {},
-      });
+    for (const [op, input] of [
+      [ROTATE, {}],
+      [REPLACE, { private_key: "x" }],
+    ] as const) {
+      const r = await dispatch(h.env, { kind: "bearer", token: h.tti }, op, input);
       expect(r.ok, op).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("forbidden");
     }
   });
 
-  test("a tenant token is refused", async () => {
+  test("an org token is refused", async () => {
     const h = await harness();
     const tok = await mintToken(h.db, { orgId: h.org.id }, "release_operator");
-    const r = await dispatch(
-      h.env,
-      { kind: "bearer", token: tok.secret },
-      "instance_rotate_webhook_secret",
-      {},
-    );
+    const r = await dispatch(h.env, { kind: "bearer", token: tok.secret }, ROTATE, {});
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("forbidden");
   });
 
-  test("a session user with no passkey in the operator org is refused", async () => {
+  test("an owner of ANOTHER org is refused, even with a valid step-up", async () => {
     const h = await harness();
-    const r = await h.asInstance("instance_step_up_challenge", {
-      action: "instance_rotate_webhook_secret",
-      input: {},
-    });
+    const o = await h.person("otto", h.other.id, "owner");
+    const su = await h.stepUp(o, ROTATE, {});
+    const r = await h.as(o.cookie, ROTATE, { step_up: su });
     expect(r.ok).toBe(false);
-    expect(reasonOf(r)).toBe("step_up_required");
+    if (!r.ok) expect(r.error.code).toBe("forbidden");
   });
 
-  test("a passkey of ANOTHER org does not count", async () => {
+  test("a passkey enrolled in another org does not step an operator owner up", async () => {
     const h = await harness();
-    const other = await createOrg(h.db, { slug: "other", name: "Other" });
-    await h.enrol(other.id, h.dev);
-    const r = await h.asInstance("instance_step_up_challenge", {
-      action: "instance_rotate_webhook_secret",
-      input: {},
-    });
+    const o = await h.person("pat", h.org.id, "owner", h.other.id);
+    const r = await h.as(o.cookie, "session_step_up_challenge", { action: ROTATE, input: {} });
     expect(r.ok).toBe(false);
-    expect(reasonOf(r)).toBe("step_up_required");
+  });
+
+  test("a member of the operator org who is not an owner is refused", async () => {
+    const h = await harness();
+    const m = await h.person("mia", h.org.id, "admin");
+    const su = await h.stepUp(m, ROTATE, {});
+    const r = await h.as(m.cookie, ROTATE, { step_up: su });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("forbidden");
   });
 });
 
 describe("rotate the webhook secret", () => {
   test("a step-up for different input is refused; a replay is refused", async () => {
     const h = await harness();
-    await h.enrol(h.org.id, h.dev);
-    const su = await h.stepUp("instance_rotate_webhook_secret", { overlap_minutes: 30 });
-    const wrong = await h.asInstance("instance_rotate_webhook_secret", {
-      overlap_minutes: 60,
-      step_up: su,
-    });
+    const o = await h.person("olive", h.org.id, "owner");
+    const su = await h.stepUp(o, ROTATE, { overlap_minutes: 30 });
+    const wrong = await h.as(o.cookie, ROTATE, { overlap_minutes: 60, step_up: su });
     expect(wrong.ok).toBe(false);
     expect(reasonOf(wrong)).toBe("step_up_wrong_action");
-    const ok = await h.asInstance("instance_rotate_webhook_secret", {
-      overlap_minutes: 30,
-      step_up: su,
-    });
+    const ok = await h.as(o.cookie, ROTATE, { overlap_minutes: 30, step_up: su });
     expect(ok.ok).toBe(true);
-    const again = await h.asInstance("instance_rotate_webhook_secret", {
-      overlap_minutes: 30,
-      step_up: su,
-    });
+    const again = await h.as(o.cookie, ROTATE, { overlap_minutes: 30, step_up: su });
     expect(again.ok).toBe(false);
     expect(reasonOf(again)).toBe("step_up_reused");
   });
 
   test("an overlap above one hour is refused", async () => {
     const h = await harness();
-    await h.enrol(h.org.id, h.dev);
-    const r = await h.asInstance("instance_step_up_challenge", {
-      action: "instance_rotate_webhook_secret",
+    const o = await h.person("olive", h.org.id, "owner");
+    const r = await h.as(o.cookie, "session_step_up_challenge", {
+      action: ROTATE,
       input: { overlap_minutes: 61 },
     });
     expect(r.ok).toBe(false);
@@ -336,7 +316,7 @@ describe("rotate the webhook secret", () => {
 
   test("both secrets verify inside the window and only the new one after it; the value is shown once", async () => {
     const h = await harness();
-    await h.enrol(h.org.id, h.dev);
+    const o = await h.person("olive", h.org.id, "owner");
     const old = (await h.store.get(h.org.id, SECRET_WEBHOOK))!;
     const logs: string[] = [];
     const spies = (["log", "warn", "error"] as const).map((k) => {
@@ -344,8 +324,8 @@ describe("rotate the webhook secret", () => {
       console[k] = (...a: unknown[]) => void logs.push(a.map(String).join(" "));
       return () => (console[k] = orig);
     });
-    const su = await h.stepUp("instance_rotate_webhook_secret", {});
-    const r = await h.asInstance("instance_rotate_webhook_secret", { step_up: su });
+    const su = await h.stepUp(o, ROTATE, {});
+    const r = await h.as(o.cookie, ROTATE, { step_up: su });
     spies.forEach((u) => u());
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -358,19 +338,17 @@ describe("rotate the webhook secret", () => {
     h.advance(2);
     expect(await h.post(old)).toBe(401);
     expect(await h.post(out.secret)).toBe(202);
-    // The value appears in no audit row, event or log line.
+    // The value appears in no audit row, event or log line; the fingerprint and the person do.
     const rows = JSON.stringify(await listAudit(h.db, { orgId: h.org.id }));
-    const sys = JSON.stringify(await listAudit(h.db, { orgId: await systemOrgId(h.db) }));
     const events = JSON.stringify(
       await listEvents(h.db, { orgId: h.org.id }, { after: 0, limit: 1000 }),
     );
-    for (const hay of [rows, sys, events, logs.join("\n")]) {
+    for (const hay of [rows, events, logs.join("\n")]) {
       expect(hay.includes(out.secret)).toBe(false);
       expect(hay.includes(old)).toBe(false);
     }
-    expect(sys.includes(out.fingerprint)).toBe(true);
-    expect(sys.includes(h.user.id)).toBe(true);
-    // The sealed row is not plaintext.
+    expect(rows.includes(out.fingerprint)).toBe(true);
+    expect(rows.includes('"session"')).toBe(true);
     const raw = await h.db.run((x) => x.orm.select().from(schema.secrets));
     expect(JSON.stringify(raw).includes(out.secret)).toBe(false);
   });
@@ -378,13 +356,13 @@ describe("rotate the webhook secret", () => {
 
 describe("replace the App private key", () => {
   async function replace(h: Awaited<ReturnType<typeof harness>>, pem: string) {
-    const su = await h.stepUp("instance_replace_app_private_key", { private_key: pem });
-    return h.asInstance("instance_replace_app_private_key", { private_key: pem, step_up: su });
+    const o = await h.person(`olive${Math.random().toString(36).slice(2, 8)}`, h.org.id, "owner");
+    const su = await h.stepUp(o, REPLACE, { private_key: pem });
+    return h.as(o.cookie, REPLACE, { private_key: pem, step_up: su });
   }
 
   test("a bad PEM is refused and the old key stays", async () => {
     const h = await harness();
-    await h.enrol(h.org.id, h.dev);
     const before = await h.store.get(h.org.id, SECRET_PRIVATE_KEY);
     const r = await replace(h, "not a key");
     expect(r.ok).toBe(false);
@@ -394,22 +372,19 @@ describe("replace the App private key", () => {
 
   test("another App's key, or one GitHub does not know, is refused and the old key stays", async () => {
     const h = await harness();
-    await h.enrol(h.org.id, h.dev);
     const before = await h.store.get(h.org.id, SECRET_PRIVATE_KEY);
     const other = rsaPem();
     h.registered.push({ publicKey: other.publicKey, appId: "99" });
     const r1 = await replace(h, other.privateKey);
     expect(r1.ok).toBe(false);
     if (!r1.ok) expect(r1.error.message).toContain("another App");
-    const unknown = rsaPem();
-    const r2 = await replace(h, unknown.privateKey);
+    const r2 = await replace(h, rsaPem().privateKey);
     expect(r2.ok).toBe(false);
     expect(await h.store.get(h.org.id, SECRET_PRIVATE_KEY)).toBe(before);
   });
 
   test("a new key of the same App is sealed, audited by fingerprint only, never echoed", async () => {
     const h = await harness();
-    await h.enrol(h.org.id, h.dev);
     const fresh = rsaPem();
     h.registered.push({ publicKey: fresh.publicKey, appId: "42" });
     const r = await replace(h, fresh.privateKey);
@@ -418,8 +393,11 @@ describe("replace the App private key", () => {
     const body = fresh.privateKey.split("\n")[1]!;
     expect(JSON.stringify(r.ok ? r.output : null).includes(body)).toBe(false);
     const rows = JSON.stringify(await listAudit(h.db, { orgId: h.org.id }));
-    const sys = JSON.stringify(await listAudit(h.db, { orgId: await systemOrgId(h.db) }));
-    for (const hay of [rows, sys]) expect(hay.includes(body)).toBe(false);
-    if (r.ok) expect((r.output as { fingerprint: string }).fingerprint).toMatch(/^SHA256:/);
+    expect(rows.includes(body)).toBe(false);
+    if (r.ok) {
+      const fp = (r.output as { fingerprint: string }).fingerprint;
+      expect(fp).toMatch(/^SHA256:/);
+      expect(rows.includes(fp)).toBe(true);
+    }
   });
 });

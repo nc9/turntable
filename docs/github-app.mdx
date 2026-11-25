@@ -115,7 +115,7 @@ A new secret is generated and set on the App through the GitHub API. The old one
 
 ## Rotating without a shell
 
-On a hosted instance with no shell, use the web UI under Instance administrator, App secrets (or the REST ops `instance_rotate_webhook_secret` and `instance_replace_app_private_key`). Each needs the instance token, your signed-in web session and a passkey tap, with the passkey enrolled in the org that owns the App.
+On a hosted instance with no shell, a signed-in **owner of the operator org** (the org that owns the App) does both from the web UI, under the org's settings, App secrets. Each needs a fresh passkey step-up, enrolled in that org, for exactly that request. An instance token, an org token, a non-owner and an owner of any other org are refused. The REST ops are `instance_rotate_webhook_secret` and `instance_replace_app_private_key`.
 
 - **Webhook secret.** The new secret is shown once. Paste it into the App's webhook settings on GitHub. The old one also verifies for the overlap (default and at most one hour), then only the new one does.
 - **Private key.** Generate a new key in the App's settings on GitHub and upload the file. The server checks it with `GET /app` for the same App before it swaps; a bad file or another App's key is refused and the old key stays. Afterwards, delete the old key on GitHub.

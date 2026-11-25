@@ -89,13 +89,7 @@ export type OpContext = {
    * Set by the dispatcher when a web session passed a fresh passkey step-up for exactly this
    * action and target (#430). Absent otherwise: a handler that opens a session path must require it.
    */
-  stepUp?: { action: string; target: string | undefined; userId?: string } | undefined;
-  /**
-   * Instance step-up ops only: the signed-in web session that rides with the instance token, and
-   * the operator org (the one that owns the GitHub App) whose passkeys count.
-   */
-  instanceSession?:
-    { userId: string; sessionHash: string; login: string; orgId: string } | undefined;
+  stepUp?: { action: string; target: string | undefined } | undefined;
   /** The App's credential minter and secret store; absent without a master key. */
   appAuth?: AppAuth | undefined;
 };

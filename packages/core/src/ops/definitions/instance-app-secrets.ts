@@ -1,37 +1,20 @@
-// Rotating the GitHub App's webhook secret and private key without a shell (#586). Both are
-// instance-administrator ops that also need a fresh passkey step-up (see ../step-up.ts), and
-// neither value is ever returned, logged, evented or audited except where noted: the new webhook
-// secret is in the response of ONE call, the private key is only ever uploaded.
-import { createHash, createPrivateKey, createPublicKey, randomBytes } from "node:crypto";
+// Rotating the GitHub App's webhook secret and private key without a shell (#586). A signed-in
+// owner of the operator org does it with a fresh passkey step-up (see ../step-up.ts). Neither
+// value is returned, logged, evented or audited except the new webhook secret, which is in the
+// response of ONE call; the private key is only ever uploaded.
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { z } from "zod";
-import {
-  countOpenChallenges,
-  getGithubApp,
-  insertChallenge,
-  purgeExpiredChallenges,
-} from "../../db/repos";
+import { getGithubApp, type GithubApp } from "../../db/repos";
 import { SECRET_PRIVATE_KEY, signAppJwt } from "../../github/app-auth";
 import { sealRotatedWebhookSecret, WEB_OVERLAP_MAX_MS } from "../../github/rotation";
 import { iso } from "../common";
-import { defineOp } from "../define";
+import { defineOp, type OpContext } from "../define";
 import { OpError } from "../errors";
-import {
-  INSTANCE_STEP_UP_CHALLENGE_OP,
-  INSTANCE_STEP_UP_OPS,
-  inputTarget,
-  STEP_UP_KIND,
-  STEP_UP_TTL_MS,
-  stepUpChallengeOf,
-  stepUpHash,
-  stepUpKeys,
-  stepUpPrincipal,
-} from "../step-up";
 
-const MAX_OPEN_STEP_UPS = 10;
 const fingerprint = (bytes: Buffer | string): string =>
   `SHA256:${createHash("sha256").update(bytes).digest("base64").replace(/=+$/, "")}`;
 
-const rotateInput = z.object({
+export const rotateInput = z.object({
   overlap_minutes: z
     .int()
     .min(1)
@@ -39,109 +22,32 @@ const rotateInput = z.object({
     .default(60)
     .describe("How long the previous secret also verifies, in minutes (1 to 60, default 60)."),
 });
-const replaceInput = z.object({
+export const replaceInput = z.object({
   private_key: z.string().min(1).max(16_384).describe("The new private key, PEM."),
 });
 
-const SCHEMAS: Record<string, z.ZodObject> = {
-  instance_rotate_webhook_secret: rotateInput,
-  instance_replace_app_private_key: replaceInput,
-};
-
-export const instanceStepUpChallengeOp = defineOp({
-  name: INSTANCE_STEP_UP_CHALLENGE_OP,
-  summary: "Start a passkey step-up for one instance App-secret action (instance administrator).",
-  description:
-    "Needs the instance token AND the signed-in web session of a person with a passkey in the " +
-    "operator org (the org that owns the GitHub App). Names an action " +
-    "(instance_rotate_webhook_secret or instance_replace_app_private_key) and the exact `input` " +
-    "it will be called with, and returns a single-use WebAuthn challenge bound to the action, a " +
-    "hash of that input, the instance token and the session. The action then carries `step_up`. " +
-    "Lasts 5 minutes. Changes nothing else. Not an MCP tool.",
-  input: z.object({
-    action: z.string().min(1).max(64),
-    input: z.record(z.string(), z.unknown()),
-  }),
-  output: z.object({
-    step_up_id: z.string(),
-    challenge: z.string().describe("base64url: the WebAuthn challenge to sign."),
-    rp_id: z.string(),
-    passkeys: z.array(z.object({ approver: z.string(), passkey_id: z.string() })),
-    expires_at: z.string(),
-  }),
-  effect: "write",
-  auth: { type: "instance", minRole: "admin" },
-  untrustedOutput: false,
-  scope: "org",
-  http: { method: "POST", path: "/instance/step-up" },
-  mcp: false,
-  // The challenge echoes nothing of the action input, but it is bulky and may hold the new key.
-  logOmitFields: ["input"],
-  async handler(ctx, i) {
-    const s = ctx.instanceSession;
-    if (!s || ctx.principal.kind !== "instance") {
-      throw new OpError("forbidden", "step-up needs the instance token and a web session");
-    }
-    if (!ctx.webauthn)
-      throw new OpError("unavailable", "WebAuthn is not configured on this server");
-    const schema = SCHEMAS[i.action];
-    if (!schema || !INSTANCE_STEP_UP_OPS.has(i.action)) {
-      throw new OpError("invalid_input", `${i.action} does not take an instance step-up`);
-    }
-    const parsed = schema.safeParse(i.input);
-    if (!parsed.success) {
-      throw new OpError("invalid_input", "input does not match that action's schema");
-    }
-    const { keys, legacy } = await stepUpKeys(ctx.db, s.orgId, s.userId);
-    if (keys.length === 0) {
-      throw legacy > 0
-        ? new OpError(
-            "forbidden",
-            "re-enrol your passkey: it has no GitHub account id (step_up_reenrol)",
-            {
-              reason: "step_up_reenrol",
-            },
-          )
-        : new OpError(
-            "forbidden",
-            "no passkey of yours is enrolled in the operator org (step_up_required)",
-            { reason: "step_up_required" },
-          );
-    }
-    const now = ctx.now();
-    const principal = stepUpPrincipal(s.userId, ctx.principal.id);
-    await purgeExpiredChallenges(ctx.db, s.orgId, now);
-    if ((await countOpenChallenges(ctx.db, s.orgId, principal, now)) >= MAX_OPEN_STEP_UPS) {
-      throw new OpError("conflict", "too many open step-ups: use or wait out the others");
-    }
-    const nonce = randomBytes(24).toString("base64url");
-    const expiresAt = now + STEP_UP_TTL_MS;
-    const hash = stepUpHash({
-      orgId: s.orgId,
-      sessionHash: s.sessionHash,
-      userId: s.userId,
-      action: i.action,
-      target: inputTarget(parsed.data as Record<string, unknown>, undefined),
-      nonce,
-      expiresAt,
-      instanceTokenId: ctx.principal.id,
+/**
+ * Only a signed-in OWNER of the operator org (the org that owns the GitHub App), with the fresh
+ * passkey step-up the dispatcher already verified for exactly this input. A `tti_` token, an org
+ * token, a non-owner member and an owner of any other org are all refused.
+ */
+async function requireOperatorOwner(ctx: OpContext): Promise<GithubApp> {
+  const p = ctx.principal;
+  if (p.kind !== "session" || p.role !== "owner") {
+    throw new OpError("forbidden", "only a signed-in owner of the operator org may do this");
+  }
+  if (ctx.stepUp?.action === undefined) {
+    throw new OpError("forbidden", "a passkey step-up is required (step_up_required)", {
+      reason: "step_up_required",
     });
-    await insertChallenge(ctx.db, s.orgId, {
-      id: nonce,
-      kind: STEP_UP_KIND,
-      statementHash: hash,
-      principal,
-      expiresAt,
-    });
-    return {
-      step_up_id: nonce,
-      challenge: stepUpChallengeOf(hash),
-      rp_id: ctx.webauthn.rpId,
-      passkeys: keys.map((k) => ({ approver: k.id, passkey_id: k.credentialId })),
-      expires_at: iso(expiresAt)!,
-    };
-  },
-});
+  }
+  const app = await getGithubApp(ctx.db);
+  if (!app) throw new OpError("unavailable", "no GitHub App is configured");
+  if (app.orgId !== ctx.scope.orgId) {
+    throw new OpError("forbidden", "only an owner of the org that owns the GitHub App may do this");
+  }
+  return app;
+}
 
 export const instanceRotateWebhookSecretOp = defineOp({
   name: "instance_rotate_webhook_secret",
@@ -150,32 +56,31 @@ export const instanceRotateWebhookSecretOp = defineOp({
     "Generates a new webhook secret on the server, seals it under the current master key and " +
     "returns it ONCE, in this response only, for you to paste into the App's settings on GitHub. " +
     "The previous secret also verifies until `overlap_until` (default and at most 1 hour), then " +
-    "only the new one does. Needs the instance token, the signed-in web session of a person " +
-    "with a passkey in the operator org, and a fresh `step_up` for exactly this input " +
-    "(`instance_step_up_challenge`). Audited by fingerprint, never the value. Not an MCP tool.",
+    "only the new one does. Only a signed-in web session of an OWNER of the operator org (the org " +
+    "that owns the GitHub App) may call it, with a fresh passkey `step_up` for exactly this input " +
+    "(`session_step_up_challenge`); a `tti_` token, an org token and any other org are refused. " +
+    "Audited by fingerprint, never the value. Not an MCP tool.",
   input: rotateInput,
   output: z.object({
     secret: z.string().describe("The new webhook secret. Shown once."),
     fingerprint: z.string(),
     overlap_until: z.string(),
-    approved_by: z.string(),
   }),
   effect: "write",
-  auth: { type: "instance", minRole: "admin" },
+  auth: { type: "token", minRole: "owner" },
   untrustedOutput: false,
   scope: "org",
-  http: { method: "POST", path: "/instance/github-app/webhook-secret/rotate" },
+  http: { method: "POST", path: "/app-secrets/webhook-secret/rotate" },
   mcp: false,
   oneTimeSecretFields: ["secret"],
   outsideTransaction: true,
   auditDetail: (o) => ({
     fingerprint: o.fingerprint,
     overlap_until: o.overlap_until,
-    approved_by: o.approved_by,
   }),
   async handler(ctx, i) {
     if (!ctx.auditStore) throw new OpError("unavailable", "no master key: the secret store is off");
-    if (!ctx.stepUp?.userId) throw new OpError("forbidden", "step_up_required");
+    await requireOperatorOwner(ctx);
     let r;
     try {
       r = await sealRotatedWebhookSecret(ctx.db, ctx.auditStore, {
@@ -189,7 +94,6 @@ export const instanceRotateWebhookSecretOp = defineOp({
       secret: r.secret,
       fingerprint: fingerprint(r.secret),
       overlap_until: iso(r.overlapUntil)!,
-      approved_by: ctx.stepUp.userId,
     };
   },
 });
@@ -202,27 +106,26 @@ export const instanceReplaceAppPrivateKeyOp = defineOp({
     "JWT with it and calls `GET /app` on GitHub: the App id must match the configured App, else " +
     "the call is refused and the old key stays. The key is sealed under the current master key " +
     "and is never returned. Afterwards, delete the old key in the App's settings on GitHub. " +
-    "Needs the instance token, the signed-in web session of a person with a passkey in the " +
-    "operator org, and a fresh `step_up` for exactly this input. Audited by key fingerprint " +
-    "only. Over https or loopback only. Not an MCP tool.",
+    "Only a signed-in web session of an OWNER of the operator org (the org that owns the GitHub " +
+    "App) may call it, with a fresh passkey `step_up` for exactly this input; a `tti_` token, an " +
+    "org token and any other org are refused. Audited by key fingerprint only. Over https or " +
+    "loopback only. Not an MCP tool.",
   input: replaceInput,
-  output: z.object({ fingerprint: z.string(), app_id: z.string(), approved_by: z.string() }),
+  output: z.object({ fingerprint: z.string(), app_id: z.string() }),
   effect: "write",
-  auth: { type: "instance", minRole: "admin" },
+  auth: { type: "token", minRole: "owner" },
   untrustedOutput: false,
   scope: "org",
-  http: { method: "POST", path: "/instance/github-app/private-key" },
+  http: { method: "POST", path: "/app-secrets/private-key" },
   mcp: false,
   secretInputFields: ["private_key"],
   outsideTransaction: true,
-  auditDetail: (o) => ({ fingerprint: o.fingerprint, approved_by: o.approved_by }),
+  auditDetail: (o) => ({ fingerprint: o.fingerprint }),
   async handler(ctx, i) {
     const store = ctx.auditStore;
     const auth = ctx.appAuth;
     if (!store || !auth) throw new OpError("unavailable", "no master key or GitHub App configured");
-    if (!ctx.stepUp?.userId) throw new OpError("forbidden", "step_up_required");
-    const app = await getGithubApp(ctx.db);
-    if (!app) throw new OpError("unavailable", "no GitHub App is configured");
+    const app = await requireOperatorOwner(ctx);
     const pem = i.private_key;
     let fp: string;
     try {
@@ -263,6 +166,6 @@ export const instanceReplaceAppPrivateKeyOp = defineOp({
     }
     await store.set(app.orgId, SECRET_PRIVATE_KEY, pem);
     auth.dropCached();
-    return { fingerprint: fp, app_id: app.appId, approved_by: ctx.stepUp.userId };
+    return { fingerprint: fp, app_id: app.appId };
   },
 });
