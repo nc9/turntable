@@ -18,3 +18,4 @@ packages/ui/tests/onboarding.test.tsx
 packages/ui/tests/approval-notifications.test.ts
 packages/ui/tests/org-page.test.tsx
 packages/ui/tests/infra-retry.test.ts
+packages/ui/tests/run-workflow.test.tsx

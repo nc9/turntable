@@ -131,6 +131,7 @@ export function createFixtureOnboarding(): OnboardingApi {
       return {
         sha: "0123456789abcdef0123456789abcdef01234567",
         truncated: false,
+        default_branch: "main",
         workflows: [
           {
             path: ".github/workflows/ci.yml",
@@ -138,6 +139,7 @@ export function createFixtureOnboarding(): OnboardingApi {
             triggers: ["push", "pull_request"],
             ingested: true,
             too_large: false,
+            dispatch_inputs: null,
             jobs: [
               { job_id: "test", name: "test", verdict: "run" },
               {
@@ -150,6 +152,15 @@ export function createFixtureOnboarding(): OnboardingApi {
             ],
           },
         ],
+      };
+    },
+    async runDispatch({ ref }) {
+      return {
+        run_id: "fixture-dispatch",
+        ref: `refs/heads/${ref}`,
+        sha: "0123456789abcdef0123456789abcdef01234567",
+        trust_class: "protected",
+        state: "queued" as const,
       };
     },
     async runDefaultBranch() {

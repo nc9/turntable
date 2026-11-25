@@ -188,6 +188,10 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   // Onboarding (A3): owner or admin sessions only, by the ops' own `admin` role.
   "onboard_repos",
   "run_default_branch",
+  // A human starts a workflow_dispatch run from the web (#617): the op's own `release_operator`
+  // role gates it, and a release-class run is still held for approval before any signing or
+  // publishing, so no step-up (a dispatch is not an approval).
+  "run_dispatch",
   // An owner or admin session sets its org's settings, by each setting's own role. Loosening a
   // trust setting also needs the step-up (the guard enforces it: set_setting is in
   // SESSION_STEP_UP_OPS for that case only).

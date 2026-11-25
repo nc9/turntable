@@ -25,6 +25,7 @@ import { STATE_META } from "@/lib/states";
 import { cn } from "@/lib/utils";
 import type { RunsSearch } from "@/router";
 import { RefChip, RunLink, ShaChip } from "./common";
+import { RunWorkflowButton } from "./run-workflow";
 import { TrustBadge } from "./trust";
 
 const EVENTS = ["push", "pull_request", "workflow_dispatch"];
@@ -253,6 +254,9 @@ export function RunsPage() {
               {active > 0 ? <span className="ml-3 text-st-running">{active} active</span> : null}
             </p>
           </div>
+          {scope.orgSlug && scope.projectSlug ? (
+            <RunWorkflowButton org={scope.orgSlug} project={scope.projectSlug} />
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2" role="search" aria-label="Filter runs">
           <FilterMenu
