@@ -31,6 +31,7 @@ import {
 import { testDb } from "../src/db/dialect";
 import { openPostgres } from "../src/db/pg";
 import { SECRET_CLIENT } from "../src/github/app-auth";
+import { notInstallationOwnerMessage } from "../src/github/claim";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import type { Principal } from "../src/ops/principal";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
@@ -889,7 +890,7 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
       expect(member.ok).toBe(false);
       if (!member.ok) {
         expect(member.error.code).toBe("forbidden");
-        expect(member.error.message).toBe("you must be an owner of acme on GitHub");
+        expect(member.error.message).toBe(notInstallationOwnerMessage("acme"));
       }
       expect(await getInstallationRow(h, "100")).toBeUndefined();
       // a personal-account installation of someone else, visible to alice, is not hers

@@ -25,6 +25,7 @@ import {
   InstallationClaims,
 } from "../src/github/claim";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
+import { notInstallationOwnerMessage } from "../src/github/claim";
 import { handleRequest } from "../src/server";
 import { registerUiAssets } from "../src/ui-assets";
 import { fakeFacts, fakeUserVerifier, inst, ownerOf100, repo, setup } from "./github-helpers";
@@ -247,7 +248,7 @@ describe.each(dialects)("onboarding claim popup (%s)", (_n, open) => {
     const refused = await get(owner);
     expect(refused.ok && refused.output).toMatchObject({
       state: "refused",
-      reason: "only an owner of the GitHub account can connect its installation",
+      reason: notInstallationOwnerMessage("acme"),
     });
     const feed = await listEvents(h.db, { orgId: h.tenant.id }, { after: 0, limit: 50 });
     expect(
@@ -296,6 +297,11 @@ describe.each(dialects)("onboarding claim popup (%s)", (_n, open) => {
       { claim_id },
     );
     expect(viaReader.ok).toBe(false);
+  });
+
+  test("the ownership refusal is one shared string: the popup path and bind_installation render it identically", () => {
+    // bind_installation asserts this same function in onboarding-account.test.ts, so both paths match.
+    expect(notInstallationOwnerMessage("acme")).toBe("you must be an owner of acme on GitHub");
   });
 
   test("a replayed state is refused, and an expired one too (the claim reads expired)", async () => {

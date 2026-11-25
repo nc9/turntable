@@ -20,7 +20,7 @@ import {
   listMembershipsOfUser,
 } from "../../db/repos";
 import { syncInstallation } from "../../github/installations";
-import { POPUP_NEW_PROJECT_MAX_CONCURRENT } from "../../github/claim";
+import { notInstallationOwnerMessage, POPUP_NEW_PROJECT_MAX_CONCURRENT } from "../../github/claim";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
 import {
@@ -233,7 +233,7 @@ export const bindInstallationOp = defineOp({
       owns = who !== undefined && inst.accountId === who.githubUserId;
     }
     if (!owns) {
-      throw new OpError("forbidden", `you must be an owner of ${inst.accountLogin} on GitHub`);
+      throw new OpError("forbidden", notInstallationOwnerMessage(inst.accountLogin));
     }
     const held = await getInstallation(ctx.db, i.installation_id);
     if (held && held.orgId !== ctx.scope.orgId) {

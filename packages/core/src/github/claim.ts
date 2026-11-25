@@ -55,6 +55,11 @@ import type { GithubFacts } from "./api";
 import { SECRET_CLIENT } from "./app-auth";
 import { syncInstallation } from "./installations";
 
+/** The refusal shown when the signed-in user does not own the installation's GitHub account. */
+export function notInstallationOwnerMessage(accountLogin: string): string {
+  return `you must be an owner of ${accountLogin} on GitHub`;
+}
+
 export const CLAIM_PATH = "/api/v1/github/setup";
 /** Where `start` points: the confirmation page (GET) and its form (POST). */
 export const CLAIM_START_PATH = "/api/v1/github/claim";
@@ -448,7 +453,7 @@ export class InstallationClaims {
       owns = inst.accountId === gh.id;
     }
     if (!owns) {
-      return refuse(403, "only an owner of the GitHub account can connect its installation", {
+      return refuse(403, notInstallationOwnerMessage(inst.accountLogin), {
         ...who,
         account: inst.accountLogin,
         account_type: inst.accountType,
