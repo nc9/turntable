@@ -56,6 +56,8 @@ export type Candidate = {
   prNumber?: number;
   /** For a pull request: the PR object's facts for `github.event.pull_request` (data only). */
   pr?: PullRequest;
+  /** The activity type of a draft transition seen at an already handled head (#633). */
+  action?: "ready_for_review" | "converted_to_draft";
   /** Forge facts for the trust decision, re-fetched at ingest. */
   sameRepo?: boolean;
   permission?: ForgePermission | "unknown";
@@ -151,6 +153,48 @@ async function openPullsFor(
   // Set last: a poll that fails part way takes the baseline again.
   await markPollSkipped(deps.db, scope, { ...marker, now });
   return cfg.prNumbers === undefined ? [] : onlyListed(cfg, all);
+}
+
+/**
+ * The draft state a head was last ingested in, kept as a poll_seen marker so no table changes.
+ * Flipping draft does not move the head sha, so the plain (event, sha) key alone would hide a
+ * `ready_for_review` / `converted_to_draft` forever.
+ */
+const draftMarker = (cfg: PollRepoConfig, pr: PullRequest, draft: boolean) => ({
+  repo: cfg.repo,
+  workflowPath: cfg.workflow,
+  event: `pr-draft:${draft}`,
+  sha: pr.headSha,
+});
+
+/**
+ * Whether the poller is done with this PR head. A head already handled is seen, except when its
+ * draft flag is now the opposite of the state it was ingested in: that is a ready_for_review or
+ * converted_to_draft, run once per head (the workflow's `types` decide, at plan time).
+ */
+async function prHandled(
+  deps: IngestDeps,
+  cfg: PollRepoConfig,
+  scope: Scope,
+  pr: PullRequest,
+): Promise<{ seen: boolean; action?: "ready_for_review" | "converted_to_draft" }> {
+  const plain = {
+    repo: cfg.repo,
+    workflowPath: cfg.workflow,
+    event: "pull_request",
+    sha: pr.headSha,
+  };
+  if (!(await pollSeen(deps.db, scope, plain))) return { seen: false };
+  const now = pr.draft === true;
+  if (
+    !(await pollSeen(deps.db, scope, draftMarker(cfg, pr, !now))) ||
+    (await pollSeen(deps.db, scope, draftMarker(cfg, pr, now)))
+  ) {
+    return { seen: true };
+  }
+  const action = now ? "converted_to_draft" : "ready_for_review";
+  const seen = await pollSeen(deps.db, scope, { ...plain, event: `pull_request:${action}` });
+  return seen ? { seen: true } : { seen: false, action };
 }
 
 const allowed = (cfg: Pick<PollRepoConfig, "authors">, login: string | null): boolean =>
@@ -294,6 +338,7 @@ function eventPayload(c: Candidate, repo: string, before?: string): Value {
     const fork =
       pr?.headFork ?? (headRepo !== null && headRepo.toLowerCase() !== repo.toLowerCase());
     return {
+      ...(c.action ? { action: c.action } : {}),
       ...(c.prNumber === undefined ? {} : { number: c.prNumber }),
       pull_request: {
         ...(c.prNumber === undefined ? {} : { number: c.prNumber }),
@@ -885,16 +930,8 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     let budget = cfg.maxNewPrsPerPoll;
     let taken = 0;
     for (const pr of await openPulls()) {
-      if (
-        await pollSeen(deps.db, scope, {
-          repo,
-          workflowPath: cfg.workflow,
-          event: "pull_request",
-          sha: pr.headSha,
-        })
-      ) {
-        continue;
-      }
+      const handled = await prHandled(deps, cfg, scope, pr);
+      if (handled.seen) continue;
       if (lower(pr.baseRepo) !== lower(repo)) {
         result.refused.push({
           what: `pr #${pr.number}`,
@@ -942,6 +979,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         headBranch: pr.headRef,
         prNumber: pr.number,
         pr,
+        ...(handled.action ? { action: handled.action } : {}),
         baseRef: pr.baseRef,
         ...(pr.baseSha ? { baseSha: pr.baseSha } : {}),
         sameRepo,
@@ -954,16 +992,8 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
   if (cfg.prMode === "allowlist") {
     for (const pr of await openPulls()) {
       // Already handled: no API call at all.
-      if (
-        await pollSeen(deps.db, scope, {
-          repo,
-          workflowPath: cfg.workflow,
-          event: "pull_request",
-          sha: pr.headSha,
-        })
-      ) {
-        continue;
-      }
+      const handled = await prHandled(deps, cfg, scope, pr);
+      if (handled.seen) continue;
       let verdict = gatePullRequestOpener(cfg, pr);
       let message = pr.title;
       if (verdict.ok) {
@@ -986,6 +1016,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         headBranch: pr.headRef,
         prNumber: pr.number,
         pr,
+        ...(handled.action ? { action: handled.action } : {}),
         baseRef: pr.baseRef,
         ...(pr.baseSha ? { baseSha: pr.baseSha } : {}),
         sameRepo: true,
@@ -1004,7 +1035,8 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
   for (const c of candidates) {
     const what = `${c.event} ${c.sha.slice(0, 7)}`;
     // A tag run is its own thing even at the default branch's head: it is keyed by the tag.
-    const seenEvent = c.tag === undefined ? c.event : `tag:${c.tag}`;
+    const seenEvent =
+      c.tag !== undefined ? `tag:${c.tag}` : c.action ? `${c.event}:${c.action}` : c.event;
     const key = { repo, workflowPath: cfg.workflow, event: seenEvent, sha: c.sha };
     if (await pollSeen(deps.db, scope, key)) continue;
     const used = await countPolledSince(deps.db, scope, repo, now - 3_600_000);
@@ -1059,6 +1091,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     const event: WorkflowEvent = {
       name: c.event,
       ref: c.ref,
+      ...(c.action ? { action: c.action } : {}),
       ...(c.baseRef ? { baseRef: c.baseRef } : {}),
       ...(changedFiles ? { changedFiles } : {}),
     };
@@ -1103,6 +1136,11 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     if (!wp.trigger.matched) {
       // Deterministic for this sha: remember it so the compare call is not repeated.
       await markPollSkipped(deps.db, scope, { ...key, now });
+      if (c.pr)
+        await markPollSkipped(deps.db, scope, {
+          ...draftMarker(cfg, c.pr, c.pr.draft === true),
+          now,
+        });
       result.refused.push({ what, reason: `not triggered: ${wp.trigger.reason}` });
       log(`poll ${repo}: ${what} not triggered (${wp.trigger.reason})`);
       continue;
@@ -1250,6 +1288,12 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
           run: created.run.id,
         },
       }).catch(() => {});
+    }
+    if (created && c.pr) {
+      await markPollSkipped(deps.db, scope, {
+        ...draftMarker(cfg, c.pr, c.pr.draft === true),
+        now,
+      });
     }
     if (created) {
       result.created.push(created.run.id);
