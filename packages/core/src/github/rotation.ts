@@ -14,7 +14,7 @@ export const WEB_OVERLAP_MAX_MS = 3_600_000;
 /**
  * Seals a new webhook secret under the current master key and keeps the old one as `previous`
  * until `now + overlapMs`. Returns the new secret (the caller decides who sees it). It does not
- * touch GitHub. A second rotation inside the window replaces `previous` with the secret it
+ * touch GitHub. The three local writes are one transaction. A second rotation inside the window replaces `previous` with the secret it
  * rotates away from, so at most two secrets ever verify; an expired `previous` is simply
  * overwritten here, and the webhook handler ignores it from `previousSecretExpiresAt` on.
  */
@@ -29,9 +29,14 @@ export async function sealRotatedWebhookSecret(
   if (!old) throw new Error("the current webhook secret is missing from the secret store");
   const until = (opts.now ?? Date.now)() + opts.overlapMs;
   const fresh = randomBytes(32).toString("hex");
-  await store.set(app.orgId, SECRET_WEBHOOK_PREVIOUS, old);
-  await setPreviousSecretExpiry(db, app.appId, until);
-  await store.set(app.orgId, SECRET_WEBHOOK, fresh);
+  // All three writes commit together or not at all: a crash between them leaves the old secret
+  // current and verifying, never a half-rotated state.
+  await db.transaction(async (tx) => {
+    const s = store.withDb(tx);
+    await s.set(app.orgId, SECRET_WEBHOOK_PREVIOUS, old);
+    await setPreviousSecretExpiry(tx, app.appId, until);
+    await s.set(app.orgId, SECRET_WEBHOOK, fresh);
+  });
   return { secret: fresh, overlapUntil: until, orgId: app.orgId, appId: app.appId, old };
 }
 
@@ -77,8 +82,13 @@ export async function rotateWebhookSecret(
     });
     if (!res.ok) throw new Error(`GitHub refused the new webhook secret: HTTP ${res.status}`);
   } catch (e) {
-    await store.set(app.orgId, SECRET_WEBHOOK, old);
-    await setPreviousSecretExpiry(db, app.appId, null);
+    // One transaction: the old secret is current again and `previous` and its expiry are gone.
+    await db.transaction(async (tx) => {
+      const s = store.withDb(tx);
+      await s.set(app.orgId, SECRET_WEBHOOK, old);
+      await s.delete(app.orgId, SECRET_WEBHOOK_PREVIOUS, { audit: false });
+      await setPreviousSecretExpiry(tx, app.appId, null);
+    });
     throw e;
   }
   if (opts.audit !== false) {
