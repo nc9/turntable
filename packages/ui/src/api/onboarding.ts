@@ -131,7 +131,7 @@ export interface OnboardingApi {
   /** `installationId` opens that installation's configure page instead of a fresh install. */
   startClaim(args: { org: string; popup: boolean; installationId?: string }): Promise<StartedClaim>;
   getClaim(args: { org: string; claimId: string }): Promise<ClaimStatus>;
-  /** The installations this org has bound (any status); the wizard uses the active ones. */
+  /** The active installations this org has bound. */
   listOrgInstallations(args: { org: string }): Promise<OrgInstallation[]>;
   listUserInstallations(): Promise<UserInstallation[]>;
   bindInstallation(args: { org: string; installationId: string }): Promise<BoundInstallation>;
@@ -263,8 +263,8 @@ export function createOnboardingApi(options: OnboardingApiOptions = {}): Onboard
       );
     },
     async listOrgInstallations({ org }) {
-      return (await call<{ installations: OrgInstallation[] }>("GET", "/github/app", { org }))
-        .installations;
+      const w = await call<{ installations: OrgInstallation[] }>("GET", "/github/app", { org });
+      return w.installations.filter((i) => i.status === "active");
     },
     async listUserInstallations() {
       return (await call<{ installations: UserInstallation[] }>("GET", "/account/installations"))
