@@ -349,8 +349,6 @@ jobs:
       - name: Run the distroless image (healthz, UI, CSP, PORT, bootstrap token, a real worker checkout)
         run: scripts/smoke-image.sh turntable:smoke
 
-  # The one required check for the ruleset. A skipped job is fine: only `changes` (docs-only pull
-  # requests) or the TURNTABLE_CI gates skip jobs. A failed or cancelled job fails this one.
   docs:
     # The docs site check and build (was its own workflow; now it gates ci-ok, so a docs break
     # cannot sit red on main unnoticed).
@@ -372,6 +370,8 @@ jobs:
       - run: bun run check
       - run: bun run build
 
+  # The one required check for the ruleset. A skipped job is fine: only `changes` (docs-only pull
+  # requests) or the TURNTABLE_CI gates skip jobs. A failed or cancelled job fails this one.
   ci-ok:
     needs:
       - changes
