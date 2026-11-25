@@ -419,7 +419,10 @@ export class Poller {
     for (const key of new Set(this.#allRepos().map((c) => c.repo.toLowerCase()))) {
       if (repo !== undefined && key !== repo.toLowerCase()) continue;
       // The same config the poll loop uses: a static entry wins over a binding of the same name.
-      const cfg = this.#cfg(key) as PollRepoConfig;
+      // Of several static entries for the repo, the primary one (#552), not the first listed.
+      const statics = this.#o.config.repos.filter((r) => r.repo.toLowerCase() === key);
+      const primary = statics.find((r) => isPrimaryEntry(this.#o.config.repos, r));
+      const cfg = (primary ?? this.#cfg(key)) as PollRepoConfig;
       const target = this.#o.config.repos.includes(cfg)
         ? await targetScope(this.#o.db, cfg).catch(() => undefined)
         : this.#boundIds.get(key);
@@ -441,7 +444,11 @@ export class Poller {
         `this project ingests several repos (${mine.map((c) => c.repo).join(", ")}): name one`,
       );
     }
-    return mine[0] as PollRepoConfig;
+    const only = mine[0] as PollRepoConfig;
+    // A static entry carries its resolved primary flag, as the poll loop gives it.
+    return this.#o.config.repos.includes(only)
+      ? { ...only, primary: isPrimaryEntry(this.#o.config.repos, only) }
+      : only;
   }
 
   /**
