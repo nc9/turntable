@@ -728,31 +728,33 @@ export const instanceBindInstallationOp = defineOp({
       throw new OpError("not_found", "GitHub does not know that installation");
     }
     // The system chain gets the dispatcher's entry; the org's own chain and feed say it too.
-    await appendAudit(
-      ctx.db,
-      { orgId: org.id },
-      {
-        principalKind: "instance",
-        principalId: ctx.principal.id,
-        op: "instance_bind_installation",
-        effect: "write",
-        outcome: "ok",
-        input: {
-          target_org: org.slug,
-          installation_id: i.installation_id,
-          account_login: facts.account.login,
-          reason: i.reason,
+    await ctx.db.transaction(async (tx) => {
+      await appendAudit(
+        tx,
+        { orgId: org.id },
+        {
+          principalKind: "instance",
+          principalId: ctx.principal.id,
+          op: "instance_bind_installation",
+          effect: "write",
+          outcome: "ok",
+          input: {
+            target_org: org.slug,
+            installation_id: i.installation_id,
+            account_login: facts.account.login,
+            reason: i.reason,
+          },
         },
-      },
-    );
-    await appendEvent(
-      ctx.db,
-      { orgId: org.id },
-      {
-        type: "org.installation_bound_by_instance",
-        payload: { installation_id: i.installation_id, account_login: facts.account.login },
-      },
-    );
+      );
+      await appendEvent(
+        tx,
+        { orgId: org.id },
+        {
+          type: "org.installation_bound_by_instance",
+          payload: { installation_id: i.installation_id, account_login: facts.account.login },
+        },
+      );
+    });
     return {
       installation_id: i.installation_id,
       account_login: facts.account.login,
