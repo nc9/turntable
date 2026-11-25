@@ -1,0 +1,2 @@
+ALTER TABLE "outbound_webhook_endpoints" ADD COLUMN "format" text DEFAULT 'json' NOT NULL;--> statement-breakpoint
+ALTER TABLE "outbound_webhook_endpoints" ADD CONSTRAINT "outbound_webhook_endpoints_format_check" CHECK (format IN ('json', 'slack'));

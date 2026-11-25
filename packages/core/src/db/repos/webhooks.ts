@@ -26,6 +26,7 @@ export async function createOutboundEndpoint(
     url: string;
     description: string;
     eventTypes: readonly EventType[] | null;
+    format?: s.WebhookFormat | undefined;
     createdBy: string;
     /** Start at the beginning of the feed instead of its tip. */
     fromStart: boolean;
@@ -52,6 +53,7 @@ export async function createOutboundEndpoint(
         description: input.description,
         eventTypes:
           input.eventTypes && input.eventTypes.length > 0 ? JSON.stringify(input.eventTypes) : null,
+        format: input.format ?? "json",
         cursor,
         createdBy: input.createdBy,
         createdAt: input.now,

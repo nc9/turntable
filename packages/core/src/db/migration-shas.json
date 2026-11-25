@@ -208,6 +208,10 @@
     {
       "tag": "0051_notifications",
       "sha256": "d7ddcde4dffa9b4ac3afcb809bbc2dcacbc89e6e41b5e3072f0be301a90eee86"
+    },
+    {
+      "tag": "0052_webhook_slack_format",
+      "sha256": "26711ec309e746a9afede898e5eab48d5b4732a46f9373a282d2c1b2b14d9ad1"
     }
   ],
   "pg": [
@@ -302,6 +306,10 @@
     {
       "tag": "0022_notifications",
       "sha256": "7dd85de86481608429e1fbe7032c7d2afb643937360d8d1bdcf6247cb6af51e5"
+    },
+    {
+      "tag": "0023_webhook_slack_format",
+      "sha256": "27f11e159c776d5922cc3c38dca8d78a6347d1690bbbb25078e084a7599a0383"
     }
   ]
 }

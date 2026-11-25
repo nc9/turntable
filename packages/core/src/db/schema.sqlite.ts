@@ -1508,6 +1508,9 @@ export const notificationCursors = sqliteTable("notification_cursors", {
 export const WEBHOOK_STATES = ["active", "disabled"] as const;
 export type WebhookState = (typeof WEBHOOK_STATES)[number];
 
+export const WEBHOOK_FORMATS = ["json", "slack"] as const;
+export type WebhookFormat = (typeof WEBHOOK_FORMATS)[number];
+
 export const WEBHOOK_DELIVERY_STATES = ["pending", "delivered", "abandoned"] as const;
 export type OutboundDeliveryState = (typeof WEBHOOK_DELIVERY_STATES)[number];
 
@@ -1529,6 +1532,8 @@ export const outboundEndpoints = sqliteTable(
     description: text("description").notNull().default(""),
     /** JSON array of event types, or null for all. */
     eventTypes: text("event_types"),
+    /** The body shape: the signed event JSON, or a Slack message of fixed text (#611). */
+    format: text("format").notNull().default("json"),
     state: text("state").notNull().default("active"),
     /** Why it was disabled (`manual` or `auto: <n> consecutive failures`). */
     disabledReason: text("disabled_reason"),
@@ -1541,6 +1546,7 @@ export const outboundEndpoints = sqliteTable(
   (t) => [
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
     check("outbound_webhook_endpoints_state_check", inList("state", WEBHOOK_STATES)),
+    check("outbound_webhook_endpoints_format_check", inList("format", WEBHOOK_FORMATS)),
     index("outbound_webhook_endpoints_org_idx").on(t.orgId, t.state),
   ],
 );

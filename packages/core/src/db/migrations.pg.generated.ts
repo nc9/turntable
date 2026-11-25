@@ -320,5 +320,13 @@ export const migrations: Migration[] = [
       "ALTER TABLE \"notifications\" ADD CONSTRAINT \"notifications_project_id_org_id_projects_id_org_id_fk\" FOREIGN KEY (\"project_id\",\"org_id\") REFERENCES \"projects\"(\"id\",\"org_id\") ON DELETE no action ON UPDATE no action;",
       "CREATE INDEX \"notifications_user_idx\" ON \"notifications\" USING btree (\"user_id\",\"id\");"
     ]
+  },
+  {
+    "tag": "0023_webhook_slack_format",
+    "when": 1795603776678,
+    "statements": [
+      "ALTER TABLE \"outbound_webhook_endpoints\" ADD COLUMN \"format\" text DEFAULT 'json' NOT NULL;",
+      "ALTER TABLE \"outbound_webhook_endpoints\" ADD CONSTRAINT \"outbound_webhook_endpoints_format_check\" CHECK (format IN ('json', 'slack'));"
+    ]
   }
 ];

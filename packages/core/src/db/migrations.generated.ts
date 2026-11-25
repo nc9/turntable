@@ -578,5 +578,18 @@ export const migrations: Migration[] = [
       "CREATE INDEX `notifications_user_idx` ON `notifications` (`user_id`,`id`);",
       "CREATE UNIQUE INDEX `notifications_dedupe_unique` ON `notifications` (`user_id`,`kind`,`dedupe_key`);"
     ]
+  },
+  {
+    "tag": "0052_webhook_slack_format",
+    "when": 1795603776088,
+    "statements": [
+      "PRAGMA foreign_keys=OFF;",
+      "CREATE TABLE `__new_outbound_webhook_endpoints` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`url` text NOT NULL,\n\t`description` text DEFAULT '' NOT NULL,\n\t`event_types` text,\n\t`format` text DEFAULT 'json' NOT NULL,\n\t`state` text DEFAULT 'active' NOT NULL,\n\t`disabled_reason` text,\n\t`consecutive_failures` integer DEFAULT 0 NOT NULL,\n\t`cursor` integer DEFAULT 0 NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"outbound_webhook_endpoints_state_check\" CHECK(state IN ('active', 'disabled')),\n\tCONSTRAINT \"outbound_webhook_endpoints_format_check\" CHECK(format IN ('json', 'slack'))\n);",
+      "INSERT INTO `__new_outbound_webhook_endpoints`(\"id\", \"org_id\", \"project_id\", \"url\", \"description\", \"event_types\", \"format\", \"state\", \"disabled_reason\", \"consecutive_failures\", \"cursor\", \"created_by\", \"created_at\", \"updated_at\") SELECT \"id\", \"org_id\", \"project_id\", \"url\", \"description\", \"event_types\", \"format\", \"state\", \"disabled_reason\", \"consecutive_failures\", \"cursor\", \"created_by\", \"created_at\", \"updated_at\" FROM `outbound_webhook_endpoints`;",
+      "DROP TABLE `outbound_webhook_endpoints`;",
+      "ALTER TABLE `__new_outbound_webhook_endpoints` RENAME TO `outbound_webhook_endpoints`;",
+      "PRAGMA foreign_keys=ON;",
+      "CREATE INDEX `outbound_webhook_endpoints_org_idx` ON `outbound_webhook_endpoints` (`org_id`,`state`);"
+    ]
   }
 ];

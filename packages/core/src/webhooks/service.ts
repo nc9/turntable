@@ -33,6 +33,8 @@ import {
 import type { EventType } from "../db/schema";
 import { open, seal } from "../secrets/crypto";
 
+import { slackText, type WebhookEnvelope } from "./slack";
+
 export const SIGNATURE_HEADER = "longshore-signature";
 export const OVERLAP_MS = 24 * 3600 * 1000;
 export const DISABLE_AFTER = 20;
@@ -183,6 +185,7 @@ export class WebhookService {
       url: string;
       description: string;
       eventTypes: readonly EventType[] | null;
+      format?: "json" | "slack";
       createdBy: string;
       fromStart: boolean;
     },
@@ -261,7 +264,7 @@ export class WebhookService {
     return due.length;
   }
 
-  async #body(d: DueDelivery, slugs: Map<string, string>): Promise<string> {
+  async #envelope(d: DueDelivery, slugs: Map<string, string>): Promise<WebhookEnvelope> {
     const { event, endpoint } = d;
     let org = slugs.get(endpoint.orgId);
     if (org === undefined) {
@@ -274,7 +277,7 @@ export class WebhookService {
         : ((await projectSlugsFor(this.#o.db, endpoint.orgId, [event.projectId])).get(
             event.projectId,
           ) ?? null);
-    return JSON.stringify({
+    return {
       cursor: event.id,
       id: event.publicId,
       type: event.type,
@@ -285,7 +288,11 @@ export class WebhookService {
       attempt_id: event.attemptId,
       payload: JSON.parse(event.payload) as unknown,
       created_at: new Date(event.createdAt).toISOString(),
-    });
+    };
+  }
+
+  async #body(d: DueDelivery, slugs: Map<string, string>): Promise<string> {
+    return JSON.stringify(await this.#envelope(d, slugs));
   }
 
   async #deliver(d: DueDelivery, slugs: Map<string, string>): Promise<void> {
@@ -324,7 +331,16 @@ export class WebhookService {
       await failed(null, err instanceof Error ? err.message : "bad URL", null);
       return;
     }
-    const body = await this.#body(d, slugs);
+    let body: string;
+    if (endpoint.format === "slack") {
+      const text = slackText(await this.#envelope(d, slugs));
+      // Not one of the notification kinds: nothing to say in Slack, so nothing is sent.
+      if (text === null) {
+        await record({ ok: true, status: 204, response: "" });
+        return;
+      }
+      body = JSON.stringify({ text });
+    } else body = await this.#body(d, slugs);
     const doFetch = this.#o.fetch ?? safeFetch;
     let res: Response;
     try {
