@@ -12609,6 +12609,508 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/instance/run-summary": {
+      "get": {
+        "operationId": "instance_run_summary",
+        "summary": "Counts of finished runs by trigger and conclusion, per org and project, for operators.",
+        "description": "Per org and project over a window (`since`: an ISO 8601 time or a duration like `24h`; default 24 hours, at most 7 days): runs by trigger (push, pull_request, merge_group, workflow_dispatch, tag, other) and by conclusion (success, failure, infra_error, cancelled, skipped, awaiting_approval, running, queued), jobs by state, the recorded infra kinds of failed attempts, sandbox minutes, and the time and conclusion of the newest run. Narrow it with `target_org` and `target_project` (slugs). Counts only: no shas, branches, job names, logs or ids. Use it to see whether an org's CI is working, with no tenant token. The read is audited in the system chain. Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "ISO 8601 time or a duration such as 24h, 90m or 2d. Default 24h; at most 7 days back.",
+            "schema": {
+              "type": "string",
+              "maxLength": 40
+            }
+          },
+          {
+            "name": "target_org",
+            "in": "query",
+            "required": false,
+            "description": "Only this org (slug).",
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            }
+          },
+          {
+            "name": "target_project",
+            "in": "query",
+            "required": false,
+            "description": "Only this project (slug); needs target_org.",
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "since": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "orgs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "runs": {
+                            "type": "object",
+                            "properties": {
+                              "total": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "by_trigger": {
+                                "type": "object",
+                                "properties": {
+                                  "push": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "pull_request": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "merge_group": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "workflow_dispatch": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "tag": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "other": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "push",
+                                  "pull_request",
+                                  "merge_group",
+                                  "workflow_dispatch",
+                                  "tag",
+                                  "other"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "by_conclusion": {
+                                "type": "object",
+                                "properties": {
+                                  "success": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "failure": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "infra_error": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "cancelled": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "skipped": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "awaiting_approval": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "running": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "queued": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "success",
+                                  "failure",
+                                  "infra_error",
+                                  "cancelled",
+                                  "skipped",
+                                  "awaiting_approval",
+                                  "running",
+                                  "queued"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": ["total", "by_trigger", "by_conclusion"],
+                            "additionalProperties": false
+                          },
+                          "jobs": {
+                            "type": "object",
+                            "properties": {
+                              "queued": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "running": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "success": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "failure": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "infra_error": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "awaiting_approval": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "cancelled": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "skipped": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "queued",
+                              "running",
+                              "success",
+                              "failure",
+                              "infra_error",
+                              "awaiting_approval",
+                              "cancelled",
+                              "skipped"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "infra_kinds": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "description": "Failed attempts by recorded infra kind (`unknown` when none was recorded)."
+                          },
+                          "sandbox_minutes": {
+                            "type": "number"
+                          },
+                          "newest_run_at": {
+                            "type": ["string", "null"]
+                          },
+                          "newest_run_conclusion": {
+                            "type": ["string", "null"]
+                          },
+                          "org": {
+                            "type": "string"
+                          },
+                          "projects": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "runs": {
+                                  "type": "object",
+                                  "properties": {
+                                    "total": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "by_trigger": {
+                                      "type": "object",
+                                      "properties": {
+                                        "push": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "pull_request": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "merge_group": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "workflow_dispatch": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "tag": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "other": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "required": [
+                                        "push",
+                                        "pull_request",
+                                        "merge_group",
+                                        "workflow_dispatch",
+                                        "tag",
+                                        "other"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "by_conclusion": {
+                                      "type": "object",
+                                      "properties": {
+                                        "success": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "failure": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "infra_error": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "cancelled": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "skipped": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "awaiting_approval": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "running": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "queued": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "required": [
+                                        "success",
+                                        "failure",
+                                        "infra_error",
+                                        "cancelled",
+                                        "skipped",
+                                        "awaiting_approval",
+                                        "running",
+                                        "queued"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": ["total", "by_trigger", "by_conclusion"],
+                                  "additionalProperties": false
+                                },
+                                "jobs": {
+                                  "type": "object",
+                                  "properties": {
+                                    "queued": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "running": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "success": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "failure": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "infra_error": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "awaiting_approval": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "cancelled": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "skipped": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "queued",
+                                    "running",
+                                    "success",
+                                    "failure",
+                                    "infra_error",
+                                    "awaiting_approval",
+                                    "cancelled",
+                                    "skipped"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "infra_kinds": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "description": "Failed attempts by recorded infra kind (`unknown` when none was recorded)."
+                                },
+                                "sandbox_minutes": {
+                                  "type": "number"
+                                },
+                                "newest_run_at": {
+                                  "type": ["string", "null"]
+                                },
+                                "newest_run_conclusion": {
+                                  "type": ["string", "null"]
+                                },
+                                "project": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "runs",
+                                "jobs",
+                                "infra_kinds",
+                                "sandbox_minutes",
+                                "newest_run_at",
+                                "newest_run_conclusion",
+                                "project"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "runs",
+                          "jobs",
+                          "infra_kinds",
+                          "sandbox_minutes",
+                          "newest_run_at",
+                          "newest_run_conclusion",
+                          "org",
+                          "projects"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["since", "until", "orgs"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/instance/ingest-status": {
       "get": {
         "operationId": "instance_ingest_status",

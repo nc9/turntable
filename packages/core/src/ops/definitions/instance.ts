@@ -29,6 +29,10 @@ import {
   getProjectBySlug,
   instanceOrgSummary,
   instanceRunActivity,
+  instanceRunSummary,
+  listProjects,
+  RUN_TRIGGERS,
+  type RunSummaryCell,
   insertApiToken,
   listAllOrgs,
   moveRepoBinding,
@@ -1085,6 +1089,230 @@ export const instanceRunActivityOp = defineOp({
       total_running_attempts: total,
       orgs_with_running_attempts: rows.filter((r) => r.running_attempts > 0).length,
     };
+  },
+});
+
+const SUMMARY_MAX_MS = 7 * 86_400_000;
+const SUMMARY_DEFAULT_MS = 86_400_000;
+const DURATION_UNIT_MS: Record<string, number> = {
+  s: 1000,
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+};
+
+/** `since` as an epoch ms: a duration back from now (`90m`, `24h`, `7d`) or an ISO 8601 time. */
+function parseSummarySince(raw: string | undefined, now: number): number {
+  if (raw === undefined) return now - SUMMARY_DEFAULT_MS;
+  const d = /^(\d{1,6})([smhd])$/.exec(raw.trim());
+  const at = d ? now - Number(d[1]) * DURATION_UNIT_MS[d[2]!]! : Date.parse(raw);
+  if (Number.isNaN(at)) {
+    throw new OpError("invalid_input", "since is an ISO 8601 time or a duration like 24h or 2d");
+  }
+  if (at < now - SUMMARY_MAX_MS) {
+    throw new OpError(
+      "invalid_input",
+      "since reaches back more than 7 days; the window is at most 7 days",
+    );
+  }
+  return Math.min(at, now);
+}
+
+const countMap = z.record(z.string(), z.int());
+const runSummaryCell = z.object({
+  runs: z.object({
+    total: z.int(),
+    by_trigger: z.object({
+      push: z.int(),
+      pull_request: z.int(),
+      merge_group: z.int(),
+      workflow_dispatch: z.int(),
+      tag: z.int(),
+      other: z.int(),
+    }),
+    by_conclusion: z.object({
+      success: z.int(),
+      failure: z.int(),
+      infra_error: z.int(),
+      cancelled: z.int(),
+      skipped: z.int(),
+      awaiting_approval: z.int(),
+      running: z.int(),
+      queued: z.int(),
+    }),
+  }),
+  jobs: z.object({
+    queued: z.int(),
+    running: z.int(),
+    success: z.int(),
+    failure: z.int(),
+    infra_error: z.int(),
+    awaiting_approval: z.int(),
+    cancelled: z.int(),
+    skipped: z.int(),
+  }),
+  infra_kinds: countMap.describe(
+    "Failed attempts by recorded infra kind (`unknown` when none was recorded).",
+  ),
+  sandbox_minutes: z.number(),
+  newest_run_at: z.string().nullable(),
+  newest_run_conclusion: z.string().nullable(),
+});
+type RunSummaryOut = z.infer<typeof runSummaryCell>;
+
+const pickCounts = <K extends string>(keys: readonly K[], m: Record<string, number>) =>
+  Object.fromEntries(keys.map((k) => [k, m[k] ?? 0])) as Record<K, number>;
+
+function summaryCell(cells: RunSummaryCell[]): RunSummaryOut {
+  const sum = (pick: (c: RunSummaryCell) => Record<string, number>) => {
+    const m: Record<string, number> = {};
+    for (const c of cells) for (const [k, v] of Object.entries(pick(c))) m[k] = (m[k] ?? 0) + v;
+    return m;
+  };
+  const trig = sum((c) => c.runsByTrigger);
+  const concl = sum((c) => c.runsByConclusion);
+  const newest = cells.reduce<RunSummaryCell | undefined>(
+    (b, c) =>
+      c.newestRunAt !== null && (b === undefined || c.newestRunAt > b.newestRunAt!) ? c : b,
+    undefined,
+  );
+  const ms = cells.reduce((n, c) => n + c.sandboxMs, 0);
+  return {
+    runs: {
+      total: Object.values(concl).reduce((n, v) => n + v, 0),
+      by_trigger: pickCounts(RUN_TRIGGERS, trig),
+      by_conclusion: pickCounts(
+        [
+          "success",
+          "failure",
+          "infra_error",
+          "cancelled",
+          "skipped",
+          "awaiting_approval",
+          "running",
+          "queued",
+        ],
+        concl,
+      ),
+    },
+    jobs: pickCounts(
+      [
+        "queued",
+        "running",
+        "success",
+        "failure",
+        "infra_error",
+        "awaiting_approval",
+        "cancelled",
+        "skipped",
+      ],
+      sum((c) => c.jobsByState),
+    ),
+    infra_kinds: sum((c) => c.infraKinds),
+    sandbox_minutes: Math.round(ms / 60) / 1000,
+    newest_run_at: iso(newest?.newestRunAt),
+    newest_run_conclusion: newest?.newestRunConclusion ?? null,
+  };
+}
+
+export const instanceRunSummaryOp = defineOp({
+  name: "instance_run_summary",
+  summary: "Counts of finished runs by trigger and conclusion, per org and project, for operators.",
+  description:
+    "Per org and project over a window (`since`: an ISO 8601 time or a duration like `24h`; " +
+    "default 24 hours, at most 7 days): runs by trigger (push, pull_request, merge_group, " +
+    "workflow_dispatch, tag, other) and by conclusion (success, failure, infra_error, cancelled, " +
+    "skipped, awaiting_approval, running, queued), jobs by state, the recorded infra kinds of " +
+    "failed attempts, sandbox minutes, and the time and conclusion of the newest run. Narrow it " +
+    "with `target_org` and `target_project` (slugs). Counts only: no shas, branches, job names, " +
+    "logs or ids. Use it to see whether an org's CI is working, with no tenant token. The read " +
+    "is audited in the system chain. Only the instance administrator can call it. Read-only. " +
+    "Not an MCP tool.",
+  input: z.object({
+    since: z
+      .string()
+      .max(40)
+      .optional()
+      .describe(
+        "ISO 8601 time or a duration such as 24h, 90m or 2d. Default 24h; at most 7 days back.",
+      ),
+    target_org: z.string().max(100).optional().describe("Only this org (slug)."),
+    target_project: z
+      .string()
+      .max(100)
+      .optional()
+      .describe("Only this project (slug); needs target_org."),
+  }),
+  output: z.object({
+    since: z.string(),
+    until: z.string(),
+    orgs: z.array(
+      runSummaryCell.extend({
+        org: z.string(),
+        projects: z.array(runSummaryCell.extend({ project: z.string() })),
+      }),
+    ),
+  }),
+  effect: "read",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/instance/run-summary" },
+  mcp: false,
+  async handler(ctx, i) {
+    const now = ctx.now();
+    const since = parseSummarySince(i.since, now);
+    if (i.target_project !== undefined && i.target_org === undefined) {
+      throw new OpError("invalid_input", "target_project needs target_org");
+    }
+    let orgs = (await listAllOrgs(ctx.db)).filter((o) => o.slug !== SYSTEM_ORG_SLUG);
+    let projectId: string | undefined;
+    if (i.target_org !== undefined) {
+      orgs = orgs.filter((o) => o.slug === i.target_org);
+      if (orgs.length === 0) throw new OpError("not_found", "no such org");
+      if (i.target_project !== undefined) {
+        const p = await getProjectBySlug(ctx.db, { orgId: orgs[0]!.id }, i.target_project);
+        if (!p) throw new OpError("not_found", "no such project");
+        projectId = p.id;
+      }
+    }
+    const [cells, projects] = await Promise.all([
+      instanceRunSummary(ctx.db, since, now, {
+        orgId: orgs.length === 1 && i.target_org !== undefined ? orgs[0]!.id : undefined,
+        projectId,
+      }),
+      Promise.all(orgs.map((o) => listProjects(ctx.db, { orgId: o.id }))),
+    ]);
+    const rows = orgs.map((o, ix) => {
+      const mine = cells.filter((c) => c.orgId === o.id);
+      return {
+        org: o.slug,
+        ...summaryCell(mine),
+        projects: projects[ix]!.filter((p) => projectId === undefined || p.id === projectId).map(
+          (p) => ({
+            project: p.slug,
+            ...summaryCell(mine.filter((c) => c.projectId === p.id)),
+          }),
+        ),
+      };
+    });
+    await appendAudit(
+      ctx.db,
+      { orgId: await systemOrgId(ctx.db) },
+      {
+        principalKind: "instance",
+        principalId: ctx.principal.id,
+        op: "instance_run_summary",
+        effect: "read",
+        outcome: "ok",
+        input: {
+          orgs: rows.length,
+          window_ms: now - since,
+          filtered: i.target_org !== undefined,
+        },
+      },
+    );
+    return { since: new Date(since).toISOString(), until: new Date(now).toISOString(), orgs: rows };
   },
 });
 
