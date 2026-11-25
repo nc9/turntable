@@ -5,7 +5,7 @@ description: Why signing and publishing run in a separate process, what it holds
 
 Turntable runs untrusted workflow code and reads untrusted pull requests, so the process that does that must never be the process that can sign a release or publish one. The **release lane** is that second process. Everything that can make a signature or a publish lives in it, and in nothing else.
 
-**Status.** Built and tested: the role split, the request queue, the lane's checks, the boundary tests, the lane's wiring to the [signing service](/signing) with the built-in key backend, and strict and compat [publishing](#publishing) to npm, GitHub Releases and a registry image. KMS backends are not wired into the lane yet (the signing service has them; the lane has no credential configuration for them).
+**Status.** Built and tested: the role split, the request queue, the lane's checks, the boundary tests, the lane's wiring to the [signing service](/signing) with the built-in key backend, and strict and compat [publishing](#publishing) to npm, GitHub Releases and a registry image. The KMS backends (`aws-kms`, planned in [#423](https://github.com/turntable-ci/turntable/issues/423), and `gcp-kms`, planned) are not available yet: the lane wires the built-in backend only, and a project whose signing key names a KMS backend is refused with `no_backend`.
 
 ## Roles
 
@@ -160,7 +160,7 @@ The release service's variables:
 | `TURNTABLE_RELEASE_BUILDER_ID` | The instance URL, written into the provenance as the builder id. |
 | `TURNTABLE_RELEASE_POLL_MS` | How often it looks for requests. Default 5000. |
 
-**Key custody.** The release master key and the signing credentials exist only on the release service. Do not put either on the main service's volume or in its environment. KMS keys should be granted to the release service's identity alone, so the main service has no permission to sign even if its environment is read.
+**Key custody.** The release master key and the signing credentials exist only on the release service. Do not put either on the main service's volume or in its environment. When the KMS backends ship, their keys should be granted to the release service's identity alone, so the main service has no permission to sign even if its environment is read.
 
 **Database.** On SQLite the two processes read and write one file for the request queue, so they share a data directory mount; everything the lane itself holds (keys, attestations) is in its own files. A separate database role per process arrives with Postgres: the main role gets insert on `release_requests`, the release role gets read on runs and artifacts and update on `release_requests`, and neither gets the other's.
 

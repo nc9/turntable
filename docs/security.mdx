@@ -196,7 +196,7 @@ Plain http must redirect to https on every site we run. The primary control is t
 
 ## Release lane
 
-Signing and publishing run in a separate process (`serve --roles release`) that alone holds the signing backend and KMS credentials, the release master key and the publish credentials. It re-checks the tag and sha with the forge and recomputes artifact digests itself, so a fully compromised main process cannot cause a signature or a publish. See [Release lane](/release-lane).
+Signing and publishing run in a separate process (`serve --roles release`) that alone holds the signing backend (built-in today; KMS backends are planned, see [Signing](/signing#backends)), the release master key and the publish credentials. It re-checks the tag and sha with the forge and recomputes artifact digests itself, so a fully compromised main process cannot cause a signature or a publish. See [Release lane](/release-lane).
 
 ## Audit log integrity and export
 
