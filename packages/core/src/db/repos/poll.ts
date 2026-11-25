@@ -661,6 +661,31 @@ export function isRunSuperseded(db: Db, run: Run): Promise<boolean> {
   });
 }
 
+/**
+ * The jobs of NEWER runs of the same repo and sha (any workflow) that already hold a check run
+ * (#648). A check for a (sha, name) one of them holds must not be created by an older run: GitHub
+ * shows the most recently created check run per name.
+ */
+export function listNewerCheckedJobs(db: Db, run: Run): Promise<{ job: Job; run: Run }[]> {
+  return db.run((h) =>
+    h.orm
+      .selectDistinct({ job: s.jobs, run: s.runs })
+      .from(s.jobAttempts)
+      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
+      .where(
+        and(
+          eq(s.runs.orgId, run.orgId),
+          eq(s.runs.projectId, run.projectId),
+          sameRepoAs(run),
+          run.sha === null ? isNull(s.runs.sha) : eq(s.runs.sha, run.sha),
+          sql`${s.runs.id} > ${run.id}`,
+          sql`${s.jobAttempts.checkRunId} is not null`,
+        ),
+      ),
+  );
+}
+
 /** Marks a skipped attempt as having nothing to post (and why), so the sweep stops selecting it. */
 export function dismissSkippedCheck(
   db: Db,

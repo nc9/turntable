@@ -71,7 +71,8 @@ for (const [name, open] of dialects) {
         });
       const skip = async (key: string) => {
         const run = await createRun(w.db, w.scope, {
-          workflowPath: ".github/workflows/ci.yml",
+          // One workflow per skip: a newer run of the same workflow on one sha supersedes (#648).
+          workflowPath: `.github/workflows/${key}.yml`,
           event: "push",
           ref: "refs/heads/main",
           sha: w.sha,

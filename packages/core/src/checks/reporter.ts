@@ -16,6 +16,7 @@ import {
   listAttempts,
   isRunSuperseded,
   listJobs,
+  listNewerCheckedJobs,
   listUnreportedSkips,
   listProjects,
   listRepos,
@@ -391,7 +392,7 @@ export class CheckReporter {
     all: Awaited<ReturnType<typeof listJobs>>,
     latest: Map<string, Claim["attempt"]>,
     mine: { id: string } | undefined,
-  ): Promise<"posted"> {
+  ): Promise<"posted" | { nothing: DismissReason }> {
     const { db } = this.#o;
     const { scope, run, job, attempt } = claim;
     const { mode, token } = target;
@@ -406,7 +407,7 @@ export class CheckReporter {
       }),
     });
     const at = new Date((this.#o.now ?? Date.now)()).toISOString();
-    const id = await this.#create(token, target.repo, target.sha, externalId, name, {
+    const id = await this.#create(claim, mode, token, target.repo, target.sha, externalId, name, {
       name,
       head_sha: target.sha,
       external_id: externalId,
@@ -420,6 +421,7 @@ export class CheckReporter {
         summary: summaryFor({ mode, result: NO_ATTEMPT_SKIP, runUrl, skipReason: reason }),
       },
     });
+    if (id === undefined) return { nothing: "superseded" };
     for (const a of latest.values()) await setAttemptCheckRunId(db, scope, a.id, id);
     await setAttemptCheckRunId(db, scope, attempt.id, id);
     return "posted";
@@ -471,19 +473,28 @@ export class CheckReporter {
         await setAttemptCheckRunId(db, scope, attempt.id, group.sharedId);
         return;
       }
-      id = await this.#create(token, repo, sha, group?.externalId ?? attempt.id, checkName_, {
-        name: checkName_,
-        head_sha: sha,
-        status: "in_progress",
-        started_at: new Date((this.#o.now ?? Date.now)()).toISOString(),
-        external_id: group?.externalId ?? attempt.id,
-        ...(runUrl ? { details_url: runUrl } : {}),
-        output: {
-          title: RUNNING_TITLE(mode),
-          summary: summaryRunning(mode, runUrl, retryOf),
+      const made = await this.#create(
+        claim,
+        mode,
+        token,
+        repo,
+        sha,
+        group?.externalId ?? attempt.id,
+        checkName_,
+        {
+          name: checkName_,
+          head_sha: sha,
+          status: "in_progress",
+          started_at: new Date((this.#o.now ?? Date.now)()).toISOString(),
+          external_id: group?.externalId ?? attempt.id,
+          ...(runUrl ? { details_url: runUrl } : {}),
+          output: {
+            title: RUNNING_TITLE(mode),
+            summary: summaryRunning(mode, runUrl, retryOf),
+          },
         },
-      });
-      await setAttemptCheckRunId(db, scope, attempt.id, id);
+      );
+      if (made !== undefined) await setAttemptCheckRunId(db, scope, attempt.id, made);
       return;
     }
 
@@ -557,13 +568,22 @@ export class CheckReporter {
       return;
     }
     // The start was never reported (an outage, a restart before it): create it completed.
-    id = await this.#create(token, repo, sha, group?.externalId ?? attempt.id, checkName_, {
-      ...body,
-      name: checkName_,
-      head_sha: sha,
-      external_id: group?.externalId ?? attempt.id,
-    });
-    await setAttemptCheckRunId(db, scope, attempt.id, id);
+    const made = await this.#create(
+      claim,
+      mode,
+      token,
+      repo,
+      sha,
+      group?.externalId ?? attempt.id,
+      checkName_,
+      {
+        ...body,
+        name: checkName_,
+        head_sha: sha,
+        external_id: group?.externalId ?? attempt.id,
+      },
+    );
+    if (made !== undefined) await setAttemptCheckRunId(db, scope, attempt.id, made);
   }
 
   /**
@@ -610,21 +630,52 @@ export class CheckReporter {
    * worker that died before it could store the id) is reused and brought up to date.
    */
   async #create(
+    claim: Claim,
+    mode: Exclude<ChecksMode, "off">,
     token: string,
     repo: string,
     sha: string,
     attemptId: string,
     name: string,
     body: CheckRunBody,
-  ): Promise<string> {
-    const found = await this.#retry("find check run", () =>
-      this.#o.api.findByExternalId(token, repo, sha, name, attemptId),
-    );
-    if (found !== undefined) {
-      await this.#retry("update check run", () => this.#o.api.update(token, repo, found, body));
-      return found;
+  ): Promise<string | undefined> {
+    // One creator at a time per (repo, sha), with the staleness check inside the lock (#648): any
+    // check a newer run creates comes after its run row exists, so it either waits behind this
+    // create (and is then the most recent) or is seen by the check here.
+    return this.#locked(`${repo}@${sha}`, async () => {
+      if (await this.#stale(claim, mode, name)) return undefined;
+      const found = await this.#retry("find check run", () =>
+        this.#o.api.findByExternalId(token, repo, sha, name, attemptId),
+      );
+      if (found !== undefined) {
+        await this.#retry("update check run", () => this.#o.api.update(token, repo, found, body));
+        return found;
+      }
+      return this.#retry("create check run", () => this.#o.api.create(token, repo, body));
+    });
+  }
+
+  /** True when this run was superseded, or a newer run on the sha already holds a check by this name. */
+  async #stale(claim: Claim, mode: Exclude<ChecksMode, "off">, name: string): Promise<boolean> {
+    const { db } = this.#o;
+    if (await isRunSuperseded(db, claim.run)) return true;
+    for (const n of await listNewerCheckedJobs(db, claim.run)) {
+      if (checkName(mode, n.job, checkScopeOf(n.run.plan)) === name) return true;
     }
-    return this.#retry("create check run", () => this.#o.api.create(token, repo, body));
+    return false;
+  }
+
+  readonly #locks = new Map<string, Promise<unknown>>();
+  async #locked<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const prev = this.#locks.get(key) ?? Promise.resolve();
+    const next = prev.then(work, work);
+    const tail = next.catch(() => {});
+    this.#locks.set(key, tail);
+    try {
+      return await next;
+    } finally {
+      if (this.#locks.get(key) === tail) this.#locks.delete(key);
+    }
   }
 
   async #runUrl(claim: Claim): Promise<string | undefined> {
