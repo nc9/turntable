@@ -26,6 +26,9 @@ import type { JobArtifactProvider } from "../artifacts/job";
 import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
+import { effectiveChecksMode } from "../ops/setting-guard";
+import { ambientSettings } from "../settings/ambient";
+import type { SettingsRuntime } from "../settings/resolve";
 import { getOrgById, logSize } from "../db/repos/api";
 import { listJobs, listRepos, type Run } from "../db/repos";
 import { SecretRegistry } from "@turntable/redact";
@@ -58,7 +61,7 @@ import { createBackoff, RateLimitedError, type SafeFetch } from "@turntable/net"
 import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
 import { createHash } from "node:crypto";
-import type { IssuedJobToken, JobTokens } from "../github/job-token";
+import { type IssuedJobToken, type JobTokens, SHADOW_LOWERED_NOTICE } from "../github/job-token";
 import type { JobOidc } from "../oidc/job-delivery";
 import {
   getActionPolicy,
@@ -289,6 +292,11 @@ export type ActRunnerOptions = {
    * class and the App's grant, revoked when the job ends. Absent: jobs get no GITHUB_TOKEN.
    */
   jobTokens?: JobTokens;
+  /**
+   * The settings layers (env, `turntable.toml`) the project's effective `checks_mode` is read
+   * through when a job token is issued. Default: the process's own (`ambientSettings`).
+   */
+  settings?: SettingsRuntime;
   /**
    * Gives a job that asked for it (`permissions: id-token: write`) GitHub's OIDC request
    * variables, for a class the issuer allows. Behind the secrets proxy only: the request token is
@@ -845,7 +853,16 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         const envOk = jobKlass === "protected" || jobKlass === "release";
         if (ctx.proxy || envOk) {
           try {
+            // Read now, at issue time: a project that is not live never holds a write token.
+            const readOnly =
+              (await effectiveChecksMode(
+                o.settings ?? ambientSettings(),
+                o.db,
+                ctx.scope.orgId,
+                ctx.scope.projectId,
+              )) !== "live";
             const r = await o.jobTokens.issue({
+              readOnly,
               installationId: repo.installationId,
               owner: repo.owner,
               repo: repo.repo,
@@ -855,6 +872,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
             });
             if ("none" in r) {
               notices.push(`[turntable] GITHUB_TOKEN is not set (${r.none})`);
+              if (r.lowered) notices.push(`[turntable] ${SHADOW_LOWERED_NOTICE}`);
             } else if (egressForRun(ctx.run.plan, o.egress) === "open") {
               // A job holding a token never runs with open egress.
               await r.revoke();
@@ -877,6 +895,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               notices.push(
                 `[turntable] GITHUB_TOKEN for ${repo.owner}/${repo.repo}: ${perms} (${ctx.proxy ? "added by the proxy" : "in the environment"}), revoked when the job ends`,
                 ...r.notes.map((n) => `[turntable] GITHUB_TOKEN: ${n}`),
+                ...(r.lowered ? [`[turntable] ${SHADOW_LOWERED_NOTICE}`] : []),
               );
             }
           } catch (err) {
