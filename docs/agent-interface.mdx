@@ -146,6 +146,10 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `enrol_first_approver` | `POST /api/v1/approvers/first` | no |  | write | owner | token | Enrol the org's first approver with a passkey (owner web session only). |
 | `key_policy_challenge` | `POST /api/v1/approvers/key-policy/challenge` | no |  | write | release_operator | token | Issue the statement an approver signs to change the key policy. |
 | `approve_key_policy` | `POST /api/v1/approvers/key-policy` | no |  | write | viewer | signature | Approve a key policy change with a signed statement. Human only. |
+| `approval_policy_challenge` | `POST /api/v1/approvers/approval-policy/challenge` | no |  | write | release_operator | token | Issue the statement an approver signs to let an environment's approval policy loosen. |
+| `approve_approval_policy` | `POST /api/v1/approvers/approval-policy` | no |  | write | viewer | signature | Sign an approval policy loosening. Human only. |
+| `get_approval_policy` | `GET /api/v1/approval-policy` | no |  | read | owner | token | The org's effective approval policy per environment, with its source and lock. |
+| `set_approval_policy` | `POST /api/v1/approval-policy` | no |  | write | owner | token | Set one environment's approval policy (org owner, web session). |
 | `request_enrolment` | `POST /api/v1/approvers/enrolments` | no |  | write | release_operator | token | Ask to enrol a passkey or an ed25519 public key as an approver, pending a quorum. |
 | `submit_approval` | `POST /api/v1/approvals/relay` | yes |  | write | operator | token | Upload an approval statement a human already signed. |
 | `approve_environment` | `POST /api/v1/approvals` | no |  | write | viewer | signature | Approve a run for an environment with a signed statement. Human only. |

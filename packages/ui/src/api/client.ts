@@ -42,6 +42,7 @@ import type {
   LaneKey,
   LaneCosignKey,
   LaneSecretStatus,
+  ApprovalPolicy,
   StepUpChallenge,
   StepUpProof,
   Whoami,
@@ -231,10 +232,24 @@ export interface TurntableApi {
     /** Loosening a trust setting from a web session: a passkey confirmation for these exact args. */
     stepUp?: StepUpProof;
   }): Promise<Setting>;
+  /** The org owner's view of the approval policy, defaults filled in (`get_approval_policy`). */
+  getApprovalPolicy(): Promise<ApprovalPolicy>;
+  /**
+   * Sets one environment's approval policy (`set_approval_policy`). A loosening carries the
+   * passkey `stepUp` for exactly these arguments; a refusal rejects with the server's words.
+   */
+  setApprovalPolicy(args: {
+    environment: string;
+    required: number;
+    allowAuthorApproval: boolean;
+    keyPolicy: "any" | "hardware";
+    stepUp?: StepUpProof;
+  }): Promise<ApprovalPolicy>;
   /** Starts a passkey confirmation for `set_setting` with exactly `input` (`session_step_up_challenge`). */
   stepUpChallenge(args: {
     action:
       | "set_setting"
+      | "set_approval_policy"
       | LaneAction
       | "instance_rotate_webhook_secret"
       | "instance_replace_app_private_key";

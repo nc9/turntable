@@ -218,6 +218,9 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   // trust setting also needs the step-up (the guard enforces it: set_setting is in
   // SESSION_STEP_UP_OPS for that case only).
   "set_setting",
+  // An owner's session edits `approval_policy` (#664): tightening needs no step-up, loosening does
+  // (the handler enforces it, and a quorum of approvers when the org has two or more).
+  "set_approval_policy",
   // A person's own notifications and preferences (#611): rows keyed by the session's user.
   "notifications_ack",
   "set_notification_prefs",

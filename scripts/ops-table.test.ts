@@ -47,6 +47,12 @@ const MCP_OFF: Record<string, string> = {
   approve_release:
     "signature op: a human-signed statement over the release manifest, never a token",
   approve_enrolment: "signature op: a human-signed statement, never a token",
+  approval_policy_challenge:
+    "loosening the approval policy is a human act: an agent never creates the statement approvers sign",
+  get_approval_policy:
+    "the approval policy is an owner's to read and change: a person in a browser",
+  set_approval_policy:
+    "it decides how many people must approve a release: an owner's web session only, never an agent",
   key_policy_challenge: "changing which approver keys count is a human act, like enrolment",
   instance_whoami:
     "instance administrator ops are REST only: that token is never given to an agent",

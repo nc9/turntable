@@ -33,6 +33,7 @@ import type {
   LaneKey,
   LaneCosignKey,
   LaneSecretStatus,
+  ApprovalPolicy,
   StepUpChallenge,
   Whoami,
   JobAttempt,
@@ -810,6 +811,36 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       );
     },
 
+    async getApprovalPolicy(): Promise<ApprovalPolicy> {
+      return mapApprovalPolicy(
+        await call<WireApprovalPolicy>("GET", "/approval-policy", { org: org() }),
+      );
+    },
+
+    async setApprovalPolicy({
+      environment,
+      required,
+      allowAuthorApproval,
+      keyPolicy,
+      stepUp,
+    }): Promise<ApprovalPolicy> {
+      return mapApprovalPolicy(
+        await call<WireApprovalPolicy>(
+          "POST",
+          "/approval-policy",
+          {},
+          {
+            org: org(),
+            environment,
+            required,
+            allow_author_approval: allowAuthorApproval,
+            key_policy: keyPolicy,
+            ...(stepUp ? { step_up: stepUp } : {}),
+          },
+        ),
+      );
+    },
+
     async incidentStatus(args): Promise<IncidentStatus> {
       const w = await call<WireIncident>("GET", "/incident", {
         org: org(),
@@ -1064,6 +1095,12 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
           source: p.source,
         })),
         warnings: w.warnings,
+        instanceLoosenings: w.instance_loosenings.map((l) => ({
+          at: ms(l.at) ?? 0,
+          by: l.by,
+          reason: l.reason,
+          loosened: l.loosened,
+        })),
       };
     },
 
@@ -1287,4 +1324,36 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
     },
   };
   return api;
+}
+
+type WireApprovalPolicy = {
+  environments: {
+    environment: string;
+    required: number;
+    allow_author_approval: boolean;
+    key_policy: "any" | "hardware";
+    gated: boolean;
+    source: "configured" | "default";
+  }[];
+  source: ApprovalPolicy["source"];
+  locked: boolean;
+  locked_by: string | null;
+  approvers: number;
+};
+
+export function mapApprovalPolicy(w: WireApprovalPolicy): ApprovalPolicy {
+  return {
+    environments: w.environments.map((e) => ({
+      environment: e.environment,
+      required: e.required,
+      allowAuthorApproval: e.allow_author_approval,
+      keyPolicy: e.key_policy,
+      gated: e.gated,
+      source: e.source,
+    })),
+    source: w.source,
+    locked: w.locked,
+    lockedBy: w.locked_by,
+    approvers: w.approvers,
+  };
 }

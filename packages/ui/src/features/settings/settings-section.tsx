@@ -40,7 +40,12 @@ export function SettingsSection({ project }: { project?: string }) {
     <SettingsList
       deps={[project]}
       source={{
-        list: () => api.listSettings(project === undefined ? undefined : { project }),
+        // `approval_policy` has its own editor (the Approvals section): the generic list would
+        // call it instance-only.
+        list: async () =>
+          (await api.listSettings(project === undefined ? undefined : { project })).filter(
+            (s) => s.key !== "approval_policy",
+          ),
         set: (a) => api.setSetting({ ...a, ...(project !== undefined ? { project } : {}) }),
         role: who.data?.role ?? null,
         noun: project === undefined ? "org" : "project",
