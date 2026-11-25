@@ -111,6 +111,13 @@ Key handling:
 | Railway needs | 1 service, 1 volume | 1 service, 1 volume | 2 services, Postgres, object store, private networking, volume on the lane | 1 service, 1 volume |
 | Path to C | n/a | Hard to keep separation | n/a | Direct |
 
+## Prerequisites for any option
+
+Whichever option is chosen, these hold before the lane serves a hosted project:
+
+- **No lane credential for a project that is not live** ([#645](https://github.com/turntable-ci/turntable/issues/645)): `request_release` and release-class jobs in a project whose `checks_mode` is not `live` are refused before any lane secret (npm token, signing key, publish token) is decrypted or injected.
+- **Shadow jobs hold read-only GitHub tokens** ([#641](https://github.com/turntable-ci/turntable/issues/641)).
+
 ## Recommendation
 
 The reviewer leans D for the beta period and C before 0.1.0. D keeps the separate-process rule with one service and no new infrastructure, and its weakness (the shared uid and volume) shrinks to a smaller problem once the child runs as its own user. C is the target because it is the only option where web or worker code execution does not share a host with the key. B should not be chosen: it is cheap and removes the rule. A stays the answer until D or C exists, and for projects that prefer their own CI.
