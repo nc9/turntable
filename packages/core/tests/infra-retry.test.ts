@@ -4,7 +4,7 @@
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { FakeWorld } from "@turntable/provider-sdk/testing";
 import type { Provider } from "@turntable/provider-sdk";
-import type { InfraKind } from "@turntable/act-runner";
+import { type InfraKind, retryableAfterSteps } from "@turntable/act-runner";
 import {
   claimNextAttempt,
   createAttempt,
@@ -281,8 +281,9 @@ for (const [name, open] of dialects) {
           errorClass: "controller_lost (test)",
           now: 1,
           requireExpired: false,
+          retryableAfterSteps,
         }),
-      ).toBe(true);
+      ).toBe("requeued");
       // attempt 2 fails transiently, attempt 3 (the infra retry) fails too: that is the end
       await t.drive(
         t.sched(

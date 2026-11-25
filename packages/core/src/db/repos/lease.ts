@@ -23,6 +23,7 @@ import * as s from "../schema";
 import {
   appendLog,
   createAttempt,
+  getJob,
   getRun,
   listAttempts,
   type Job,
@@ -799,12 +800,35 @@ export function markDrainCut(
 }
 
 /**
+ * The reason a drain-cut attempt ends with when it is not requeued because steps may have run for
+ * a protected or release job (#565). Exact text: a deploy note greps for it.
+ */
+export const DRAIN_CUT_NOT_RETRIED =
+  "cut by a drain after steps started; not retried for a protected or release job: rerun it by hand";
+
+export type RequeueLostResult = "requeued" | "not_retried" | "no";
+
+/**
  * A job whose controller vanished after a drain timeout cut it (`markDrainCut`) is requeued ONCE
  * as an infra error: the lost attempt ends `infra_error` (never `failure`), the job goes back to
  * `queued` with a NEW attempt and no rerun reason (it uses none of the commit's reruns). A job
  * that already lost an attempt this way is left to the caller, which finishes it as `infra_error`.
  * Fenced like `finishAttempt`: only a still-running attempt whose lease expired before `now`.
- * Returns true when it requeued.
+ *
+ * The requeue follows the infra-retry rule (#565), failing safe: only when the attempt's recorded
+ * trust class passes `retryableAfterSteps`, or act provably never ran. A step row is NOT proof that
+ * no step ran: it is written when the controller reads act's step-start event, so it lags the
+ * sandbox, and a drain cut is exactly when the controller vanished. So the exec rule is: no step
+ * row with `started_at` AND no `exec_id` AND no `sandbox_id`. The runner records `sandbox_id`
+ * (awaited) before it uploads anything or starts act, and records `exec_id` only AFTER
+ * `exec.start` returned, so a NULL `exec_id` alone would not prove act never started; a NULL
+ * `sandbox_id` does (the cut came while the sandbox was being created). Otherwise a protected or
+ * release job may have deployed or published, so nothing is changed except an
+ * `attempt.drain_cut_not_retried` event and audit entry, and "not_retried" is returned: the
+ * caller ends the attempt `infra_error` with `DRAIN_CUT_NOT_RETRIED`. An attempt with no recorded
+ * class counts as not a pull request.
+ *
+ * Returns "requeued", "not_retried" (see above) or "no" (not eligible: the caller finishes it).
  */
 export function requeueLostAttemptOnce(
   db: Db,
@@ -820,9 +844,11 @@ export function requeueLostAttemptOnce(
      * stopped the sandbox.
      */
     requireExpired?: boolean;
+    /** The trust-class half of the rule: `retryableAfterSteps` from `@turntable/act-runner`. */
+    retryableAfterSteps: (trustClass: string | null) => boolean;
   },
-): Promise<boolean> {
-  return db.transaction(async (tx) => {
+): Promise<RequeueLostResult> {
+  return db.transaction(async (tx): Promise<RequeueLostResult> => {
     const [cur] = await tx.orm
       .select()
       .from(s.jobAttempts)
@@ -834,18 +860,65 @@ export function requeueLostAttemptOnce(
         ),
       )
       .limit(1);
-    if (!cur || cur.state !== "running" || cur.leaseOwner !== input.owner) return false;
+    if (!cur || cur.state !== "running" || cur.leaseOwner !== input.owner) return "no";
     if (
       input.requireExpired !== false &&
       (cur.leaseExpiresAt === null || cur.leaseExpiresAt >= input.now)
     ) {
-      return false;
+      return "no";
     }
-    if (cur.errorClass !== DRAIN_CUT) return false;
+    if (cur.errorClass !== DRAIN_CUT) return "no";
     const earlier = (await listAttempts(tx, scope, cur.jobId)).filter(
       (a) => a.id !== cur.id && a.errorClass?.startsWith(CONTROLLER_LOST),
     );
-    if (earlier.length > 0) return false;
+    if (earlier.length > 0) return "no";
+    if (!input.retryableAfterSteps(cur.trustClass)) {
+      const launched = cur.sandboxId !== null || cur.execId !== null;
+      const [started] = launched
+        ? [{ stepKey: "" }]
+        : await tx.orm
+            .select({ stepKey: s.attemptSteps.stepKey })
+            .from(s.attemptSteps)
+            .where(
+              scoped(
+                scope,
+                { orgId: s.attemptSteps.orgId, projectId: s.attemptSteps.projectId },
+                and(eq(s.attemptSteps.attemptId, cur.id), isNotNull(s.attemptSteps.startedAt)),
+              ),
+            )
+            .limit(1);
+      if (started) {
+        const job = await getJob(tx, scope, cur.jobId);
+        await appendEvent(tx, scope, {
+          type: "attempt.drain_cut_not_retried",
+          runId: job?.runId,
+          jobId: cur.jobId,
+          attemptId: cur.id,
+          payload: {
+            attempt_id: cur.id,
+            job_id: cur.jobId,
+            org_id: scope.orgId,
+            project_id: scope.projectId ?? null,
+            trust_class: cur.trustClass ?? null,
+          },
+        });
+        await appendAudit(tx, scope, {
+          principalKind: "system",
+          principalId: "scheduler",
+          op: "attempt.drain_cut_not_retried",
+          effect: "write",
+          outcome: "ok",
+          input: {
+            attempt_id: cur.id,
+            job_id: cur.jobId,
+            org_id: scope.orgId,
+            project_id: scope.projectId ?? null,
+            at: input.now,
+          },
+        });
+        return "not_retried";
+      }
+    }
     await updateAttempt(tx, scope, cur.id, {
       state: "infra_error",
       errorClass: input.errorClass,
@@ -869,7 +942,7 @@ export function requeueLostAttemptOnce(
       outcome: "ok",
       input: { attempt_id: cur.id, job_id: cur.jobId, at: input.now },
     });
-    return true;
+    return "requeued";
   });
 }
 
