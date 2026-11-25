@@ -21,7 +21,9 @@ import {
 } from "../src/auth/web-sessions";
 import {
   createOrg,
+  createJob,
   createProject,
+  createRun,
   type Db,
   listAudit,
   listEvents,
@@ -809,6 +811,8 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       "onboard_repos", // owner or admin onboarding of repos; the op's own `admin` role gates it
       "run_default_branch", // owner or admin starts a default-branch run; same `admin` gate
       "set_setting", // each setting's own role; loosening a trust setting also needs a step-up
+      "cancel", // operator role, as for a token; no step-up
+      "rerun", // same
     ]);
   });
 
@@ -828,6 +832,52 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       const input =
         op === "run_default_branch" ? { org: "tenant", project: "web" } : { org: "tenant" };
       const r = await h.as(session!, op, input);
+      expect(r.ok, op).toBe(false);
+      if (!r.ok) expect(r.error.code, op).toBe("forbidden");
+    }
+  });
+
+  test("cancel and rerun work for an admin session, with an audit entry; a viewer session is refused by role (#600)", async () => {
+    const { h, cookie } = await aliceAdmin();
+    const project = await createProject(h.db, { orgId: h.tenant.id }, { slug: "web", name: "web" });
+    const scope = { orgId: h.tenant.id, projectId: project.id };
+    const mk = async (event: string) => {
+      const run = await createRun(h.db, scope, {
+        workflowPath: ".github/workflows/ci.yml",
+        event,
+        ref: "refs/heads/main",
+        repo: "acme/web",
+      });
+      await createJob(h.db, scope, { runId: run.id, jobKey: "j", name: "j" });
+      return run;
+    };
+    const run = await mk("push");
+    const done = await h.as(cookie, "cancel", {
+      org: "tenant",
+      run_id: run.id,
+      reason: "from the web",
+    });
+    expect(done.ok && done.output).toMatchObject({ state: "cancelled", cancelled_jobs: 1 });
+    const audit = (await listAudit(h.db, { orgId: h.tenant.id })).filter((a) => a.op === "cancel");
+    expect(audit.some((a) => a.outcome === "ok")).toBe(true);
+    // rerun is open to the session too: the role gate passes, and the op itself answers (here a
+    // conflict, since a job that never ran has nothing to rerun), never forbidden
+    const re = await h.as(cookie, "rerun", {
+      org: "tenant",
+      run_id: run.id,
+      reason: "try again",
+    });
+    expect(re.ok ? "ok" : re.error.code).not.toBe("forbidden");
+    // a viewer session may do neither
+    expect((await h.bind({ github_login: "bob", role: "viewer" })).ok).toBe(true);
+    h.users.set("code-bob", { id: "2002", login: "bob" });
+    const viewer = (await h.signIn("code-bob")).session!;
+    const other = await mk("push");
+    for (const [op, input] of [
+      ["cancel", { run_id: other.id }],
+      ["rerun", { run_id: other.id, reason: "no" }],
+    ] as const) {
+      const r = await h.as(viewer, op, { org: "tenant", ...input });
       expect(r.ok, op).toBe(false);
       if (!r.ok) expect(r.error.code, op).toBe("forbidden");
     }

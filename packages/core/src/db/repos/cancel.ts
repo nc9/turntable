@@ -1,6 +1,6 @@
 // Cancelling a run: the one implementation behind the `cancel` operation, concurrency
 // supersession and the local runner's Ctrl-C. Part of the only code that names tenant tables.
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "..";
 import { announceCancelled, type CancelledAttempt } from "../abort-bus";
 import { aggregateRunStatus } from "../job-state";
@@ -15,7 +15,7 @@ import {
   updateAttempt,
 } from "./index";
 import { effectiveStates } from "./readiness";
-import type { Scope } from "./scope";
+import { requireProject, type Scope } from "./scope";
 
 const CANCELLABLE: readonly JobState[] = ["queued", "running", "awaiting_approval"];
 
@@ -76,5 +76,40 @@ export function cancelRunJobs(
     await setRunStatus(tx, runScope, run.id, out.state);
     announceCancelled(tx, out.running);
     return out;
+  });
+}
+
+const ACTIVE_RUN: readonly JobState[] = ["queued", "running", "awaiting_approval"];
+
+/**
+ * The runs of one repo that were made for a pull request (event `pull_request`, never a push,
+ * merge group, tag or dispatch run) and are still queued, running or awaiting approval, as
+ * `{ number, runIds }` per PR number. Scoped to the project.
+ */
+export function listActivePrRuns(
+  db: Db,
+  scope: Scope,
+  repo: string,
+): Promise<{ number: number; runIds: string[] }[]> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const rows = await h.orm
+      .select({ id: s.runs.id, prNumber: s.runs.prNumber })
+      .from(s.runs)
+      .where(
+        and(
+          eq(s.runs.orgId, scope.orgId),
+          eq(s.runs.projectId, projectId),
+          eq(s.runs.repo, repo.toLowerCase()),
+          eq(s.runs.event, "pull_request"),
+          inArray(s.runs.status, [...ACTIVE_RUN]),
+        ),
+      );
+    const byPr = new Map<number, string[]>();
+    for (const r of rows) {
+      if (r.prNumber === null) continue;
+      byPr.set(r.prNumber, [...(byPr.get(r.prNumber) ?? []), r.id]);
+    }
+    return [...byPr].map(([number, runIds]) => ({ number, runIds }));
   });
 }
