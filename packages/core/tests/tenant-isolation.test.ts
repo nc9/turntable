@@ -25,6 +25,9 @@ import {
   createAttempt,
   createPolledRun,
   insertApprover,
+  insertUserToken,
+  addMember,
+  createUser,
   transitionJob,
   createJob,
   createProject,
@@ -42,7 +45,9 @@ import {
 } from "../src/db";
 import { AGENT_ROLES } from "../src/db/schema";
 import type { Op } from "../src/ops";
-import { dispatch, registry, type Credential, type Principal } from "../src/ops";
+import { dispatch, hashToken, registry, type Credential, type Principal } from "../src/ops";
+import { USER_TOKEN_WRITE_OPS } from "../src/ops/dispatch";
+import { generateUserToken } from "../src/ops/tokens";
 import { createMcpHttp } from "../src/mcp/http";
 import { createRestApi } from "../src/ops/rest";
 import { createRealtime, type WsData } from "../src/realtime/server";
@@ -68,7 +73,13 @@ const A_SHA = "c0ffee".repeat(6) + "c0ff"; // 40 hex
 const A_SECRET = "a-only-secret";
 const A_RULE = "a-only-rule";
 
-type Who = { label: string; cred: Credential; role: string };
+type Who = {
+  label: string;
+  cred: Credential;
+  role: string;
+  /** A user token names its org on every call: the org used when the input names none. */
+  defaultOrg?: string;
+};
 
 type World = {
   db: Db;
@@ -96,6 +107,8 @@ type World = {
   markers: string[];
   aWho: Who[];
   bWho: Who[];
+  /** A user token whose holder is a viewer in A and an admin in B. */
+  dualViewer: Who;
 };
 
 async function buildWorld(): Promise<World> {
@@ -365,6 +378,43 @@ async function buildWorld(): Promise<World> {
     });
     return out;
   };
+  /** A person with a user token (ttu_): a member of the listed orgs, with the given roles. */
+  const userWho = async (
+    label: string,
+    githubUserId: string,
+    memberships: [Tenant, "viewer" | "admin"][],
+    defaultOrg: string,
+  ): Promise<Who> => {
+    const user = await createUser(db, { displayName: label });
+    await db.run((h) =>
+      h.orm.insert(schema.githubIdentities).values({ githubUserId, userId: user.id, login: label }),
+    );
+    for (const [t, role] of memberships)
+      await addMember(db, { orgId: t.orgId }, { userId: user.id, role });
+    const secret = generateUserToken();
+    await insertUserToken(db, {
+      githubUserId,
+      name: `${label}-token`,
+      tokenHash: hashToken(secret),
+      expiresAt: Date.now() + 30 * 86_400_000,
+    });
+    return {
+      label,
+      cred: { kind: "bearer", token: secret },
+      role: memberships[0]![1],
+      defaultOrg,
+    };
+  };
+  const bUser = await userWho("B-only user token", "9001", [[b, "admin"]], "org-b");
+  const dualViewer = await userWho(
+    "dual-member user token (viewer in A)",
+    "9002",
+    [
+      [a, "viewer"],
+      [b, "admin"],
+    ],
+    "org-b",
+  );
   return {
     db,
     env,
@@ -417,7 +467,8 @@ async function buildWorld(): Promise<World> {
       "a-only-webhook",
     ],
     aWho: await who(a, "A"),
-    bWho: await who(b, "B"),
+    bWho: [...(await who(b, "B")), bUser],
+    dualViewer,
   };
 }
 
@@ -635,7 +686,9 @@ const leaks = (w: World, text: string, sent: unknown = null): string[] => {
 
 type Outcome = { ok: boolean; code: string; text: string };
 async function call(w: World, who: Who, op: Op, input: Record<string, unknown>): Promise<Outcome> {
-  const r = await dispatch(w.env, who.cred, op.name, input);
+  const sent =
+    who.defaultOrg && input.org === undefined ? { ...input, org: who.defaultOrg } : input;
+  const r = await dispatch(w.env, who.cred, op.name, sent);
   return r.ok
     ? { ok: true, code: "ok", text: JSON.stringify(r.output) }
     : {
@@ -731,6 +784,83 @@ describe("generated from the registry: every op, every B principal, A's ids and 
       .map((o) => o.name)
       .filter((n) => !reached.has(n) && !(n in UNREACHABLE));
     expect(unreached).toEqual([]);
+  });
+
+  test("a user token of a B-only member is refused every op naming A, and every op naming B with A's ids", async () => {
+    const who = hostile.bWho.find((x) => x.defaultOrg)!;
+    expect(who.cred.kind === "bearer" && who.cred.token.startsWith("ttu_")).toBe(true);
+    const before = await fingerprint(hostile, hostile.a.orgId);
+    const problems: string[] = [];
+    const probed = new Set<string>();
+    for (const op of tokenOps()) {
+      // "explicit" names org A; "ids-only" names org B (the holder's own) with A's ids.
+      for (const variant of ["explicit", "ids-only"] as const) {
+        const { input } = inputFor(op, hostile, variant);
+        const out = await call(hostile, who, op, input);
+        if (out.code !== "invalid_input") probed.add(op.name);
+        const found = leaks(hostile, out.text, input);
+        if (found.length > 0) problems.push(`${op.name} [${variant}] leaked ${found.join(",")}`);
+        if (
+          variant === "explicit" &&
+          !["not_found", "forbidden", "unauthenticated"].includes(out.code)
+        )
+          problems.push(`${op.name} naming org A was ${out.code}, not a refusal`);
+        if (
+          variant === "ids-only" &&
+          out.ok &&
+          !op.name.startsWith("list_") &&
+          leaks(hostile, out.text, input).length > 0
+        )
+          problems.push(`${op.name} [ids-only] succeeded with A's data`);
+      }
+    }
+    expect(problems).toEqual([]);
+    expect(
+      tokenOps()
+        .map((o) => o.name)
+        .filter((n) => !probed.has(n) && !(n in UNREACHABLE)),
+    ).toEqual([]);
+    const after = await fingerprint(hostile, hostile.a.orgId);
+    expect(Object.keys(after).filter((t) => after[t] !== before[t])).toEqual([]);
+  });
+
+  test("a holder who is a viewer in A and an admin in B cannot write in A", async () => {
+    const who = hostile.dualViewer;
+    const before = await fingerprint(hostile, hostile.a.orgId);
+    // the one write a user token may make is refused by role in A
+    const invite = await call(hostile, who, registry.get("invite_member")!, {
+      org: "org-a",
+      github_login: "mallory",
+      role: "viewer",
+    });
+    expect(invite.ok).toBe(false);
+    expect(invite.code).toBe("forbidden");
+    expect(invite.text).toContain("requires role release_operator");
+    // no write op is let through in A, whatever the input
+    for (const op of tokenOps().filter((o) => o.effect !== "read")) {
+      for (const variant of ["explicit", "ids-only"] as const) {
+        const { input } = inputFor(op, hostile, variant);
+        const out = await call(hostile, who, op, { ...input, org: "org-a" });
+        expect([op.name, out.ok]).toEqual([op.name, false]);
+        expect(["forbidden", "not_found", "unauthenticated", "invalid_input"]).toContain(out.code);
+        if (!USER_TOKEN_WRITE_OPS.has(op.name))
+          expect([op.name, out.code]).toEqual([op.name, "forbidden"]);
+      }
+    }
+    // The holder is a member of A, so A legitimately records the refusals (audit) and that this
+    // token was used there (user_token_orgs). Nothing else of A moves, and every new audit row is
+    // a refusal (besides the one first-use record).
+    const after = await fingerprint(hostile, hostile.a.orgId);
+    expect(
+      Object.keys(after).filter(
+        (t) => after[t] !== before[t] && t !== "audit_log" && t !== "user_token_orgs",
+      ),
+    ).toEqual([]);
+    const mine = (await listAuditRows(hostile, hostile.a.orgId)).filter(
+      (r) =>
+        r.kind === "user" && r.outcome !== "error:forbidden" && r.op !== "user_token_first_use",
+    );
+    expect(mine).toEqual([]);
   });
 
   test("a call that targets A's id looks the same as one that targets an id that does not exist", async () => {
@@ -835,7 +965,11 @@ describe("generated from the registry: every op, every B principal, A's ids and 
       for (const who of hostile.bWho) {
         const out = await call(hostile, who, op, inputFor(op, hostile, "explicit").input);
         expect(out.ok).toBe(false);
-        expect(["signature_required", "forbidden"]).toContain(out.code);
+        expect([
+          "signature_required",
+          "forbidden",
+          ...(who.defaultOrg ? ["not_found"] : []),
+        ]).toContain(out.code);
       }
     }
   });
