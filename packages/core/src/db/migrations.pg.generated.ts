@@ -289,5 +289,15 @@ export const migrations: Migration[] = [
       "ALTER TABLE \"onboardings\" ADD CONSTRAINT \"onboardings_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;",
       "CREATE INDEX \"onboardings_org_idx\" ON \"onboardings\" USING btree (\"org_id\",\"created_at\");"
     ]
+  },
+  {
+    "tag": "0020_avatars",
+    "when": 1795584729860,
+    "statements": [
+      "ALTER TABLE \"github_identities\" ADD COLUMN \"avatar_url\" text;",
+      "ALTER TABLE \"github_identities\" ADD COLUMN \"avatar_synced_at\" bigint;",
+      "ALTER TABLE \"github_installations\" ADD COLUMN \"avatar_url\" text;",
+      "ALTER TABLE \"github_installations\" ADD COLUMN \"avatar_synced_at\" bigint;"
+    ]
   }
 ];

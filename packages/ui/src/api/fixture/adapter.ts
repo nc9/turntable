@@ -7,7 +7,7 @@ import type {
   SubscribeOptions,
   Topic,
 } from "../realtime";
-import type { CheckSummary, RunDetail, Whoami } from "../types";
+import type { ActivityRun, CheckSummary, RunDetail, Whoami } from "../types";
 import { createFixtureSettings } from "./settings";
 import { createRng } from "./prng";
 import { createWorld, type World } from "./world";
@@ -78,6 +78,53 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     listOrgs: () => delay(() => world.orgs.map((o) => ({ ...o }))),
     listProjects: (orgId) =>
       delay(() => world.projects.filter((p) => p.orgId === orgId).map((p) => ({ ...p }))),
+    myActivityFeed: (f = {}) =>
+      delay(() => {
+        const projectOf = new Map(world.projects.map((p) => [p.id, p]));
+        const orgOf = new Map(world.orgs.map((o) => [o.id, o]));
+        const rows: ActivityRun[] = [];
+        for (const r of world.runs.values()) {
+          const p = projectOf.get(r.projectId);
+          const o = p ? orgOf.get(p.orgId) : undefined;
+          if (!p || !o) continue;
+          if (f.org && o.slug !== f.org) continue;
+          if (f.project && p.slug !== f.project) continue;
+          const live =
+            r.status === "queued" || r.status === "running" || r.status === "awaiting_approval";
+          if (f.status === "running" && !live) continue;
+          if (f.status === "failed" && r.status !== "failure" && r.status !== "infra_error")
+            continue;
+          rows.push({
+            runId: r.id,
+            org: o.slug,
+            orgName: o.name,
+            orgAvatarUrl: null,
+            project: p.slug,
+            projectName: p.name,
+            projectAvatarUrl: null,
+            workflow: r.workflowName,
+            ref: r.ref.replace(/^refs\/(heads|tags)\//, ""),
+            refType: r.ref.startsWith("refs/tags/") ? "tag" : "branch",
+            sha: r.sha,
+            event: r.event,
+            commitMessage: r.commitMessage,
+            actor: r.actor || null,
+            actorAvatarUrl: null,
+            state: live ? (r.status as ActivityRun["state"]) : "completed",
+            conclusion: live ? null : (r.status as ActivityRun["conclusion"]),
+            createdAt: r.createdAt,
+            startedAt: r.startedAt ?? null,
+            finishedAt: r.finishedAt ?? null,
+          });
+        }
+        rows.sort((a, b) => b.createdAt - a.createdAt || (a.runId < b.runId ? 1 : -1));
+        const start = f.cursor ? Number(f.cursor) : 0;
+        const limit = f.limit ?? 50;
+        return {
+          runs: rows.slice(start, start + limit),
+          nextCursor: start + limit < rows.length ? String(start + limit) : null,
+        };
+      }),
     listRuns: (f) =>
       delay(() => {
         let rows = [...world.runs.values()].filter((r) => r.projectId === f.projectId);

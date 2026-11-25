@@ -1,6 +1,6 @@
 import { createRootRoute, createRoute, createRouter, redirect } from "@tanstack/react-router";
 import { JOB_STATES, type JobState } from "@/api/types";
-import { HomeRedirect, NotFound } from "@/features/shell/home";
+import { Home, NotFound } from "@/features/shell/home";
 import { Shell } from "@/features/shell/shell";
 import { OrgPage } from "@/features/runs/org-page";
 import { RunsPage } from "@/features/runs/runs-page";
@@ -18,6 +18,7 @@ import { InstanceProjectsPage } from "@/features/instance/projects-page";
 import { InstanceBackupsPage } from "@/features/instance/backups-page";
 import { InstanceTokenPage } from "@/features/instance/token-page";
 import { OnboardingPage, validateOnboardingSearch } from "@/features/onboarding/wizard";
+import { parseFeedSearch } from "@/lib/activity";
 import { sanitizeNext } from "@/lib/session";
 import { SettingsPage } from "@/features/runs/settings-page";
 
@@ -30,10 +31,12 @@ export type JobSearch = { attempt?: number | undefined };
 
 const rootRoute = createRootRoute({ component: Shell, notFoundComponent: NotFound });
 
+// Home is the activity feed across every org ("All orgs"). Its filters live in the URL.
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: HomeRedirect,
+  component: Home,
+  validateSearch: parseFeedSearch,
 });
 
 // The sign-in routes render nothing themselves: the shell shows the screen (or sends a signed-in
@@ -168,7 +171,7 @@ const instanceRoutes = [
   }),
 );
 
-const routeTree = rootRoute.addChildren([
+export const routeTree = rootRoute.addChildren([
   instanceIndexRoute,
   ...instanceRoutes,
   signInRoute,

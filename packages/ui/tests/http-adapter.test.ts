@@ -51,6 +51,60 @@ function make(
   return { api, ...s };
 }
 
+describe("my_activity_feed", () => {
+  const wireRow = {
+    run_id: "R1",
+    org: "acme",
+    org_name: "Acme",
+    org_avatar_url: "https://avatars.githubusercontent.com/u/1",
+    project: "api",
+    project_name: "API",
+    project_avatar_url: null,
+    workflow: "CI",
+    ref: "main",
+    ref_type: "branch",
+    sha: "a".repeat(40),
+    event: "push",
+    commit_message: null,
+    actor: "octocat",
+    actor_avatar_url: null,
+    state: "completed",
+    conclusion: "failure",
+    created_at: "2026-01-01T00:00:00.000Z",
+    started_at: "2026-01-01T00:00:05.000Z",
+    finished_at: "2026-01-01T00:01:05.000Z",
+    duration_ms: 60000,
+  };
+
+  test("calls /activity with only the filters, never the URL's org, and maps the rows", async () => {
+    const { api, calls } = make(() => json({ runs: [wireRow], next_cursor: "n" }));
+    const page = await api.myActivityFeed({ status: "failed", limit: 500, cursor: "c" });
+    const { url } = calls[0]!;
+    expect(url.pathname).toBe("/api/v1/activity");
+    // The adapter's own org ("acme") is not sent: the feed spans the person's orgs.
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      status: "failed",
+      limit: "100",
+      cursor: "c",
+    });
+    expect(page.nextCursor).toBe("n");
+    expect(page.runs[0]).toMatchObject({
+      runId: "R1",
+      org: "acme",
+      orgAvatarUrl: "https://avatars.githubusercontent.com/u/1",
+      state: "completed",
+      conclusion: "failure",
+      startedAt: Date.parse("2026-01-01T00:00:05.000Z"),
+    });
+  });
+
+  test("org and project are filters when given", async () => {
+    const { api, calls } = make(() => json({ runs: [], next_cursor: null }));
+    await api.myActivityFeed({ org: "beta", project: "web" });
+    expect(Object.fromEntries(calls[0]!.url.searchParams)).toEqual({ org: "beta", project: "web" });
+  });
+});
+
 describe("requests", () => {
   test("sends the bearer token in a header only, never in the URL, and omits cookies", async () => {
     const { api, calls } = make(() => json({ runs: [wireRun()], next_cursor: "c2" }));

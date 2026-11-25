@@ -549,3 +549,37 @@ export type Setting = {
   /** What is at risk in changing it, for a setting whose change can weaken a protection. */
   warning: string | null;
 };
+
+/** One row of the cross-org activity feed (`my_activity_feed`). Every text field but the ids is forge text. */
+export type ActivityRun = {
+  runId: string;
+  org: string;
+  orgName: string;
+  orgAvatarUrl: string | null;
+  project: string;
+  projectName: string;
+  projectAvatarUrl: string | null;
+  workflow: string;
+  ref: string;
+  refType: "branch" | "tag" | null;
+  sha: string | null;
+  event: string;
+  commitMessage: string | null;
+  actor: string | null;
+  actorAvatarUrl: string | null;
+  /** In progress states, or `completed` (then `conclusion` says how it ended). */
+  state: "queued" | "running" | "awaiting_approval" | "completed";
+  conclusion: "success" | "failure" | "infra_error" | "cancelled" | "skipped" | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+};
+
+export type ActivityStatus = "running" | "failed" | "all";
+export type ActivityFilter = {
+  org?: string | undefined;
+  project?: string | undefined;
+  status?: ActivityStatus | undefined;
+  cursor?: string | undefined;
+  limit?: number | undefined;
+};
