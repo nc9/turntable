@@ -24,6 +24,7 @@ import {
   launcherArgv,
   PROXY_BUNDLE_SH,
   envFileOf,
+  PRECREATE_PRIVATE_SH,
   varFileOf,
   proxyEnvFile,
   SHIM_NAMES,
@@ -376,6 +377,8 @@ export async function* runJob(
     let envFile = "";
     if (envText !== "") {
       envFile = `${L.root}/job.env`;
+      const pre = await execShort(provider, sandboxId, PRECREATE_PRIVATE_SH, [envFile], retry);
+      if (pre.exitCode !== 0) return fail("cannot protect the job environment file");
       await withRetry(
         () => provider.files.put(sandboxId, envFile, enc.encode(envText)),
         maxErr,
@@ -387,6 +390,8 @@ export async function* runJob(
 
     // The run's vars: a 0600 file act reads once at start, removed when the job ends.
     if (plan.vars && Object.keys(plan.vars).length > 0) {
+      const pre = await execShort(provider, sandboxId, PRECREATE_PRIVATE_SH, [L.varsFile], retry);
+      if (pre.exitCode !== 0) return fail("cannot protect the job vars file");
       await withRetry(
         () => provider.files.put(sandboxId, L.varsFile, enc.encode(varFileOf(plan.vars ?? {}))),
         maxErr,

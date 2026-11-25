@@ -175,7 +175,7 @@ export function chownData(
   env: Env = {},
   fchown: FchownFn = fchownSync,
 ): void {
-  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   chownChecked(dataDir, dataDir, "dir", uid, gid, undefined, fchown, (topFd, top) => {
     const expected = expectedFor(dataDir, env);
     const topRoute = HAS_PROC_FD ? `/proc/self/fd/${topFd}` : dataDir;

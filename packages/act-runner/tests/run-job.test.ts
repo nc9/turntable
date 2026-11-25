@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeWorld } from "@turntable/provider-sdk/testing";
@@ -171,6 +171,63 @@ describe("the secrets-proxy environment", () => {
     for (const a of argvs) expect(a).not.toContain(CRED);
     // The file was made private before the launcher read it.
     expect(argvs.some((a) => a.includes("chmod 600"))).toBe(true);
+  });
+});
+
+describe("file modes (issue 627)", () => {
+  test("act and its steps run with umask 022 while the env and vars files are 0600 before and after the put", async () => {
+    const p = world.provider();
+    const { id } = await p.create(spec);
+    const plan = planJob(WF, "hello", {
+      workflowPath: ".github/workflows/ci.yml",
+      readFile: () => undefined,
+      root: `${world.sandboxDir(id)}/tt`,
+      vars: { X: "y" },
+    });
+    const act = await fakeAct(
+      await fixture("success.jsonl"),
+      0,
+      `echo "umask=$(umask)"; t=$(mktemp -d); touch "$t/f"; mkdir "$t/d"; echo "file=$(stat -c %a "$t/f")"; echo "dir=$(stat -c %a "$t/d")"; rm -rf "$t"`,
+    );
+    const modes: Record<string, number> = {};
+    const put = p.files.put.bind(p.files);
+    p.files.put = async (sid, path, bytes) => {
+      if (path.endsWith("job.env") || path === plan.layout.varsFile) {
+        // Already there and private before the content arrives.
+        modes[`${path.split("/").pop()}:before`] = statSync(path).mode & 0o777;
+      }
+      await put(sid, path, bytes);
+      if (path.endsWith("job.env") || path === plan.layout.varsFile) {
+        modes[`${path.split("/").pop()}:after`] = statSync(path).mode & 0o777;
+      }
+    };
+    const events: RunEvent[] = [];
+    const result = await drain(
+      runJob(
+        p,
+        id,
+        plan,
+        {
+          repoTarball: await tarWith({ "README.md": "hi\n" }),
+          act,
+          githubToken: "tok-not-real",
+        },
+        { pollMs: 50 },
+      ),
+      (e) => events.push(e),
+    );
+    const log = events
+      .filter((e) => e.kind === "log")
+      .map((e) => new TextDecoder().decode(e.bytes))
+      .join("");
+    expect(result.state).toBe("success");
+    expect(log).toContain("umask=0022");
+    expect(log).toContain("file=644");
+    expect(log).toContain("dir=755");
+    expect(modes["job.env:before"]).toBe(0o600);
+    expect(modes["job.env:after"]).toBe(0o600);
+    expect(modes[`${plan.layout.varsFile.split("/").pop()}:before`]).toBe(0o600);
+    expect(modes[`${plan.layout.varsFile.split("/").pop()}:after`]).toBe(0o600);
   });
 });
 
