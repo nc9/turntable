@@ -17,7 +17,7 @@ export function ConnectButton({ variant = "secondary" }: { variant?: "secondary"
 }
 
 /** Shown instead of an empty feed while no org has a connected repository yet. */
-function OrgChooser({ data }: { data: { id: string; slug: string; name: string }[] }) {
+export function OrgChooser({ data }: { data: { id: string; slug: string; name: string }[] }) {
   return (
     <div className="mx-auto w-full max-w-md p-6">
       <h1 className="text-lg font-semibold tracking-tight">Choose an organization</h1>

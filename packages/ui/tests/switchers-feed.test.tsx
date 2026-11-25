@@ -14,8 +14,9 @@ import type { ReactElement } from "react";
 import { createFixture } from "../src/api/fixture/adapter";
 import type { ActivityRun } from "../src/api/types";
 import { Avatar } from "../src/components/avatar";
-import { FeedTable } from "../src/features/shell/activity-feed";
-import { SwitcherList } from "../src/features/shell/switchers";
+import { ActivityFeed, FeedTable } from "../src/features/shell/activity-feed";
+import { ConnectButton, OrgChooser } from "../src/features/shell/home";
+import { ConnectFooter, SwitcherList } from "../src/features/shell/switchers";
 import {
   mergeFirstPage,
   parseFeedSearch,
@@ -312,5 +313,51 @@ describe("the fixture feed", () => {
     } finally {
       fx.stop();
     }
+  });
+});
+
+describe("the onboarding entry points", () => {
+  test("the feed header carries the connect button next to the title", async () => {
+    const html = await inRouter(
+      <ActivityFeed
+        filter={{ status: "all" }}
+        orgs={[{ slug: "acme", name: "Acme" }]}
+        projects={[]}
+        action={<ConnectButton variant="default" />}
+        onFilter={() => {}}
+      />,
+    );
+    const title = html.indexOf(">Activity</h1>");
+    const connect = html.indexOf("Connect repositories");
+    expect(title).toBeGreaterThan(-1);
+    expect(connect).toBeGreaterThan(title);
+    expect(html).toContain('href="/onboarding"');
+  });
+
+  test("with no connected projects the empty state is the org chooser plus the connect button", async () => {
+    const html = await inRouter(<OrgChooser data={[{ id: "o1", slug: "acme", name: "Acme" }]} />);
+    expect(html).toContain("Choose an organization");
+    expect(html).toContain("Acme");
+    expect(html).toContain("Connect repositories");
+    expect(html).not.toContain(">Activity</h1>");
+  });
+
+  test("the org switcher menu ends with Connect repositories, after the list", async () => {
+    const html = await inRouter(
+      <>
+        <SwitcherList
+          label="Organization"
+          allLabel="All orgs"
+          allSelected
+          items={[{ slug: "acme", name: "Acme" }]}
+          isSelected={() => false}
+          icon={() => null}
+          onPick={() => {}}
+        />
+        <ConnectFooter close={() => {}} go={() => {}} />
+      </>,
+    );
+    expect(html.indexOf("Acme")).toBeLessThan(html.indexOf("Connect repositories"));
+    expect(html).toMatch(/Connect repositories<\/button><\/div>(<!--\/\$-->)?$/);
   });
 });

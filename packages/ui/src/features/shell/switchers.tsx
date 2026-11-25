@@ -125,6 +125,24 @@ function Switcher({
   );
 }
 
+/** The org switcher's last item, after a separator: onboarding for the selected org. */
+export function ConnectFooter({ close, go }: { close: () => void; go: () => void }) {
+  return (
+    <div className="border-t border-line p-1">
+      <button
+        type="button"
+        className="flex h-8 w-full items-center rounded-sm px-2 text-sm hover:bg-muted"
+        onClick={() => {
+          close();
+          go();
+        }}
+      >
+        Connect repositories
+      </button>
+    </div>
+  );
+}
+
 export function OrgSwitcher() {
   const scope = useScope();
   const navigate = useNavigate();
@@ -134,18 +152,7 @@ export function OrgSwitcher() {
     <Switcher
       testId="org"
       footer={(close) => (
-        <div className="border-t border-line p-1">
-          <button
-            type="button"
-            className="flex h-8 w-full items-center rounded-sm px-2 text-sm hover:bg-muted"
-            onClick={() => {
-              close();
-              void navigate({ to: "/onboarding" });
-            }}
-          >
-            Connect repositories
-          </button>
-        </div>
+        <ConnectFooter close={close} go={() => void navigate({ to: "/onboarding" })} />
       )}
       label="Organization"
       current={
