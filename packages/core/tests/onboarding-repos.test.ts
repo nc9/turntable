@@ -169,7 +169,7 @@ describe("list_installation_repos", () => {
         private: true,
         project: "api",
         status: "in_org",
-        mode: "shadow",
+        mode: "off",
         paused: true,
       },
       {
@@ -187,7 +187,7 @@ describe("list_installation_repos", () => {
         private: true,
         project: "web",
         status: "in_org",
-        mode: "shadow",
+        mode: "off",
         paused: false,
       },
     ]);
@@ -236,12 +236,12 @@ describe("onboard_repos", () => {
       ]),
     );
     expect(r.projects).toEqual([
-      { slug: "web", repo: "acme/web", enabled: true, mode: "shadow", paused: false },
-      { slug: "api", repo: "acme/api", enabled: false, mode: "shadow", paused: true },
+      { slug: "web", repo: "acme/web", enabled: true, mode: "off", paused: false },
+      { slug: "api", repo: "acme/api", enabled: false, mode: "off", paused: true },
     ]);
     const web = scopeOf("web");
     expect((await getProjectSandboxSettings(db, web)).maxConcurrent).toBe(2);
-    expect(await getProjectChecksMode(db, web)).toBe("shadow");
+    expect(await getProjectChecksMode(db, web)).toBe("off");
     expect(JSON.parse((await getProjectIngest(db, web))!)).toMatchObject({
       defaultBranch: "main",
       prMode: "allowlist",

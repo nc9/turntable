@@ -3,8 +3,12 @@
 // and audits the change.
 import type { Db } from "../db";
 import { lockSettingKey } from "../db/repos/settings";
-import { effectiveApproval, guardSettingChange } from "./setting-guard";
-import { settingsRegistry, untrustedRunApprovalSetting } from "../settings/definitions";
+import { effectiveApproval, effectiveChecksMode, guardSettingChange } from "./setting-guard";
+import {
+  checksModeSetting,
+  settingsRegistry,
+  untrustedRunApprovalSetting,
+} from "../settings/definitions";
 import { createSettingsRuntime, type SettingsRuntime } from "../settings/resolve";
 import { UNTRUSTED_RUN_APPROVALS, type UntrustedRunApproval } from "../db/schema";
 import { validAudience } from "../oidc/issuer";
@@ -278,6 +282,8 @@ export async function setChecksModePolicy(
   orgSlug: string,
   projectSlug: string | undefined,
   value: string,
+  /** The settings layers above the database: `turntable.toml` and the environment lock a value. */
+  settings?: SettingsRuntime,
 ): Promise<{ project: string; from: ChecksMode; to: ChecksMode }[]> {
   if (!(CHECKS_MODES as readonly string[]).includes(value)) {
     throw new Error(`--checks-mode must be one of: ${CHECKS_MODES.join(", ")}`);
@@ -292,6 +298,18 @@ export async function setChecksModePolicy(
     );
   }
   const out: { project: string; from: ChecksMode; to: ChecksMode }[] = [];
+  const rt = settings ?? createSettingsRuntime(settingsRegistry);
+  // Check every project's lock first, so a locked one refuses the whole call before any change.
+  for (const p of projects) {
+    await guardSettingChange(
+      rt,
+      db,
+      checksModeSetting,
+      { orgId: org.id, orgSlug: org.slug, projectId: p!.id, projectSlug: p!.slug },
+      {},
+      { value },
+    );
+  }
   for (const p of projects) {
     const scope = { orgId: org.id, projectId: p!.id };
     const from = await getProjectChecksMode(db, scope);
@@ -314,13 +332,14 @@ export async function setChecksModePolicy(
 export async function showChecksMode(
   db: Db,
   orgSlug: string,
+  settings?: SettingsRuntime,
 ): Promise<{ project: string; mode: ChecksMode }[]> {
   const org = await orgOf(db, orgSlug);
   const out: { project: string; mode: ChecksMode }[] = [];
   for (const p of await listProjects(db, { orgId: org.id })) {
     out.push({
       project: p.slug,
-      mode: await getProjectChecksMode(db, { orgId: org.id, projectId: p.id }),
+      mode: await effectiveChecksMode(settings, db, org.id, p.id),
     });
   }
   return out;

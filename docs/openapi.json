@@ -2635,7 +2635,7 @@
       "get": {
         "operationId": "list_installation_repos",
         "summary": "The repos a GitHub App installation grants, with their project, mode and paused state.",
-        "description": "Lists every repository the installation of this org grants (asked of GitHub through the installation, as the sync does): its name and id, whether it is private, the project it is bound to (null when none), `status` (`in_org` when the org has a project for it, else `new`), `mode` (`live` when the project reports gating checks, else `shadow`) and `paused` (the project's max_concurrent is 0). Read-only. Pages by name: `limit` (default 100) and `cursor`. Needs an org-wide credential.\n\nRequired role: reader. Read-only.",
+        "description": "Lists every repository the installation of this org grants (asked of GitHub through the installation, as the sync does): its name and id, whether it is private, the project it is bound to (null when none), `status` (`in_org` when the org has a project for it, else `new`), `mode` (the project's checks mode: `off`, `shadow` or `live`) and `paused` (the project's max_concurrent is 0). Read-only. Pages by name: `limit` (default 100) and `cursor`. Needs an org-wide credential.\n\nRequired role: reader. Read-only.",
         "parameters": [
           {
             "name": "installation_id",
@@ -2741,7 +2741,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "enum": ["shadow", "live"]
+                                "enum": ["off", "shadow", "live"]
                               },
                               {
                                 "type": "null"

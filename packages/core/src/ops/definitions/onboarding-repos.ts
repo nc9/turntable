@@ -25,6 +25,7 @@ import { checksModeSetting } from "../../settings/definitions";
 import { defineOp, type OpContext } from "../define";
 import { OpError } from "../errors";
 import {
+  CHECKS_MODE_LABELS,
   listInstallationReposInput,
   listInstallationReposOutput,
   ONBOARD_REPOS_MAX,
@@ -45,9 +46,6 @@ export const ONBOARD_DEFAULT_MAX_CONCURRENT = 2;
 const ONBOARD_VAR = { TURNTABLE_CI: "true" } as const;
 const DEFAULT_WORKFLOW_PATH = ".github/workflows/ci.yml";
 const BRANCH = /^[A-Za-z0-9._/-]{1,255}$/;
-
-/** A project's mode as the wizard shows it: only `live` gates; `off` and `shadow` never do. */
-const modeView = (m: string): "shadow" | "live" => (m === "live" ? "live" : "shadow");
 
 const ORG_WIDE = "a project-scoped token cannot do this: use an org-wide credential";
 
@@ -97,7 +95,7 @@ export const listInstallationRepos = defineOp({
     "Lists every repository the installation of this org grants (asked of GitHub through the " +
     "installation, as the sync does): its name and id, whether it is private, the project it is " +
     "bound to (null when none), `status` (`in_org` when the org has a project for it, else `new`), " +
-    "`mode` (`live` when the project reports gating checks, else `shadow`) and `paused` (the " +
+    "`mode` (the project's checks mode: `off`, `shadow` or `live`) and `paused` (the " +
     "project's max_concurrent is 0). Read-only. Pages by name: `limit` (default 100) and `cursor`. Needs an org-wide credential.",
   // The wizard's schema, plus the paging every list op has (the repo list can be long).
   input: listInstallationReposInput.extend({
@@ -139,11 +137,11 @@ export const listInstallationRepos = defineOp({
       const project = b
         ? await getProject(ctx.db, { orgId: ctx.scope.orgId }, b.projectId)
         : undefined;
-      let mode: "shadow" | "live" | null = null;
+      let mode: "off" | "shadow" | "live" | null = null;
       let paused = false;
       if (project) {
         const scope = { orgId: ctx.scope.orgId, projectId: project.id };
-        mode = modeView(await effectiveChecksMode(ctx.settings, ctx.db, scope.orgId, project.id));
+        mode = await effectiveChecksMode(ctx.settings, ctx.db, scope.orgId, project.id);
         paused = (await getProjectSandboxSettings(ctx.db, scope)).maxConcurrent === 0;
       }
       out.push({
@@ -197,8 +195,9 @@ export const onboardRepos = defineOp({
     "and the instance's per-org cap clamps it), the instance default size class (nothing to set), " +
     "ingest with PR mode `allowlist` listing the caller's GitHub login (a session has one; a person " +
     "token has none, so the list is empty), no bots (a bot is trusted only when listed), the project " +
-    "variable TURNTABLE_CI=true, and the chosen checks mode (default shadow; `live` needs the same " +
-    "owner or admin role, here and in `set_setting`). A project that already has ingest settings " +
+    "variable TURNTABLE_CI=true, and the chosen checks mode, the project's `checks_mode` (default " +
+    `off). ${CHECKS_MODE_LABELS.off}. ${CHECKS_MODE_LABELS.shadow}. ${CHECKS_MODE_LABELS.live}. ` +
+    "Any mode needs owner or admin, the same role as `set_setting`. A project that already has ingest settings " +
     "keeps them: only the variable is added. Everything goes through the same setters as the " +
     "settings and project-settings ops, so a value locked by the environment or turntable.toml " +
     "refuses the whole call. A repo the installation does not grant, or that has no project yet " +
@@ -277,7 +276,7 @@ export const onboardRepos = defineOp({
               await setProjectSandboxSettings(tx, scope, { maxConcurrent: target }, by);
             }
             // The registry setter: lock, role and value refusals, and the audit of the change.
-            await setSetting(sub, checksModeSetting, { value: want.mode ?? "shadow" }, false);
+            await setSetting(sub, checksModeSetting, { value: want.mode ?? "off" }, false);
             const { from, to } = ingestFor(
               await getProjectIngest(tx, scope),
               repo.defaultBranch!,
@@ -302,7 +301,7 @@ export const onboardRepos = defineOp({
             slug: project.slug,
             repo: repo.fullName,
             enabled: want.enable,
-            mode: modeView(await effectiveChecksMode(ctx.settings, tx, orgId, projectId)),
+            mode: await effectiveChecksMode(ctx.settings, tx, orgId, projectId),
             paused: after.maxConcurrent === 0,
           });
         }

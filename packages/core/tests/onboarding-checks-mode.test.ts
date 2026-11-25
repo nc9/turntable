@@ -1,14 +1,17 @@
 // `checks_mode` as a registry setting (onboarding lane A3). It is backed by the same
 // `projects.checks_mode` column the reporter has always read, so no existing project changes mode.
-// The task's premise was a poll-entry `shadow` flag; the code has none (see the PR). The states
-// built here are the ones that exist: a project nobody set (binding-only, `off`), one set to
-// `shadow` and one to `live` through the CLI's setter.
+// The states built here: a project nobody set (binding-only, `off`), one set to `shadow` and one
+// to `live` through the CLI's setter.
 import { describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { createProject, getProjectChecksMode, setProjectChecksMode } from "../src/db";
 import { bindRepo } from "../src/db";
 import { CheckReporter, type TokenMinter } from "../src/checks/reporter";
 import type { CheckRunBody, CheckRunsApi } from "../src/checks/client";
 import { dispatch, registry, type Principal } from "../src/ops";
+import * as schema from "../src/db/schema";
+import { upsertInstallation, countRunningByMode } from "../src/db/repos";
+import type { GithubFacts } from "../src/github/api";
 import { effectiveChecksMode } from "../src/ops/setting-guard";
 import { settingsRegistry } from "../src/settings/definitions";
 import { createSettingsRuntime } from "../src/settings/resolve";
@@ -194,5 +197,117 @@ describe("changing it", () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error.message).toContain("locked");
     expect(await getProjectChecksMode(w.db, w.scope)).toBe("off");
+  });
+});
+
+const lockedOff = () =>
+  createSettingsRuntime(
+    settingsRegistry,
+    {},
+    loadTomlSettings("t.toml", settingsRegistry, () =>
+      ["[orgs.acme.projects.app]", 'checks_mode = "off"'].join("\n"),
+    ),
+  );
+
+describe("onboard_repos picks the mode", () => {
+  const setup = async () => {
+    const w = await setupChecksWorld();
+    await upsertInstallation(
+      w.db,
+      { orgId: w.org.id },
+      {
+        installationId: w.installationId,
+        appId: "42",
+        accountLogin: "acme",
+        accountId: "7",
+        accountType: "Organization",
+        repositorySelection: "all",
+        status: "active",
+      },
+    );
+    await w.db.run((h) => h.orm.update(schema.projectRepos).set({ forgeRepoId: "1001" }));
+    const githubFacts: GithubFacts = {
+      getInstallation: async () => undefined,
+      listInstallationRepos: async () => [
+        {
+          id: "1001",
+          name: "web",
+          owner: "acme",
+          fullName: "acme/web",
+          private: true,
+          defaultBranch: "main",
+        },
+      ],
+    };
+    const onboard = (role: "owner" | "member", mode?: string) =>
+      dispatch(
+        { registry, db: w.db, githubFacts },
+        {
+          kind: "principal",
+          principal: { kind: "session", id: "u1", orgId: w.org.id, role },
+        },
+        "onboard_repos",
+        {
+          installation_id: w.installationId,
+          repos: [{ repo_id: "1001", enable: true, ...(mode ? { mode } : {}) }],
+        },
+      );
+    return { w, onboard };
+  };
+
+  test("no mode chosen is off, and the reporter posts nothing", async () => {
+    const { w, onboard } = await setup();
+    expect((await onboard("owner")).ok).toBe(true);
+    expect(await getProjectChecksMode(w.db, w.scope)).toBe("off");
+    const { api, created } = fakeApi();
+    const reporter = new CheckReporter({ db: w.db, auth, api, sleep: async () => {} });
+    reporter.started(await w.claim());
+    await reporter.idle();
+    expect(created).toEqual([]);
+  });
+
+  test("shadow and live each set the column; live still needs owner or admin", async () => {
+    const { w, onboard } = await setup();
+    expect((await onboard("owner", "shadow")).ok).toBe(true);
+    expect(await getProjectChecksMode(w.db, w.scope)).toBe("shadow");
+    expect((await onboard("owner", "live")).ok).toBe(true);
+    expect(await getProjectChecksMode(w.db, w.scope)).toBe("live");
+    const refused = await onboard("member", "off");
+    expect(refused.ok).toBe(false);
+    expect(await getProjectChecksMode(w.db, w.scope)).toBe("live");
+  });
+});
+
+describe("a turntable.toml lock on checks_mode", () => {
+  test("the host CLI refuses to set it, with the lock reason, and changes nothing", async () => {
+    const w = await setupChecksWorld();
+    const { setChecksModePolicy, showChecksMode } = await import("../src/ops/policy-cli");
+    await expect(setChecksModePolicy(w.db, "acme", "app", "live", lockedOff())).rejects.toThrow(
+      /locked.*turntable\.toml/,
+    );
+    expect(await getProjectChecksMode(w.db, w.scope)).toBe("off");
+    // Without a lock the same call works, and show reports the effective (locked) value.
+    await setProjectChecksMode(w.db, w.scope, "live");
+    expect(await showChecksMode(w.db, "acme", lockedOff())).toEqual([
+      { project: "app", mode: "off" },
+    ]);
+  });
+
+  test("drain counts use the effective mode, not the stored column", async () => {
+    const w = await setupChecksWorld();
+    await setProjectChecksMode(w.db, w.scope, "live");
+    const c = await w.claim();
+    await w.db.run((h) =>
+      h.orm
+        .update(schema.jobAttempts)
+        .set({ state: "running" })
+        .where(eq(schema.jobAttempts.id, c.attempt.id)),
+    );
+    expect(await countRunningByMode(w.db)).toEqual({ live: 1, shadow: 0 });
+    const rt = lockedOff();
+    expect(await countRunningByMode(w.db, (o, p) => effectiveChecksMode(rt, w.db, o, p))).toEqual({
+      live: 0,
+      shadow: 1,
+    });
   });
 });

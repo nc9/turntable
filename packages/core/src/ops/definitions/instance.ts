@@ -4,7 +4,12 @@
 // entries go to the system org's chain.
 import { z } from "zod";
 import type { Db } from "../../db";
-import { createSettingsRuntime, resolveSetting } from "../../settings/resolve";
+import {
+  createSettingsRuntime,
+  resolveSetting,
+  type SettingsRuntime,
+} from "../../settings/resolve";
+import { effectiveChecksMode } from "../setting-guard";
 import { settingsRegistry } from "../../settings/definitions";
 import { approvalWarnings, bootstrapFirstApprover } from "../../approvals/apply";
 import {
@@ -918,13 +923,19 @@ const drainOutput = z.object({
   shadow_cut: z.int().describe("Shadow attempts cut since this drain began."),
 });
 
-async function drainView(ctx: { db: Db }): Promise<z.infer<typeof drainOutput>> {
+async function drainView(ctx: {
+  db: Db;
+  settings?: SettingsRuntime | undefined;
+}): Promise<z.infer<typeof drainOutput>> {
   const snap = processDrain.snapshot();
   return {
     draining: snap.draining,
     running_attempts: await countRunning(ctx.db),
     since: iso(snap.since),
-    running_by_mode: await countRunningByMode(ctx.db),
+    // The effective mode, so a turntable.toml or environment lock on checks_mode is counted.
+    running_by_mode: await countRunningByMode(ctx.db, (orgId, projectId) =>
+      effectiveChecksMode(ctx.settings, ctx.db, orgId, projectId),
+    ),
     shadow_mode: processDrain.shadowMode,
     shadow_cut: processDrain.shadowCut,
   };
