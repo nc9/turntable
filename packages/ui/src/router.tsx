@@ -17,6 +17,7 @@ import { InstanceQuotasPage } from "@/features/instance/quotas-page";
 import { InstanceProjectsPage } from "@/features/instance/projects-page";
 import { InstanceBackupsPage } from "@/features/instance/backups-page";
 import { InstanceTokenPage } from "@/features/instance/token-page";
+import { OnboardingPage, validateOnboardingSearch } from "@/features/onboarding/wizard";
 import { sanitizeNext } from "@/lib/session";
 import { SettingsPage } from "@/features/runs/settings-page";
 
@@ -53,6 +54,15 @@ const tokenSignInRoute = createRoute({
   path: "/sign-in/token",
   component: () => null,
   validateSearch: signInSearch,
+});
+
+// The onboarding wizard: connect an org, install the App, pick repos, run CI once. A static path,
+// so it ranks above "/$org"; the server marks it with its own COOP header for the install popup.
+const onboardingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/onboarding",
+  component: OnboardingPage,
+  validateSearch: validateOnboardingSearch,
 });
 
 const orgRoute = createRoute({
@@ -164,6 +174,7 @@ const routeTree = rootRoute.addChildren([
   signInRoute,
   tokenSignInRoute,
   indexRoute,
+  onboardingRoute,
   orgRoute,
   ingestRoute,
   runsRoute,

@@ -7,6 +7,15 @@ import { lastOrg, useOrgs } from "@/lib/directory";
 import { pickOrg } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
+/** The way into the onboarding wizard (`/onboarding`). */
+export function ConnectButton({ variant = "secondary" }: { variant?: "secondary" | "default" }) {
+  return (
+    <Link to="/onboarding" className={cn(buttonVariants({ variant, size: "sm" }))}>
+      Connect repositories
+    </Link>
+  );
+}
+
 export function HomeRedirect() {
   const { data, error } = useOrgs();
   const navigate = useNavigate();
@@ -18,7 +27,7 @@ export function HomeRedirect() {
   if (error) return <EmptyState title="Could not load organizations">{error}</EmptyState>;
   if (data && data.length === 0)
     return (
-      <EmptyState title="No organizations yet">
+      <EmptyState title="No organizations yet" action={<ConnectButton />}>
         Create an org to start running workflows.
       </EmptyState>
     );
@@ -39,6 +48,9 @@ export function HomeRedirect() {
             </li>
           ))}
         </ul>
+        <div className="mt-4">
+          <ConnectButton />
+        </div>
       </div>
     );
   return (

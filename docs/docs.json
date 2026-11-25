@@ -23,6 +23,7 @@
           "cache",
           "security",
           "web-sign-in",
+          "onboarding",
           "secrets-vault",
           "oidc",
           "secrets-proxy",
