@@ -7,6 +7,8 @@ import {
   approvalPolicyMap,
   MAX_REQUIRED_APPROVALS,
 } from "../approvals/policy-setting";
+import { readFileSync } from "node:fs";
+import { DEFAULT_ORG_CPU_LIMIT, HARD_MAX_LIVE } from "@turntable/provider-daytona";
 import { refuseLabelMap } from "../scheduler/sandbox-size";
 import { createSettingsRegistry, defineSetting } from "./define";
 
@@ -465,6 +467,118 @@ export const projectRunnerLabelsSetting = defineSetting({
   toml: "runner_labels",
 });
 
+/** Sandbox limits (#661): the scheduler's two caps and the Daytona provider's two. */
+export const DEFAULT_GLOBAL_CAP = 4;
+export const DEFAULT_ORG_CAP = 2;
+
+const wholeNumber = (raw: string): unknown => (/^\d+$/.test(raw) ? Number(raw) : raw);
+
+export const schedulerGlobalCapSetting = defineSetting({
+  key: "scheduler_global_cap",
+  scope: "instance",
+  type: z.int().min(1).max(10_000),
+  default: DEFAULT_GLOBAL_CAP,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides how much of the fleet tenants may use, so only a person changes it",
+  description:
+    "Most jobs running at once across the instance (1 to 10000). Read at every claim: a change applies to the next claim with no restart. Lowering it never stops a running job; new claims wait until usage is under it. `TURNTABLE_GLOBAL_CAP` and `--global-cap` lock it.",
+  env: ["TURNTABLE_GLOBAL_CAP"],
+  envParse: wholeNumber,
+  toml: "scheduler.global_cap",
+});
+
+export const schedulerOrgCapSetting = defineSetting({
+  key: "scheduler_org_cap",
+  scope: "instance",
+  type: z.int().min(1).max(10_000),
+  default: DEFAULT_ORG_CAP,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides how much of the fleet one tenant may use, so only a person changes it",
+  description:
+    "Most jobs running at once per org (1 to 10000), the ceiling `set_quotas` and `max_concurrent` clamp to. Read at every claim: a change applies to the next claim with no restart. Lowering it never stops a running job. `TURNTABLE_ORG_CAP` and `--org-cap` lock it.",
+  env: ["TURNTABLE_ORG_CAP"],
+  envParse: wholeNumber,
+  toml: "scheduler.org_cap",
+});
+
+/**
+ * A number from a provider config document: the text of `TURNTABLE_PROVIDER_CONFIG_JSON`, or the
+ * file `TURNTABLE_PROVIDER_CONFIG` names. Undefined when the document does not set it (or is not
+ * readable here: the provider's own loader reports that at boot).
+ */
+function providerConfigNumber(raw: string, pick: (c: Record<string, unknown>) => unknown): unknown {
+  let text = raw;
+  if (!raw.startsWith("{")) {
+    try {
+      text = readFileSync(raw, "utf8");
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    const c = JSON.parse(text) as unknown;
+    return typeof c === "object" && c !== null && !Array.isArray(c)
+      ? pick(c as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const pickMaxLive = (c: Record<string, unknown>): unknown => c.maxLive;
+const pickCpuLimit = (c: Record<string, unknown>): unknown => {
+  const o = c.ownerCiPreflight;
+  return typeof o === "object" && o !== null ? (o as Record<string, unknown>).cpuLimit : undefined;
+};
+
+/** The default of `provider_daytona_max_live`: the provider's own default. */
+export const DEFAULT_DAYTONA_MAX_LIVE = 2;
+
+export const providerDaytonaMaxLiveSetting = defineSetting({
+  key: "provider_daytona_max_live",
+  scope: "instance",
+  type: z.int().min(1).max(HARD_MAX_LIVE),
+  default: DEFAULT_DAYTONA_MAX_LIVE,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides how many sandboxes the instance holds in the provider's account",
+  description: `Most live Daytona sandboxes of this instance's fleet at once (1 to ${HARD_MAX_LIVE}, the provider's hard ceiling). Read at every sandbox create: lowering it never stops a running sandbox, it holds new creates. \`maxLive\` in the provider config (\`TURNTABLE_PROVIDER_CONFIG\`, \`TURNTABLE_PROVIDER_CONFIG_JSON\`) or \`TURNTABLE_DAYTONA_MAX_LIVE\` locks it.`,
+  env: [
+    "TURNTABLE_DAYTONA_MAX_LIVE",
+    "TURNTABLE_PROVIDER_CONFIG_JSON",
+    "TURNTABLE_PROVIDER_CONFIG",
+  ],
+  envDocument: true,
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : providerConfigNumber(raw, pickMaxLive)),
+  toml: "provider.daytona.max_live",
+});
+
+export const providerDaytonaCpuLimitSetting = defineSetting({
+  key: "provider_daytona_cpu_limit",
+  scope: "instance",
+  type: z.int().min(1).max(10_000),
+  default: DEFAULT_ORG_CPU_LIMIT,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides how much of the provider's account the instance may use",
+  description:
+    "vCPU in use in the Daytona org above which a new sandbox create waits (1 to 10000). Read at every create. `ownerCiPreflight.cpuLimit` in the provider config (`TURNTABLE_PROVIDER_CONFIG`, `TURNTABLE_PROVIDER_CONFIG_JSON`) or `TURNTABLE_DAYTONA_CPU_LIMIT` locks it.",
+  env: [
+    "TURNTABLE_DAYTONA_CPU_LIMIT",
+    "TURNTABLE_PROVIDER_CONFIG_JSON",
+    "TURNTABLE_PROVIDER_CONFIG",
+  ],
+  envDocument: true,
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : providerConfigNumber(raw, pickCpuLimit)),
+  toml: "provider.daytona.cpu_limit",
+});
+
 /** The shipped registry. */
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
@@ -482,6 +596,10 @@ export const settingsRegistry = createSettingsRegistry([
   preemptMaxPerJobSetting,
   preemptWindowMinutesSetting,
   drainTimeoutSecondsSetting,
+  schedulerGlobalCapSetting,
+  schedulerOrgCapSetting,
+  providerDaytonaMaxLiveSetting,
+  providerDaytonaCpuLimitSetting,
   sessionIdleHoursSetting,
   sessionAbsoluteDaysSetting,
   selfServeOrgsSetting,

@@ -1,3 +1,4 @@
+import { instanceOrgCapOf } from "../org-cap";
 import { z } from "zod";
 import {
   appendAudit,
@@ -116,7 +117,7 @@ export const setProjectSettings = defineOp({
         "invalid_input",
         "a snapshot name is letters, digits, . _ - (up to 128, starting alphanumeric)",
       );
-    const cap = ctx.instanceOrgCap;
+    const cap = await instanceOrgCapOf(ctx);
     if (typeof i.max_concurrent === "number" && cap !== undefined && i.max_concurrent > cap) {
       throw new OpError(
         "invalid_input",

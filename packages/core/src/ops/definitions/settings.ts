@@ -22,6 +22,7 @@ import { defineOp, type OpContext } from "../define";
 import { guardSettingChange } from "../setting-guard";
 import { recordSettingChange } from "../setting-audit";
 import { OpError } from "../errors";
+import { invalidateSandboxLimits } from "../../scheduler/live-limits";
 
 const settingView = z.object({
   key: z.string(),
@@ -220,6 +221,8 @@ export async function setSetting(
       return resolved;
     }
   });
+  // The caps and provider limits are cached for the claim loop: a change shows on its next claim.
+  invalidateSandboxLimits();
   return view(def, after, showFile);
 }
 

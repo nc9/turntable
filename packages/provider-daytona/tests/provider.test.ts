@@ -1433,3 +1433,49 @@ describe("diagnose: read-only readiness checks", () => {
     expect(cs["daytona.snapshot"]).toMatchObject({ status: "pass" });
   });
 });
+
+describe("live limits (#661)", () => {
+  const posts = () => mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox");
+
+  test("a raised max_live applies to the next create of the same provider, with no rebuild", async () => {
+    const live: { maxLive?: number; cpuLimit?: number } = { maxLive: 1 };
+    const p = make({ limits: () => live, capacityWaitMs: 40 });
+    const a = await p.create(spec({ name: "a" }));
+    await expect(p.create(spec({ name: "b" }))).rejects.toBeInstanceOf(InfraError);
+    live.maxLive = 2;
+    const b = await p.create(spec({ name: "b" }));
+    expect(mock.sandboxes.size).toBe(2);
+    await p.destroy(a.id);
+    await p.destroy(b.id);
+  });
+
+  test("a lowered max_live stops nothing running and holds new creates", async () => {
+    const live: { maxLive?: number } = { maxLive: 2 };
+    const p = make({ limits: () => live, capacityWaitMs: 40 });
+    const a = await p.create(spec({ name: "a" }));
+    const b = await p.create(spec({ name: "b" }));
+    live.maxLive = 1;
+    expect(mock.sandboxes.size).toBe(2); // nothing was destroyed
+    await expect(p.create(spec({ name: "c" }))).rejects.toBeInstanceOf(InfraError);
+    await p.destroy(a.id);
+    await p.destroy(b.id);
+  });
+
+  test("a live max_live is still clamped to the hard ceiling", async () => {
+    const p = make({ limits: () => ({ maxLive: 11 }) });
+    await expect(p.create(spec())).rejects.toBeInstanceOf(RangeError);
+  });
+
+  test("a changed cpu_limit applies to the next create's org preflight", async () => {
+    // An account with one sandbox in it, so the org id can be learned, and 100 vCPU in use.
+    mock.addForeign("someone-elses", { project: "other" }, "stopped");
+    mock.usage.rows = [{ regionId: "us", sandboxClass: "container", currentCpuUsage: 100 }];
+    const live: { cpuLimit?: number } = { cpuLimit: 100 };
+    const p = make({ limits: () => live, capacityWaitMs: 40 });
+    await expect(p.create(spec())).rejects.toBeInstanceOf(InfraError);
+    expect(posts()).toHaveLength(0);
+    live.cpuLimit = 150;
+    await p.destroy((await p.create(spec())).id);
+    expect(posts()).toHaveLength(1);
+  });
+});

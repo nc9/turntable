@@ -34,6 +34,7 @@ import { AuditAnchor } from "./audit/anchor";
 import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
 import { ambientSettings, setAmbientSettings } from "./settings/ambient";
 import { loadSettingsRuntime } from "./settings/boot";
+import { LiveLimits } from "./scheduler/live-limits";
 import { setOperatorSizes } from "./scheduler/sandbox-size";
 import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
@@ -260,6 +261,7 @@ async function startBackground(
   // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
   const pollConfig = resolvePollConfig(v.poll);
   let scheduler: Scheduler | undefined;
+  let liveLimits: LiveLimits | undefined;
   let reconcileTimer: ReturnType<typeof setInterval> | undefined;
   let poller: Poller | undefined;
   let workerProvider: Provider | undefined;
@@ -267,8 +269,16 @@ async function startBackground(
 
   if (v.worker) {
     const providerName = v.provider ?? "docker";
+    // One live-limits reader for the claim loop and the provider's create-time hook (#661).
+    liveLimits = new LiveLimits(db);
+    const limits = liveLimits;
     const provider = createProvider(providerName, resolveProviderConfig(v["provider-config"]), {
       hosted: v.hosted === true || process.env.TURNTABLE_HOSTED === "1",
+      // Read at each create: the last value the claim loop read, never a restart's.
+      limits: () => {
+        const d = limits.last()?.daytona;
+        return { maxLive: d?.maxLive, cpuLimit: d?.cpuLimit };
+      },
     });
     workerProvider = provider;
     // Fail at startup, with the provider named, instead of at the first job.
@@ -290,11 +300,6 @@ async function startBackground(
     }
     if (override) log(`isolation override ON: ${override}`);
     const leaseMs = Number(v["lease-seconds"]) * 1000;
-    const num = (name: string, value: string | undefined): number => {
-      const n = Number(value);
-      if (!Number.isInteger(n) || n < 1) throw new Error(`invalid --${name}: ${value}`);
-      return n;
-    };
     // The secrets proxy (#15): opt in, and only with a vault. A job whose project has proxy rules
     // runs with no route but the proxy; see docs/secrets-proxy.mdx.
     if (process.env.TURNTABLE_SECRETS_PROXY === "1") {
@@ -433,8 +438,8 @@ async function startBackground(
       ),
       leaseMs,
       ...(observer ? { observer } : {}),
-      globalCap: num("global-cap", v["global-cap"]),
-      perOrgCap: num("org-cap", v["org-cap"]),
+      // The caps are the `scheduler_global_cap` and `scheduler_org_cap` settings, read at each claim.
+      ...(liveLimits ? { limits: liveLimits } : {}),
       log,
     });
     const sched = scheduler;
@@ -594,7 +599,17 @@ async function serve(args: string[]): Promise<void> {
   // is fine.
   // The operator's size classes first: the org and project label maps may name only those.
   setOperatorSizes(resolveSandboxSizes());
-  const settings = loadSettingsRuntime({ config: values.config });
+  // `--global-cap` and `--org-cap` on the command line lock their settings like the variables do.
+  const settingsEnv: Record<string, string | undefined> = { ...process.env };
+  for (const [flag, name] of [
+    ["global-cap", "TURNTABLE_GLOBAL_CAP"],
+    ["org-cap", "TURNTABLE_ORG_CAP"],
+  ] as const) {
+    if (process.argv.some((a) => a === `--${flag}` || a.startsWith(`--${flag}=`))) {
+      settingsEnv[name] = values[flag];
+    }
+  }
+  const settings = loadSettingsRuntime({ config: values.config, env: settingsEnv });
   // The approval engine and the release lane read the approval policy from the same runtime.
   setAmbientSettings(settings);
   const port = Number(values.port);
@@ -1142,9 +1157,6 @@ async function serve(args: string[]): Promise<void> {
           ? (resolvePollConfig(values.poll)?.repos ?? [])
           : []
         ).map((r) => staticPollKey(r.org, r.project)),
-        instanceOrgCap: Number.isInteger(Number(values["org-cap"]))
-          ? Number(values["org-cap"])
-          : undefined,
         trustForwardedProto: process.env.TURNTABLE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
         // The `doctor` op is owner-member only (in-process) and `instance_doctor` is a `tti_` token's:

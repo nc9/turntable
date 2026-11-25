@@ -216,7 +216,8 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Worker and provider",
     flag: "--global-cap",
     default: "4",
-    description: "Most jobs running at once across the instance.",
+    description:
+      "Most jobs running at once across the instance. Also the `scheduler_global_cap` setting (#661): set here it locks the setting; unset, the instance administrator changes it live with `instance_set_setting` or the web UI, with no restart.",
   },
   {
     name: "TURNTABLE_ORG_CAP",
@@ -224,7 +225,21 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     flag: "--org-cap",
     default: "2",
     description:
-      "Most jobs running at once per org. A stored per-org quota (`set_quotas`) replaces it for that org.",
+      "Most jobs running at once per org. A stored per-org quota (`set_quotas`) replaces it for that org, and cannot exceed it. Also the `scheduler_org_cap` setting (#661): set here it locks the setting; unset, it changes live with `instance_set_setting` or the web UI.",
+  },
+  {
+    name: "TURNTABLE_DAYTONA_MAX_LIVE",
+    area: "Worker and provider",
+    default: "2",
+    description:
+      "Most live Daytona sandboxes of this instance's fleet (1 to 10). The `provider_daytona_max_live` setting (#661): set here it locks the setting; unset, it changes live from the instance settings page.",
+  },
+  {
+    name: "TURNTABLE_DAYTONA_CPU_LIMIT",
+    area: "Worker and provider",
+    default: "200",
+    description:
+      "vCPU in use in the Daytona org above which a create waits. The `provider_daytona_cpu_limit` setting (#661): set here it locks the setting; unset, it changes live from the instance settings page.",
   },
   {
     name: "TURNTABLE_LEASE_SECONDS",

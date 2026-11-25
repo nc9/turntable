@@ -48,7 +48,10 @@ export function envValue(def: SettingDef, env: Env): { name: string; value: unkn
   for (const name of def.env) {
     const raw = env[name]?.trim();
     if (!raw) continue;
-    const parsed = def.type.safeParse(def.envParse ? def.envParse(raw) : raw);
+    const value = def.envParse ? def.envParse(raw) : raw;
+    // A variable that holds more than this setting (a provider config document) may not name it.
+    if (value === undefined) continue;
+    const parsed = def.type.safeParse(value);
     if (!parsed.success) {
       throw new SettingsConfigError(
         `${name} (setting ${def.key}): ${parsed.error.issues.map((i) => i.message).join("; ")}`,
