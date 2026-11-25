@@ -23,6 +23,8 @@ export type Project = {
   name: string;
   /** "owner/repo" of the bound forge repo. */
   repo: string;
+  /** "available": created by installation sync and never set up for CI. Absent means active. */
+  setup?: "active" | "available";
 };
 
 /** How far a run is trusted, decided by the server from re-fetched forge facts. */

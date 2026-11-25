@@ -148,6 +148,7 @@ export type WireProjects = {
     id: string;
     slug: string;
     name: string;
+    setup: "active" | "available";
     repos: { forge: string; owner: string; repo: string }[];
   }[];
   next_cursor: string | null;

@@ -106,6 +106,7 @@ import { countHumanWithAnyKeyPolicy, countHumanWithoutApprover } from "./ops/set
 import { ForwardedObserver } from "./doctor/observe";
 import { readerOf, realInputs } from "./doctor/real";
 import { serveRelease } from "./release/serve";
+import { staticPollKey } from "./ops/project-setup";
 import { startServer } from "./server";
 import { enableDevUi, hasUi } from "./ui-assets";
 import { transportOptionsFromEnv } from "./transport";
@@ -1100,6 +1101,10 @@ async function serve(args: string[]): Promise<void> {
                 keep: backupKeepFromEnv(process.env, settings),
               },
         settings,
+        staticPollProjects: (roles.has("poller")
+          ? (resolvePollConfig(values.poll)?.repos ?? [])
+          : []
+        ).map((r) => staticPollKey(r.org, r.project)),
         instanceOrgCap: Number.isInteger(Number(values["org-cap"]))
           ? Number(values["org-cap"])
           : undefined,

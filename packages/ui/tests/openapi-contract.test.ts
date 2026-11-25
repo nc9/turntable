@@ -232,7 +232,7 @@ test("whoami, list_orgs and list_projects", () => {
   expectKeys(orgs.properties!.orgs!.items!, ["id", "slug", "name"]);
   const projects = ok(op("/projects", "get"));
   expectKeys(projects, keysOf<WireProjects>({ projects: true, next_cursor: true }));
-  expectKeys(projects.properties!.projects!.items!, ["id", "slug", "name", "repos"]);
+  expectKeys(projects.properties!.projects!.items!, ["id", "slug", "name", "setup", "repos"]);
 });
 
 test("job_steps and job_cuts", () => {
