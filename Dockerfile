@@ -4,7 +4,7 @@
 # oven/bun 1.4.5 (multi-arch index digest)
 FROM oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS build
 ARG TARGETARCH
-ARG TURNTABLE_VERSION=0.0.0-docker
+ARG TURNTABLE_VERSION=
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/core/package.json packages/core/package.json
