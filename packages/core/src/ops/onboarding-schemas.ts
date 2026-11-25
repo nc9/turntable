@@ -169,9 +169,9 @@ export const onboardReposInput = z.object({
         repo_id: repoId,
         enable: z.boolean().describe("Turn CI on for this repo."),
         mode: mode
-          .default("off")
+          .optional()
           .describe(
-            `Checks mode. ${CHECKS_MODE_LABELS.off}. ${CHECKS_MODE_LABELS.shadow}. ${CHECKS_MODE_LABELS.live}.`,
+            `Checks mode. Omitted: a new project gets \`off\`; an existing project keeps its current mode. ${CHECKS_MODE_LABELS.off}. ${CHECKS_MODE_LABELS.shadow}. ${CHECKS_MODE_LABELS.live}.`,
           ),
       }),
     )

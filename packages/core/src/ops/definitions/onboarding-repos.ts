@@ -191,14 +191,15 @@ export const onboardRepos = defineOp({
   summary: "Turn CI on or off for a batch of an installation's repos, in one transaction.",
   description:
     "For each repo (by GitHub repo id, at most 100): `enable: false` pauses it (max_concurrent 0). " +
-    "`enable: true` applies the defaults: max_concurrent 2 (an operator's own non-zero cap is kept, " +
-    "and the instance's per-org cap clamps it), the instance default size class (nothing to set), " +
-    "ingest with PR mode `allowlist` listing the caller's GitHub login (a session has one; a person " +
-    "token has none, so the list is empty), no bots (a bot is trusted only when listed), the project " +
-    "variable TURNTABLE_CI=true, and the chosen checks mode, the project's `checks_mode` (default " +
-    `off). ${CHECKS_MODE_LABELS.off}. ${CHECKS_MODE_LABELS.shadow}. ${CHECKS_MODE_LABELS.live}. ` +
-    "Any mode needs owner or admin, the same role as `set_setting`. A project that already has ingest settings " +
-    "keeps them: only the variable is added. Everything goes through the same setters as the " +
+    "`enable: true` on a NEW project (still at its creation defaults: no cap, no ingest settings, no " +
+    "snapshot, checks mode off) applies the defaults: max_concurrent 2 (clamped by the instance's " +
+    "per-org cap), the instance default size class (nothing to set), ingest with PR mode `allowlist` " +
+    "listing the caller's GitHub login (a session has one; a person token has none, so the list is " +
+    "empty), no bots, the variable TURNTABLE_CI=true, and the checks mode (`mode`, default `off`). " +
+    "An EXISTING project keeps every setting: only what the caller passes changes (`mode` when given; " +
+    "`enable: false` pauses; `enable: true` lifts a pause with the default cap). " +
+    `${CHECKS_MODE_LABELS.off}. ${CHECKS_MODE_LABELS.shadow}. ${CHECKS_MODE_LABELS.live}. ` +
+    "Any mode needs owner or admin, the same role as `set_setting`. Everything goes through the same setters as the " +
     "settings and project-settings ops, so a value locked by the environment or turntable.toml " +
     "refuses the whole call. A repo the installation does not grant, or that has no project yet " +
     "(bind the installation first), refuses the whole call and nothing changes. Needs owner or admin; an " +
@@ -266,35 +267,49 @@ export const onboardRepos = defineOp({
           const project = await getProject(tx, { orgId }, projectId);
           if (!project) throw new OpError("not_found", "no such project");
           const sub = { ...ctx, db: tx, scope };
+          // New means still at its creation defaults: no cap, no ingest settings, no snapshot and
+          // checks mode `off`. Nothing there can be lost, so it gets the onboarding defaults. Any
+          // other project was set up on purpose and gets only what the caller passed.
+          const fresh =
+            project.maxConcurrent === null &&
+            project.ingestConfig === null &&
+            project.sandboxSnapshot === null &&
+            project.checksMode === "off";
+          const cur = (await getProjectSandboxSettings(tx, scope)).maxConcurrent;
           if (want.enable) {
-            const cur = (await getProjectSandboxSettings(tx, scope)).maxConcurrent;
-            if (cur === null || cur === 0) {
+            // An existing project's cap is never set, except a pause the caller now lifts.
+            if (fresh || cur === 0) {
               const target =
                 cap !== undefined
                   ? Math.min(ONBOARD_DEFAULT_MAX_CONCURRENT, cap)
                   : ONBOARD_DEFAULT_MAX_CONCURRENT;
               await setProjectSandboxSettings(tx, scope, { maxConcurrent: target }, by);
             }
-            // The registry setter: lock, role and value refusals, and the audit of the change.
-            await setSetting(sub, checksModeSetting, { value: want.mode ?? "off" }, false);
-            const { from, to } = ingestFor(
-              await getProjectIngest(tx, scope),
-              repo.defaultBranch!,
-              login,
-            );
-            if (to) {
-              await setProjectIngest(tx, scope, JSON.stringify(to));
-              await appendAudit(tx, scope, {
-                principalKind: ctx.principal.kind,
-                principalId: ctx.principal.id,
-                op: "onboard_repos",
-                effect: "write",
-                outcome: "ok",
-                input: { key: "ingest", project: project.slug, from, to },
-              });
+            if (fresh) {
+              const { from, to } = ingestFor(
+                await getProjectIngest(tx, scope),
+                repo.defaultBranch!,
+                login,
+              );
+              if (to) {
+                await setProjectIngest(tx, scope, JSON.stringify(to));
+                await appendAudit(tx, scope, {
+                  principalKind: ctx.principal.kind,
+                  principalId: ctx.principal.id,
+                  op: "onboard_repos",
+                  effect: "write",
+                  outcome: "ok",
+                  input: { key: "ingest", project: project.slug, from, to },
+                });
+              }
             }
           } else {
             await setProjectSandboxSettings(tx, scope, { maxConcurrent: 0 }, by);
+          }
+          // The registry setter: lock, role and value refusals, and the audit of the change.
+          const chosen = want.mode ?? (fresh && want.enable ? "off" : undefined);
+          if (chosen !== undefined) {
+            await setSetting(sub, checksModeSetting, { value: chosen }, false);
           }
           const after = await getProjectSandboxSettings(tx, scope);
           projects.push({

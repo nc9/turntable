@@ -10,6 +10,7 @@ import {
   listAudit,
   listRuns,
   openDatabase,
+  setProjectChecksMode,
   type Db,
 } from "../src/db";
 import {
@@ -378,9 +379,62 @@ describe("onboard_repos", () => {
       defaultBranch: "trunk",
       prMode: "approval",
       authors: ["maint"],
+    });
+    expect(JSON.parse((await getProjectIngest(db, web))!).vars?.TURNTABLE_CI).toBeUndefined();
+    expect((await getProjectSandboxSettings(db, web)).maxConcurrent).toBe(1);
+  });
+
+  const snapshot = async (slug: "web" | "api") => {
+    const sc = scopeOf(slug);
+    return {
+      mode: await getProjectChecksMode(db, sc),
+      sandbox: await getProjectSandboxSettings(db, sc),
+      ingest: await getProjectIngest(db, sc),
+    };
+  };
+
+  for (const existing of ["shadow", "live"] as const) {
+    test(`an existing ${existing} project onboarded with no mode keeps every setting`, async () => {
+      const web = scopeOf("web");
+      await setProjectChecksMode(db, web, existing);
+      const before = await snapshot("web");
+      expect(code(await call(session(), [{ repo_id: "1001", enable: true }]))).toBe("ok");
+      expect(await snapshot("web")).toEqual(before);
+      expect(before.mode).toBe(existing);
+      expect(before.ingest).toBeNull();
+      expect(before.sandbox.maxConcurrent).toBeNull();
+    });
+
+    test(`an explicit mode on an existing ${existing} project changes only the mode`, async () => {
+      const web = scopeOf("web");
+      await setProjectChecksMode(db, web, existing);
+      const before = await snapshot("web");
+      const to = existing === "shadow" ? "live" : "off";
+      expect(code(await call(session(), [{ repo_id: "1001", enable: true, mode: to }]))).toBe("ok");
+      expect(await snapshot("web")).toEqual({ ...before, mode: to });
+    });
+  }
+
+  test("an existing project with its own cap and ingest keeps both, and no var is added", async () => {
+    const web = scopeOf("web");
+    await setProjectChecksMode(db, web, "shadow");
+    await setProjectIngest(db, web, JSON.stringify({ defaultBranch: "trunk", prMode: "approval" }));
+    await setProjectSandboxSettings(db, web, { maxConcurrent: 1 });
+    const before = await snapshot("web");
+    expect(code(await call(session(), [{ repo_id: "1001", enable: true }]))).toBe("ok");
+    expect(await snapshot("web")).toEqual(before);
+  });
+
+  test("a new project with no mode gets off and the defaults", async () => {
+    expect(code(await call(session(), [{ repo_id: "1001", enable: true }]))).toBe("ok");
+    const after = await snapshot("web");
+    expect(after.mode).toBe("off");
+    expect(after.sandbox.maxConcurrent).toBe(2);
+    expect(JSON.parse(after.ingest!)).toMatchObject({
+      prMode: "allowlist",
+      authors: ["octocat"],
       vars: { TURNTABLE_CI: "true" },
     });
-    expect((await getProjectSandboxSettings(db, web)).maxConcurrent).toBe(1);
   });
 
   test("the instance per-org cap clamps the default", async () => {

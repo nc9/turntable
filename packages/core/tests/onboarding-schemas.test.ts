@@ -98,12 +98,12 @@ describe("onboarding schemas", () => {
       s.listInstallationReposOutput.safeParse({ repos: [{ ...repo, status: "old" }] }).success,
     ).toBe(false);
   });
-  test("onboard_repos defaults mode to off, caps the array", () => {
+  test("onboard_repos leaves mode unset when omitted, caps the array", () => {
     const r = s.onboardReposInput.parse({
       installation_id: "1",
       repos: [{ repo_id: "2", enable: true }],
     });
-    expect(r.repos[0]?.mode).toBe("off");
+    expect(r.repos[0]?.mode).toBeUndefined();
     for (const m of ["off", "shadow", "live"]) {
       expect(
         s.onboardReposInput.safeParse({
