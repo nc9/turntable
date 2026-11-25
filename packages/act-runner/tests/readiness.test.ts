@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { hasStatusFunction } from "../src/expr";
 import { jobReadiness, type NeedStatus } from "../src/readiness";
 import { planWorkflow } from "../src/workflow-plan";
 
@@ -32,6 +33,21 @@ jobs:
   onfail:
     needs: a
     if: \${{ failure() }}
+    runs-on: ubuntu-latest
+    steps: []
+  docs:
+    needs: a
+    if: \${{ needs.a.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    steps: []
+  mixed:
+    needs: a
+    if: \${{ contains(github.ref, 'main') && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps: []
+  literal:
+    needs: a
+    if: true
     runs-on: ubuntu-latest
     steps: []
   dock:
@@ -96,5 +112,35 @@ describe("jobReadiness", () => {
     // an unsupported job is ready: the runner fails it with the reason, it is never skipped
     expect(jobReadiness(job("dock"), {})).toMatchObject({ decision: "ready" });
     expect(jobReadiness(job("never"), {})).toMatchObject({ decision: "skip" });
+  });
+
+  test("an if: without a status function gets an implicit success() (#607)", () => {
+    expect(jobReadiness(job("docs"), { a: ok() }).decision).toBe("ready");
+    for (const s of ["failure", "infra_error", "cancelled", "skipped"] as const) {
+      expect(jobReadiness(job("docs"), { a: st(s) })).toMatchObject({ decision: "skip" });
+      expect(jobReadiness(job("literal"), { a: st(s) })).toMatchObject({ decision: "skip" });
+    }
+    expect(jobReadiness(job("literal"), { a: ok() }).decision).toBe("ready");
+    expect(
+      jobReadiness(job("docs"), { a: st("failure", { continueOnError: true }) }).decision,
+    ).toBe("ready");
+  });
+
+  test("a status function anywhere in the if: disables the implicit success()", () => {
+    expect(jobReadiness(job("mixed"), { a: st("failure") }).decision).toBe("skip");
+    expect(
+      jobReadiness(job("gate"), { a: st("failure"), "m[0]": ok(), "m[1]": ok() }),
+    ).toMatchObject({ decision: "skip" });
+    expect(jobReadiness(job("cleanup"), { a: st("cancelled") }).decision).toBe("ready");
+    expect(jobReadiness(job("onfail"), { a: st("failure") }).decision).toBe("ready");
+  });
+});
+
+describe("hasStatusFunction", () => {
+  test("parses the expression", () => {
+    expect(hasStatusFunction("always()")).toBe(true);
+    expect(hasStatusFunction("a == 1 && !Cancelled()")).toBe(true);
+    expect(hasStatusFunction("contains(x, 'success()')")).toBe(false);
+    expect(hasStatusFunction("needs.a.outputs.success == 'x'")).toBe(false);
   });
 });
