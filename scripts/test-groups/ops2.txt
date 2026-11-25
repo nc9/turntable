@@ -24,3 +24,5 @@ packages/core/tests/dispatch-inputs-not-exposed.test.ts
 packages/core/tests/run-dispatch-agents.test.ts
 packages/core/tests/onboarding-schemas.test.ts
 packages/core/tests/onboarding-account.test.ts
+packages/core/tests/onboarding-repos.test.ts
+packages/core/tests/onboarding-checks-mode.test.ts

@@ -280,5 +280,14 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"infra_kind\" text;"
     ]
+  },
+  {
+    "tag": "0019_onboardings",
+    "when": 1795572336089,
+    "statements": [
+      "CREATE TABLE \"onboardings\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"org_id\" text NOT NULL,\n\t\"installation_id\" text,\n\t\"first_run_id\" text,\n\t\"agent_token_id\" text,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"updated_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL\n);",
+      "ALTER TABLE \"onboardings\" ADD CONSTRAINT \"onboardings_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;",
+      "CREATE INDEX \"onboardings_org_idx\" ON \"onboardings\" USING btree (\"org_id\",\"created_at\");"
+    ]
   }
 ];

@@ -16,6 +16,10 @@ export interface GithubRepoFacts {
   name: string;
   owner: string;
   fullName: string;
+  /** Whether the repo is private. Absent from an older fake: callers treat absent as private. */
+  private?: boolean;
+  /** The repo's default branch, as GitHub reports it. */
+  defaultBranch?: string;
 }
 
 /** Facts about an installation, fetched with the App's own credentials. */
@@ -73,10 +77,24 @@ export function githubFacts(auth: AppAuth, fetchImpl: SafeFetch = safeFetch): Gi
         );
         if (!res.ok) throw new Error(`list installation repositories failed: HTTP ${res.status}`);
         const j = (await res.json()) as {
-          repositories: { id: number; name: string; full_name: string; owner: { login: string } }[];
+          repositories: {
+            id: number;
+            name: string;
+            full_name: string;
+            owner: { login: string };
+            private?: boolean;
+            default_branch?: string;
+          }[];
         };
         for (const r of j.repositories) {
-          out.push({ id: String(r.id), name: r.name, owner: r.owner.login, fullName: r.full_name });
+          out.push({
+            id: String(r.id),
+            name: r.name,
+            owner: r.owner.login,
+            fullName: r.full_name,
+            private: r.private !== false,
+            ...(typeof r.default_branch === "string" ? { defaultBranch: r.default_branch } : {}),
+          });
         }
         if (j.repositories.length < 100) break;
       }

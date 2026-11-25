@@ -542,5 +542,13 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `job_attempts` ADD `infra_kind` text;"
     ]
+  },
+  {
+    "tag": "0048_onboardings",
+    "when": 1795572335585,
+    "statements": [
+      "CREATE TABLE `onboardings` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`installation_id` text,\n\t`first_run_id` text,\n\t`agent_token_id` text,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `onboardings_org_idx` ON `onboardings` (`org_id`,`created_at`);"
+    ]
   }
 ];

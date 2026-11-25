@@ -671,4 +671,36 @@ export class GithubClient {
       throw err;
     }
   }
+
+  /**
+   * The files directly in a directory at a commit (the contents API listing), name and size only.
+   * Empty when the directory does not exist there. Never reads file contents.
+   */
+  async listDir(
+    repo: string,
+    dir: string,
+    ref: string,
+  ): Promise<{ path: string; size: number; isFile: boolean }[]> {
+    try {
+      const encoded = dir.split("/").map(encodeURIComponent).join("/");
+      const body = await this.#get(
+        `/repos/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
+      );
+      if (!Array.isArray(body)) return [];
+      return body.flatMap((e: { path?: unknown; size?: unknown; type?: unknown }) =>
+        typeof e.path === "string"
+          ? [
+              {
+                path: e.path,
+                size: typeof e.size === "number" ? e.size : 0,
+                isFile: e.type === "file",
+              },
+            ]
+          : [],
+      );
+    } catch (err) {
+      if (err instanceof GithubError && err.status === 404) return [];
+      throw err;
+    }
+  }
 }

@@ -1,5 +1,12 @@
 import type { Db } from "../db";
-import { appendAudit, listIngestBindings, listInstalledRepos, type Scope } from "../db/repos";
+import {
+  appendAudit,
+  listIngestBindings,
+  listInstalledRepos,
+  queryRuns,
+  type Scope,
+} from "../db/repos";
+import type { TrustClass } from "../trust";
 import { backoffMs } from "./backoff";
 import {
   ANONYMOUS_REQUESTS_PER_HOUR,
@@ -19,6 +26,7 @@ import {
   type DispatchResult,
 } from "./dispatch";
 import { newTagCaches, pollRepo, targetScope } from "./ingest";
+import type { DefaultBranchRunResult, RepoReader } from "./onboarding-forge";
 import { ingestStatus, POLL_RESERVE, type PollAuthMode, type RepoStatus } from "./status";
 
 /** What the poller needs from the GitHub App: the one mint function (it caches until near expiry). */
@@ -63,6 +71,18 @@ export type PollerOptions = {
     running: { attemptId: string; sandboxId: string | null; provider: string }[],
   ) => void;
 };
+
+const CLASSES: readonly TrustClass[] = ["protected", "release", "trusted_pr", "untrusted_pr"];
+
+/** The class a stored run was decided to have (`runs.trust` JSON); unreadable reads as the strictest. */
+function trustClassOfRun(trust: string | null): TrustClass {
+  try {
+    const c = (JSON.parse(trust ?? "null") as { class?: unknown } | null)?.class;
+    return CLASSES.find((k) => k === c) ?? "untrusted_pr";
+  } catch {
+    return "untrusted_pr";
+  }
+}
 
 /** Below this many requests left in the window the poller stops asking until it resets. */
 const RESERVE = POLL_RESERVE;
@@ -288,16 +308,11 @@ export class Poller {
   }
 
   /**
-   * Starts one `workflow_dispatch` run for a repo of this project. The repo is one the project
-   * ingests (a static poll entry for it, or its binding with ingest settings): a project with
-   * neither refuses. `repo` is needed only when the project ingests several. The forge client is
-   * the poller's own (read-only, an installation token when the repo has one).
+   * The one repo config of this project (a static poll entry, or its binding with ingest
+   * settings), after a refresh of the bindings. `repo` is needed only when the project ingests
+   * several. Throws a DispatchError when there is none, or several.
    */
-  async dispatch(
-    scope: Required<Scope>,
-    repo: string | undefined,
-    req: DispatchRequest,
-  ): Promise<DispatchResult & { repo: string }> {
+  async #projectCfg(scope: Required<Scope>, repo: string | undefined): Promise<PollRepoConfig> {
     await this.refreshBindings().catch(() => {});
     const mine: PollRepoConfig[] = [];
     for (const key of new Set(this.#allRepos().map((c) => c.repo.toLowerCase()))) {
@@ -325,7 +340,102 @@ export class Poller {
         `this project ingests several repos (${mine.map((c) => c.repo).join(", ")}): name one`,
       );
     }
-    const cfg = mine[0] as PollRepoConfig;
+    return mine[0] as PollRepoConfig;
+  }
+
+  /**
+   * A read-only reader for one repo of an installation: a token minted now for that repo alone
+   * (contents and metadata read). Used by the onboarding preview, which runs before a project has
+   * ingest settings, so it cannot go through the project's config.
+   */
+  async repoReader(installationId: string, repo: string): Promise<RepoReader> {
+    const auth = this.#o.auth;
+    if (!auth) throw new DispatchError("unavailable", "this server has no GitHub App");
+    const { token } = await auth.mint(installationId, {
+      repositories: [repo.split("/")[1] as string],
+      permissions: POLL_PERMISSIONS,
+    });
+    const client = new GithubClient({
+      ...(this.#o.fetch ? { fetch: this.#o.fetch } : {}),
+      baseUrl: this.#o.config.apiBaseUrl,
+      ...(this.#o.now ? { now: this.#o.now } : {}),
+      token,
+    });
+    return {
+      defaultBranch: () => client.repoDefaultBranch(repo),
+      head: async (branch) => (await client.branchHead(repo, branch)).sha,
+      listWorkflows: async (sha) =>
+        (await client.listDir(repo, ".github/workflows", sha))
+          .filter((e) => e.isFile)
+          .map((e) => ({ path: e.path, size: e.size })),
+      fileAt: (path, sha) => client.fileAt(repo, path, sha),
+    };
+  }
+
+  /**
+   * A push run of the default branch's head, through the same ingest path a poll takes: the same
+   * trust decision (the default branch is protected), the same caps, the same dedupe marker. Only
+   * the default-branch push candidate is considered (no PRs, tags or merge queue). Idempotent per
+   * sha: a run that already exists for that head's push is returned with `created: false`.
+   */
+  async runDefaultBranch(
+    scope: Required<Scope>,
+    repo: string | undefined,
+  ): Promise<DefaultBranchRunResult> {
+    const cfg = await this.#projectCfg(scope, repo);
+    const { github } = await this.#clientFor(cfg);
+    const head = await github.branchHead(cfg.repo, cfg.defaultBranch);
+    const existing = async (): Promise<DefaultBranchRunResult | undefined> => {
+      const [run] = await queryRuns(this.#o.db, scope, {
+        sha: head.sha,
+        event: "push",
+        branch: cfg.defaultBranch,
+        limit: 1,
+      });
+      if (!run) return undefined;
+      return {
+        runId: run.id,
+        sha: head.sha,
+        trustClass: trustClassOfRun(run.trust),
+        created: false,
+        repo: cfg.repo,
+      };
+    };
+    const before = await existing();
+    if (before) return before;
+    const out = await pollRepo(
+      {
+        db: this.#o.db,
+        github,
+        provider: this.#o.config.provider,
+        ...(this.#o.now ? { now: this.#o.now } : {}),
+        ...(this.#o.log ? { log: this.#o.log } : {}),
+      },
+      { ...cfg, prMode: "off", tagRefs: [], mergeQueue: false, everyPush: false },
+    );
+    if (out.superseded.length > 0) this.#o.onSuperseded?.(out.superseded);
+    if (out.created.length > 0) this.#o.onQueued?.();
+    // A poll of this repo may have raced us and made the run: it counts as the existing one.
+    const after = await existing();
+    if (after) return { ...after, created: out.created.includes(after.runId) };
+    throw new DispatchError(
+      "conflict",
+      `no run was created: ${out.refused[0]?.reason ?? out.skipped ?? "the head was already handled"}`,
+    );
+  }
+
+  /**
+   * Starts one `workflow_dispatch` run for a repo of this project. The repo is one the project
+   * ingests (a static poll entry for it, or its binding with ingest settings): a project with
+   * neither refuses. `repo` is needed only when the project ingests several. The forge client is
+   * the poller's own (read-only, an installation token when the repo has one).
+   */
+  async dispatch(
+    scope: Required<Scope>,
+    repo: string | undefined,
+    req: DispatchRequest,
+  ): Promise<DispatchResult & { repo: string }> {
+    const cfg = await this.#projectCfg(scope, repo);
     // An agent token's policy is checked from the ref name before any forge call (a client may
     // mint an installation token).
     refuseAgentByName(cfg, req);

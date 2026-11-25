@@ -104,7 +104,11 @@ async function ownPolicy(args: string[]): Promise<void> {
         console.log(
           `sandbox ${x.project}: snapshot ${x.settings.sandboxSnapshot ?? "(default)"}; max concurrent ${x.settings.maxConcurrent ?? "(no project limit)"}; untrusted run approval ${x.settings.untrustedRunApproval}`,
         );
-      for (const c of await showChecksMode(db, values.org))
+      for (const c of await showChecksMode(
+        db,
+        values.org,
+        loadSettingsRuntime({ config: values.config }),
+      ))
         console.log(`checks-mode ${c.project}: ${c.mode}`);
       for (const o of await showOidcAudiences(db, values.org))
         console.log(
@@ -206,6 +210,7 @@ async function ownPolicy(args: string[]): Promise<void> {
         values.org,
         values.project,
         values["checks-mode"],
+        loadSettingsRuntime({ config: values.config }),
       )) {
         console.error(`checks-mode ${r.project}: ${r.from} -> ${r.to}`);
       }

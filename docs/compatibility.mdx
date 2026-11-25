@@ -89,6 +89,22 @@ A heavy job can run as several shards, each in its own sandbox, **without editin
 - **Release lane.** Set `TURNTABLE_RELEASE_ARTIFACT_DIR` to `<data dir>/artifacts` and the lane signs from what the jobs uploaded. See [Release lane](/release-lane#artifacts-from-jobs).
 - **Not supported yet.** Encryption at rest (unlike the cache, the directory is plaintext, so use an encrypted volume), a per-project retention, and downloads from a job with egress `none`.
 
+## Checks mode and onboarding
+
+Each project has a `checks_mode` setting that decides what Turntable reports to GitHub as check runs:
+
+- Off: runs on Turntable, posts nothing to GitHub (default)
+- Shadow: posts neutral `shadow / <job>` checks that never block
+- Live: posts `turntable / <job>` checks your rules can require
+
+In the settings and ops the values are `off`, `shadow` and `live`. Setting any of them through an op needs the org owner or admin role, and only people can do it: no agent token holds admin. `turntable policy set --checks-mode` at the host does the same and refuses a value that `turntable.toml` or the environment locks.
+
+It is stored in the project's `checks_mode` column, the same one `turntable policy set --checks-mode` writes, so what the settings ops show is what the reporter does. A value in `turntable.toml` (`orgs.<slug>.projects.<slug>.checks_mode`) locks it: the reporter follows the file and the ops refuse to change it. A project nobody set stays `off`, so no existing project changes mode.
+
+The onboarding ops use it. `list_installation_repos` shows an installation's repos with their project, mode and paused state. `onboard_repos` (owner or admin session) turns CI on for a batch of repos in one transaction: `max_concurrent` 2, PR mode `allowlist` with the caller's GitHub login, no bots, the project variable `TURNTABLE_CI=true` and the chosen checks mode (default `off`: posts nothing until someone picks `shadow` or `live`); a repo left unticked is paused with `max_concurrent` 0. `preview_workflows` runs the planner over the default branch's workflow files without running anything and says, per job, whether Turntable would run it, skip it or fail it, with a fixed fix for each failure kind. `run_default_branch` starts one push run of the default branch's head, protected like any default-branch push, once per sha.
+
+To keep a job Turntable cannot run off Turntable, gate it on the variable the onboarding sets: `if: vars.TURNTABLE_CI != 'true'`.
+
 ## Runner labels
 
 What a `runs-on` label does on Turntable:

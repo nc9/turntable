@@ -21,6 +21,7 @@ import {
 } from "../src/auth/web-sessions";
 import {
   createOrg,
+  createProject,
   type Db,
   listAudit,
   listEvents,
@@ -752,12 +753,35 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     const inst = await h.as(cookie, "instance_whoami");
     expect(inst.ok).toBe(false);
     expect([...SESSION_WRITE_OPS]).toEqual([
-      "invite_member",
-      "session_step_up_challenge",
+      "invite_member", // a viewer or member invite needs no step-up (admin and owner invites do)
+      "session_step_up_challenge", // the challenge is how a session obtains a step-up at all
       "onboarding_create_org",
       "start_installation_claim",
       "bind_installation",
+      "onboard_repos", // owner or admin onboarding of repos; the op's own `admin` role gates it
+      "run_default_branch", // owner or admin starts a default-branch run; same `admin` gate
     ]);
+  });
+
+  test("onboard_repos and run_default_branch are open to a session but still refuse a member role", async () => {
+    const { h, cookie } = await aliceAdmin();
+    await createProject(h.db, { orgId: h.tenant.id }, { slug: "web", name: "web" });
+    h.logins.set("carol", "1002"); // the invite binds the id GitHub reports for the login
+    expect(
+      (await h.as(cookie, "invite_member", { github_login: "carol", role: "member" })).ok,
+    ).toBe(true);
+    h.users.set("code-carol", { id: "1002", login: "carol" });
+    const signed = await h.signIn("code-carol");
+    expect(signed.res.status).toBe(303);
+    const session = signed.session;
+    for (const op of ["onboard_repos", "run_default_branch"]) {
+      expect(SESSION_WRITE_OPS.has(op)).toBe(true);
+      const input =
+        op === "run_default_branch" ? { org: "tenant", project: "web" } : { org: "tenant" };
+      const r = await h.as(session!, op, input);
+      expect(r.ok, op).toBe(false);
+      if (!r.ok) expect(r.error.code, op).toBe("forbidden");
+    }
   });
 
   test("REST: a cookie needs the exact public Origin on a state-changing request; a bearer is unaffected", async () => {

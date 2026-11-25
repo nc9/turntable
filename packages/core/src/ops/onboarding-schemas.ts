@@ -26,7 +26,16 @@ const digits = (what: string) =>
 const installationId = digits("GitHub installation id");
 const repoId = digits("GitHub repository id");
 const memberRole = z.enum(MEMBER_ROLES).describe("The caller's role in the org.");
-const mode = z.enum(["shadow", "live"]);
+const mode = z.enum(["off", "shadow", "live"]);
+/**
+ * What each checks mode does on GitHub, in the words every surface uses (ops, docs and the
+ * wizard). The mode is the project's `checks_mode` column.
+ */
+export const CHECKS_MODE_LABELS = {
+  off: "Off: runs on Turntable, posts nothing to GitHub (default)",
+  shadow: "Shadow: posts neutral `shadow / <job>` checks that never block",
+  live: "Live: posts `turntable / <job>` checks your rules can require",
+} as const;
 const trustClass = z.enum(["protected", "release", "trusted_pr", "untrusted_pr"]);
 /** Variable name: letters, digits and underscores, not starting with a digit. */
 export const VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
@@ -159,7 +168,11 @@ export const onboardReposInput = z.object({
       z.object({
         repo_id: repoId,
         enable: z.boolean().describe("Turn CI on for this repo."),
-        mode: mode.default("shadow").describe("shadow reports without gating; live gates."),
+        mode: mode
+          .optional()
+          .describe(
+            `Checks mode. Omitted: a new project gets \`off\`; an existing project keeps its current mode. ${CHECKS_MODE_LABELS.off}. ${CHECKS_MODE_LABELS.shadow}. ${CHECKS_MODE_LABELS.live}.`,
+          ),
       }),
     )
     .max(ONBOARD_REPOS_MAX)
@@ -211,7 +224,15 @@ export type PreviewWorkflowsOutput = z.infer<typeof previewWorkflowsOutput>;
 
 // ---- 10. run_default_branch ----
 
-export const runDefaultBranchInput = z.object({ project: projectSlug });
+export const runDefaultBranchInput = z.object({
+  project: projectSlug,
+  onboarding_id: z
+    .string()
+    .min(1)
+    .max(128)
+    .optional()
+    .describe("Onboarding to record this run on, as its first run."),
+});
 export const runDefaultBranchOutput = z.object({
   run_id: z.string().describe("Run id."),
   sha: z.string().describe("Commit the run is for."),

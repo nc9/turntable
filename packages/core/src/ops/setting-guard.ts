@@ -5,6 +5,7 @@ import type { Db } from "../db";
 import { allProjectRefs, getKeyPolicy, getOrgById, getProject, listApprovers } from "../db/repos";
 import { notCountingReason } from "../approvals/identity";
 import { keyPolicyViolation } from "../approvals/key-policy";
+import type { ChecksMode } from "../db/repos";
 import type { UntrustedRunApproval } from "../db/schema";
 import {
   type RunDispatchAgents,
@@ -167,6 +168,27 @@ export async function effectiveApproval(
     await projectSubject(db, orgId, projectId),
   );
   return r.value as UntrustedRunApproval;
+}
+
+/**
+ * The effective `checks_mode` of one project: environment, `turntable.toml`, then the project's
+ * `checks_mode` column (see db/repos/settings.ts), then `off`. Without a lock layer this is
+ * exactly the column, so a project's mode is what it has always been. An unknown value reads as
+ * `off` (nothing is posted), never as a mode that posts.
+ */
+export async function effectiveChecksMode(
+  rt: SettingsRuntime | undefined,
+  db: Db,
+  orgId: string,
+  projectId: string,
+): Promise<ChecksMode> {
+  const r = await resolveSetting(
+    rt ?? createSettingsRuntime(settingsRegistry),
+    db,
+    "checks_mode",
+    await projectSubject(db, orgId, projectId),
+  );
+  return r.value === "shadow" || r.value === "live" ? r.value : "off";
 }
 
 /**

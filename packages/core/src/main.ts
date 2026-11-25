@@ -74,6 +74,7 @@ import { SecretVault } from "./secrets/vault";
 import { bootstrapExpiryDays, bootstrapInstanceToken } from "./ops/instance-bootstrap";
 import { generateInstanceToken, generateToken, hashToken } from "./ops/tokens";
 import { DispatchError, Poller, type RunDispatcher } from "./poll";
+import type { DefaultBranchRunner, RepoReaderFactory } from "./poll/onboarding-forge";
 import {
   resolvePollConfig,
   resolveProviderConfig,
@@ -245,6 +246,8 @@ async function startBackground(
   stop(): Promise<void>;
   nudge(repo: string): boolean;
   dispatch: RunDispatcher | undefined;
+  repoReader: RepoReaderFactory | undefined;
+  runDefaultBranch: DefaultBranchRunner | undefined;
 }> {
   const log = (m: string) => console.log(`[turntable] ${m}`);
   // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
@@ -487,6 +490,8 @@ async function startBackground(
   return {
     nudge: (repo) => poller?.nudge(repo) ?? false,
     dispatch: poller ? (scope, repo, req) => poller!.dispatch(scope, repo, req) : undefined,
+    repoReader: poller ? (inst, repo) => poller!.repoReader(inst, repo) : undefined,
+    runDefaultBranch: poller ? (scope, repo) => poller!.runDefaultBranch(scope, repo) : undefined,
     async stop() {
       poller?.stop();
       if (reconcileTimer) clearInterval(reconcileTimer);
@@ -833,6 +838,9 @@ async function serve(args: string[]): Promise<void> {
   let wake: ((repo: string) => void) | undefined;
   // Set once the poller exists: `run_dispatch` starts workflow_dispatch runs through it.
   let dispatchRun: RunDispatcher | undefined;
+  // Set with it: the onboarding preview's repo reader and the default-branch run.
+  let repoReader: RepoReaderFactory | undefined;
+  let runDefaultBranch: DefaultBranchRunner | undefined;
   // Hosted multi-tenant installs: an org claims its own installation (github/claim.ts).
   const claimMode = process.env.TURNTABLE_CLAIM_INSTALLATIONS === "1";
   let checks: CheckReporter | undefined;
@@ -887,6 +895,7 @@ async function serve(args: string[]): Promise<void> {
       auth,
       api: githubCheckRunsApi(),
       publicUrl: values["public-url"] ?? process.env.TURNTABLE_PUBLIC_URL?.trim(),
+      settings,
       log: (m) => console.log(`[turntable] checks: ${m}`),
     });
     appAuth = auth;
@@ -1063,6 +1072,21 @@ async function serve(args: string[]): Promise<void> {
                   "this process does not run the poller role, which starts dispatched runs",
                 ),
               ),
+        repoReader: (inst, repo) =>
+          repoReader
+            ? repoReader(inst, repo)
+            : Promise.reject(
+                new DispatchError("unavailable", "this process does not run the poller role"),
+              ),
+        defaultBranchRunner: (scope, repo) =>
+          runDefaultBranch
+            ? runDefaultBranch(scope, repo)
+            : Promise.reject(
+                new DispatchError(
+                  "unavailable",
+                  "this process does not run the poller role, which starts runs",
+                ),
+              ),
         ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),
         ...(artifacts ? { artifacts } : {}),
@@ -1118,6 +1142,8 @@ async function serve(args: string[]): Promise<void> {
 
   wake = (repo) => void background.nudge(repo);
   dispatchRun = background.dispatch;
+  repoReader = background.repoReader;
+  runDefaultBranch = background.runDefaultBranch;
 
   let stopping = false;
   const stop = () => {

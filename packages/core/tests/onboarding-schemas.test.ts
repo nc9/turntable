@@ -98,12 +98,23 @@ describe("onboarding schemas", () => {
       s.listInstallationReposOutput.safeParse({ repos: [{ ...repo, status: "old" }] }).success,
     ).toBe(false);
   });
-  test("onboard_repos defaults mode, caps the array", () => {
+  test("onboard_repos leaves mode unset when omitted, caps the array", () => {
     const r = s.onboardReposInput.parse({
       installation_id: "1",
       repos: [{ repo_id: "2", enable: true }],
     });
-    expect(r.repos[0]?.mode).toBe("shadow");
+    expect(r.repos[0]?.mode).toBeUndefined();
+    for (const m of ["off", "shadow", "live"]) {
+      expect(
+        s.onboardReposInput.safeParse({
+          installation_id: "1",
+          repos: [{ repo_id: "2", enable: true, mode: m }],
+        }).success,
+      ).toBe(true);
+    }
+    expect(s.CHECKS_MODE_LABELS.off).toBe(
+      "Off: runs on Turntable, posts nothing to GitHub (default)",
+    );
     const many = Array.from({ length: 101 }, () => ({ repo_id: "2", enable: true }));
     expect(s.onboardReposInput.safeParse({ installation_id: "1", repos: many }).success).toBe(
       false,

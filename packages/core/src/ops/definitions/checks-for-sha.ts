@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { checkName } from "../../checks/mapping";
-import { getProjectChecksMode, jobsForRuns, listRepos, runsForSha } from "../../db/repos";
+import { jobsForRuns, listRepos, runsForSha } from "../../db/repos";
 import type { RunJobRow } from "../../db/repos";
 import type { JobState } from "../../db/schema";
 import { JOB_STATES } from "../../db/schema";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
+import { effectiveChecksMode } from "../setting-guard";
 
 const STATES = ["GREEN", "PENDING", "RED", "NONE", "CANCELLED"] as const;
 export type CheckState = (typeof STATES)[number];
@@ -124,10 +125,7 @@ export const checksForSha = defineOp({
     const modeOf = async (r: (typeof rows)[number]): Promise<"shadow" | "live"> => {
       let m = modes.get(r.projectId);
       if (!m) {
-        const mode = await getProjectChecksMode(ctx.db, {
-          orgId: r.orgId,
-          projectId: r.projectId,
-        });
+        const mode = await effectiveChecksMode(ctx.settings, ctx.db, r.orgId, r.projectId);
         m = mode === "shadow" ? "shadow" : "live";
         modes.set(r.projectId, m);
       }

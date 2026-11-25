@@ -185,6 +185,24 @@ export const untrustedRunApprovalSetting = defineSetting({
   toml: "untrusted_run_approval",
 });
 
+/** The values of `checks_mode`; the same three the `projects.checks_mode` column has always held. */
+export const CHECKS_MODE_VALUES = ["off", "shadow", "live"] as const;
+
+export const checksModeSetting = defineSetting({
+  key: "checks_mode",
+  scope: "project",
+  type: z.enum(CHECKS_MODE_VALUES),
+  // The column's own default, so a project nobody set keeps the mode it has today.
+  default: "off",
+  // Owner or admin: `live` posts real `turntable / <job>` checks to the repo, which can gate merges.
+  role: "admin",
+  mcpEditable: true,
+  description:
+    "What this project reports to GitHub as check runs: `off` (nothing), `shadow` (neutral `shadow / <job>` checks that never gate a merge) or `live` (real `turntable / <job>` conclusions). Stored in the project's `checks_mode` column, which the checks reporter reads; a value from the environment or `turntable.toml` locks it.",
+  warning: "`live` posts checks that can block merges when a branch rule requires them.",
+  toml: "checks_mode",
+});
+
 /** How long after an org's last approver revocation `bootstrap_approver` stays refused. */
 export const DEFAULT_APPROVER_REBOOTSTRAP_DELAY_HOURS = 24;
 
@@ -455,6 +473,7 @@ export const settingsRegistry = createSettingsRegistry([
   auditAnchorSinkUrlSetting,
   auditAnchorExportIntervalSetting,
   untrustedRunApprovalSetting,
+  checksModeSetting,
   runDispatchAgentsSetting,
   approvalPolicySetting,
   schedulingClassSetting,

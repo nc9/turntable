@@ -659,6 +659,14 @@ const UNREACHABLE: Record<string, string> = {
     "needs a configured GitHub App for its claim store; another org's claim is not found for B, which onboarding-claim.test.ts covers",
   resync_installation:
     "needs a configured GitHub App and an installation of A; org B is probed and gets not_found, and the ownership, rate limit and adoption are in github-resync.test.ts",
+  list_installation_repos:
+    "needs a configured GitHub App to list the installation's repos; org B is probed and gets not_found for A's installation id, and the ownership check is in onboarding-repos.test.ts (another org's installation looks like none)",
+  onboard_repos:
+    "needs an admin: no token holds that role, so every token principal of A and B is refused alike; the org scoping (an installation of another org looks like none) and the batch are in onboarding-repos.test.ts",
+  preview_workflows:
+    "needs a configured GitHub App and a repo reader; org B is probed and finds no such project of its own, and the preview itself is in onboarding-repos.test.ts",
+  run_default_branch:
+    "needs an admin (no token holds that role) and the poller; org B is probed and finds no such project or onboarding of its own, and the run, the onboarding row's org check and the refusals are in onboarding-repos.test.ts",
   doctor:
     "instance operators only: no token holds the owner role it needs, so every token principal of A and B is refused alike; it reports instance facts, never an org's rows (doctor.test.ts covers who may call it)",
   get_setting:

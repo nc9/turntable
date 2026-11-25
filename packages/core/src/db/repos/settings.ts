@@ -7,6 +7,7 @@ import type { Db } from "..";
 import { DIALECT } from "../dialect";
 import * as s from "../schema";
 import type { SettingScope } from "../schema";
+import { setProjectChecksMode } from "./poll";
 
 /** `orgId` is null for instance scope and the owning org otherwise. */
 export type SettingTarget = { kind: SettingScope; id: string; orgId: string | null };
@@ -36,12 +37,40 @@ function parse(raw: string): unknown {
   }
 }
 
+/**
+ * `checks_mode` predates the settings table: it lives in the `projects.checks_mode` column, which
+ * the checks reporter, the scheduler and `turntable policy set --checks-mode` all use. The registry
+ * setting is backed by that column, so what is shown and set through the registry is what runs,
+ * and no existing project changes mode. `off`, the column's default, reads as "nothing stored".
+ */
+const isColumnBacked = (t: SettingTarget, key: string): boolean =>
+  t.kind === "project" && key === "checks_mode";
+
+const COLUMN_VALUES = new Set(["shadow", "live"]);
+
+/** The stored text of a column-backed setting: undefined for `off` (the default). */
+async function readChecksColumn(db: Db, t: SettingTarget): Promise<string | undefined> {
+  const [row] = await db.run((h) =>
+    h.orm
+      .select({ mode: s.projects.checksMode })
+      .from(s.projects)
+      .where(and(eq(s.projects.id, t.id), eq(s.projects.orgId, t.orgId!)))
+      .limit(1),
+  );
+  return row && COLUMN_VALUES.has(row.mode) ? JSON.stringify(row.mode) : undefined;
+}
+
 /** The stored value of one setting, or undefined when none is set. */
 export function getStoredSetting(
   db: Db,
   t: SettingTarget,
   key: string,
 ): Promise<StoredSetting | undefined> {
+  if (isColumnBacked(t, key)) {
+    return readChecksColumn(db, t).then((raw) =>
+      raw === undefined ? undefined : { value: parse(raw), raw, updatedBy: "", updatedAt: 0 },
+    );
+  }
   return db.run(async (h) => {
     const [r] = await h.orm.select().from(s.settings).where(where(t, key)).limit(1);
     return r
@@ -86,6 +115,27 @@ export function putStoredSetting(
   }
   if (t.kind === "org" && t.id !== t.orgId)
     throw new Error(`setting ${key}: org scope id is not the org`);
+  if (isColumnBacked(t, key)) {
+    return db.transaction(async (tx) => {
+      if (expect && (await readChecksColumn(tx, t)) !== expect.raw) return false;
+      if (value !== undefined && typeof value !== "string")
+        throw new Error(`setting ${key}: bad value`);
+      const [p] = await tx.run((h) =>
+        h.orm
+          .select({ id: s.projects.id })
+          .from(s.projects)
+          .where(and(eq(s.projects.id, t.id), eq(s.projects.orgId, t.orgId!)))
+          .limit(1),
+      );
+      if (!p) throw new Error(`setting ${key}: project ${t.id} is not in org ${t.orgId}`);
+      await setProjectChecksMode(
+        tx,
+        { orgId: t.orgId!, projectId: t.id },
+        (value ?? "off") as "off",
+      );
+      return true;
+    });
+  }
   return db.transaction(async (tx) => {
     if (t.kind === "project" && value !== undefined) {
       const [p] = await tx.orm

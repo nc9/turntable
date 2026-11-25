@@ -48,6 +48,7 @@ export const incidentRotationFlags = (DIALECT === "pg" ? pg.incidentRotationFlag
 export const artifacts = (DIALECT === "pg" ? pg.artifacts : sqlite.artifacts) as unknown as typeof sqlite.artifacts;
 export const releaseRequests = (DIALECT === "pg" ? pg.releaseRequests : sqlite.releaseRequests) as unknown as typeof sqlite.releaseRequests;
 export const installationClaims = (DIALECT === "pg" ? pg.installationClaims : sqlite.installationClaims) as unknown as typeof sqlite.installationClaims;
+export const onboardings = (DIALECT === "pg" ? pg.onboardings : sqlite.onboardings) as unknown as typeof sqlite.onboardings;
 export const cacheEntries = (DIALECT === "pg" ? pg.cacheEntries : sqlite.cacheEntries) as unknown as typeof sqlite.cacheEntries;
 export const orgQuotas = (DIALECT === "pg" ? pg.orgQuotas : sqlite.orgQuotas) as unknown as typeof sqlite.orgQuotas;
 export const quotaNotices = (DIALECT === "pg" ? pg.quotaNotices : sqlite.quotaNotices) as unknown as typeof sqlite.quotaNotices;

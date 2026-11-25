@@ -29,6 +29,7 @@ import type { InstallationClaims } from "../github/claim";
 import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
 import type { RunDispatcher } from "../poll/dispatch";
+import type { DefaultBranchRunner, RepoReaderFactory } from "../poll/onboarding-forge";
 import { OpError } from "./errors";
 import { authenticateSigned } from "./signed";
 import { type Credential, orgRole, type Principal, principalId } from "./principal";
@@ -50,6 +51,10 @@ export type DispatchEnv = {
   githubFacts?: GithubFacts | undefined;
   /** Starts `workflow_dispatch` runs (the poller); absent where this process has none. */
   runDispatcher?: RunDispatcher | undefined;
+  /** Read-only repo reader for the onboarding preview; absent without a GitHub App. */
+  repoReader?: RepoReaderFactory | undefined;
+  /** Starts a default-branch push run (the poller); absent where this process has none. */
+  defaultBranchRunner?: DefaultBranchRunner | undefined;
   /** Login to numeric id lookup, for invites. */
   githubUsers?: GithubUserLookup | undefined;
   /**
@@ -175,6 +180,9 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   "onboarding_create_org",
   "start_installation_claim",
   "bind_installation",
+  // Onboarding (A3): owner or admin sessions only, by the ops' own `admin` role.
+  "onboard_repos",
+  "run_default_branch",
 ]);
 
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
@@ -577,6 +585,8 @@ export async function dispatch(
       githubFacts: env.githubFacts,
       githubUsers: env.githubUsers,
       runDispatcher: env.runDispatcher,
+      repoReader: env.repoReader,
+      defaultBranchRunner: env.defaultBranchRunner,
       webhooks: env.webhooks,
       webauthn: env.webauthn,
       transport: env.transport,

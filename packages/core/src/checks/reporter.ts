@@ -10,7 +10,6 @@ import {
   dismissSkippedCheck,
   getAttemptCheckRunId,
   getOrgById,
-  getProjectChecksMode,
   listAttempts,
   listJobs,
   listUnreportedSkips,
@@ -22,6 +21,8 @@ import {
 } from "../db/repos";
 import { capExcerpt } from "../ops/failure-digest";
 import { digestJob } from "../ops/definitions/failure-digest";
+import { effectiveChecksMode } from "../ops/setting-guard";
+import type { SettingsRuntime } from "../settings/resolve";
 import type { Claim } from "../db/repos";
 import type { AttemptOutcome } from "../scheduler/types";
 import { type CheckRunBody, type CheckRunsApi, CheckRunsError } from "./client";
@@ -56,6 +57,11 @@ export type CheckReporterOptions = {
   api: CheckRunsApi;
   /** Public base URL of this server, for `details_url`. Without it the link is omitted. */
   publicUrl?: string | undefined;
+  /**
+   * The settings runtime, so an environment or `turntable.toml` value of `checks_mode` locks the
+   * mode. Without it the mode is the project's stored one, as before.
+   */
+  settings?: SettingsRuntime | undefined;
   /** Attempts per request before giving up. Default 5. */
   retries?: number;
   baseDelayMs?: number;
@@ -221,7 +227,12 @@ export class CheckReporter {
   async #gate(claim: Claim): Promise<PostTarget | { reason: DismissReason }> {
     const { db } = this.#o;
     const { scope, run } = claim;
-    const mode: ChecksMode = await getProjectChecksMode(db, scope);
+    const mode: ChecksMode = await effectiveChecksMode(
+      this.#o.settings,
+      db,
+      scope.orgId,
+      scope.projectId,
+    );
     if (mode === "off") return { reason: "checks_off" };
     if (!run.repo || !run.sha) return { reason: "local_run" }; // local runs and runs with no forge commit
     const [owner, name] = run.repo.split("/") as [string, string];

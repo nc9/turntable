@@ -132,7 +132,8 @@ async function read(ctx: OpContext, def: SettingDef, showFile: boolean): Promise
   return view(def, await resolveSetting(runtimeOf(ctx), ctx.db, def.key, subject), showFile);
 }
 
-async function setSetting(
+/** Sets one setting through the registry's own path: lock, role, MCP and value refusals, audit. */
+export async function setSetting(
   ctx: OpContext,
   def: SettingDef,
   i: { value?: unknown; unset?: boolean | undefined },

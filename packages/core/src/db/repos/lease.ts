@@ -1017,24 +1017,38 @@ export function countRunning(db: Db, orgId?: string): Promise<number> {
 
 /**
  * Running attempts split by their project's checks mode (#480): `live` gates a check run, anything
- * else (`shadow`, `off`) gates nothing. Instance-wide and unscoped like `countRunning`.
+ * else (`shadow`, `off`) gates nothing. Instance-wide and unscoped like `countRunning`. The column
+ * is the stored mode; `effective` (the registry's answer, which a `turntable.toml` or environment
+ * lock can override) wins when given.
  */
-export function countRunningByMode(db: Db): Promise<{ live: number; shadow: number }> {
-  return db.run(async (h) => {
-    const rows = await h.orm
-      .select({ mode: s.projects.checksMode, n: sql<number>`count(*)`.mapWith(Number) })
-      .from(s.jobAttempts)
-      .innerJoin(s.projects, eq(s.projects.id, s.jobAttempts.projectId))
-      .where(eq(s.jobAttempts.state, "running"))
-      .groupBy(s.projects.checksMode);
-    let live = 0;
-    let shadow = 0;
-    for (const r of rows) {
-      if (r.mode === "live") live += Number(r.n);
-      else shadow += Number(r.n);
-    }
-    return { live, shadow };
-  });
+export function countRunningByMode(
+  db: Db,
+  effective?: (orgId: string, projectId: string) => Promise<string>,
+): Promise<{ live: number; shadow: number }> {
+  return db
+    .run((h) =>
+      h.orm
+        .select({
+          orgId: s.projects.orgId,
+          projectId: s.projects.id,
+          mode: s.projects.checksMode,
+          n: sql<number>`count(*)`.mapWith(Number),
+        })
+        .from(s.jobAttempts)
+        .innerJoin(s.projects, eq(s.projects.id, s.jobAttempts.projectId))
+        .where(eq(s.jobAttempts.state, "running"))
+        .groupBy(s.projects.orgId, s.projects.id, s.projects.checksMode),
+    )
+    .then(async (rows) => {
+      let live = 0;
+      let shadow = 0;
+      for (const r of rows) {
+        const mode = effective ? await effective(r.orgId, r.projectId) : r.mode;
+        if (mode === "live") live += Number(r.n);
+        else shadow += Number(r.n);
+      }
+      return { live, shadow };
+    });
 }
 
 /** True when `owner` holds the live lease on a running attempt. */
