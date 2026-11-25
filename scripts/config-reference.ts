@@ -43,7 +43,10 @@ const code = (s: string): string => `\`${s.replaceAll("`", "")}\``;
 function roleCell(d: SettingDef): string {
   if (!d.instanceAdminOnly) return d.role;
   if (!d.strictness) return "instance_admin (`instanceAdminOnly`)";
-  return `${d.role} may tighten, instance_admin may loosen (strictness, least to most strict: ${d.strictness.map(code).join(" < ")})`;
+  const loosener = d.trust
+    ? "only the org owner (passkey step-up) may loosen"
+    : "instance_admin may loosen";
+  return `${d.role} may tighten, ${loosener} (strictness, least to most strict: ${d.strictness.map(code).join(" < ")})`;
 }
 
 /** Every setting of the registry: scope, type, default, roles, MCP-editability and names. */

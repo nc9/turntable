@@ -117,7 +117,7 @@ describe("refusing human without an approver", () => {
       { registry, db, settings: rt(), allowInstance: true },
       { kind: "bearer", token: secret },
       "set_project_settings",
-      { target_org: "org-a", target_project: a.projectSlug, untrusted_run_approval: "any" },
+      { target_org: "org-a", target_project: a.projectSlug, untrusted_run_approval: "no_agents" },
     );
     expect(r.ok).toBe(true);
   });

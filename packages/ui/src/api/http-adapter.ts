@@ -24,6 +24,7 @@ import type {
   JobDigest,
   RerunResult,
   Setting,
+  StepUpChallenge,
   Whoami,
   JobAttempt,
   JobState,
@@ -162,6 +163,7 @@ export function mapSetting(w: WireSetting): Setting {
     mcpEditable: w.mcp_editable,
     ...(w.strictness ? { strictness: w.strictness } : {}),
     warning: w.warning,
+    ...(w.trust ? { trust: w.trust } : {}),
   };
 }
 
@@ -598,7 +600,22 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         .filter((s) => (args?.project === undefined ? s.scope === "org" : s.scope === "project"));
     },
 
-    async setSetting({ key, value, unset, project }): Promise<Setting> {
+    async stepUpChallenge({ action, input }): Promise<StepUpChallenge> {
+      const w = await call<{
+        step_up_id: string;
+        challenge: string;
+        rp_id: string;
+        passkeys: { approver: string; passkey_id: string }[];
+      }>("POST", "/session/step-up", {}, { org: org(), action, input: { org: org(), ...input } });
+      return {
+        id: w.step_up_id,
+        challenge: w.challenge,
+        rpId: w.rp_id,
+        passkeys: w.passkeys.map((k) => ({ approver: k.approver, passkeyId: k.passkey_id })),
+      };
+    },
+
+    async setSetting({ key, value, unset, project, stepUp }): Promise<Setting> {
       return mapSetting(
         await call<WireSetting>(
           "POST",
@@ -609,6 +626,7 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
             key,
             ...(project !== undefined ? { project } : {}),
             ...(unset ? { unset: true } : { value }),
+            ...(stepUp ? { step_up: stepUp } : {}),
           },
         ),
       );

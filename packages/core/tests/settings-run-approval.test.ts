@@ -41,6 +41,17 @@ beforeEach(async () => {
   instanceSecret = (await createInstanceTokenFromCli(db, { name: "ops" })).secret;
 });
 
+/** Stores a value directly: the instance administrator can no longer loosen a trust setting. */
+const seed = (value: string) =>
+  putStoredSetting(
+    db,
+    storeTarget(untrustedRunApprovalSetting, { orgId: a.orgId, projectId: a.projectId }),
+    KEY,
+    value,
+    "seed",
+    Date.now(),
+  );
+
 const asInstance = (settings: SettingsRuntime, input: Record<string, unknown>) =>
   dispatch(
     { registry, db, settings, allowInstance: true } as DispatchEnv,
@@ -205,7 +216,7 @@ describe("a toml lock refuses every way in, naming the file", () => {
 });
 
 describe("the same refusals on every path", () => {
-  test("set_setting by an org owner is refused when it loosens: only the instance administrator raises it", async () => {
+  test("set_setting by an org owner is refused when it loosens: a token or member cannot, only an owner session with a step-up", async () => {
     const r = await dispatch(
       { registry, db, settings: rt() },
       { kind: "principal", principal: { kind: "member", id: "o", orgId: a.orgId, role: "owner" } },
@@ -213,7 +224,7 @@ describe("the same refusals on every path", () => {
       { key: KEY, value: "any", project: a.projectSlug },
     );
     expect(!r.ok && r.error.message).toBe(
-      `only the instance administrator can loosen ${KEY} (current: no_agents)`,
+      `only the org's owner can loosen ${KEY}, from a signed-in session with a passkey step-up`,
     );
   });
 
@@ -241,10 +252,29 @@ describe("the same refusals on every path", () => {
       "instance_set_setting",
       { key: KEY, value: "any", target_org: "org-a", target_project: a.projectSlug },
     );
-    expect(r.ok).toBe(true);
+    // a loosening is the org owner's, never the instance administrator's (#571)
+    expect(!r.ok && r.error.message).toBe(`only the org's owner can loosen ${KEY}`);
+    expect(!r.ok && (r.error.details as { reason?: string }).reason).toBe(
+      "trust_loosening_needs_owner",
+    );
+    await putStoredSetting(
+      db,
+      storeTarget(untrustedRunApprovalSetting, { orgId: a.orgId, projectId: a.projectId }),
+      KEY,
+      "any",
+      "t",
+      1,
+    );
+    const tight = await dispatch(
+      { registry, db, settings: rt(), allowInstance: true } as DispatchEnv,
+      { kind: "bearer", token: instanceSecret },
+      "instance_set_setting",
+      { key: KEY, value: "no_agents", target_org: "org-a", target_project: a.projectSlug },
+    );
+    expect(tight.ok).toBe(true);
     expect(
       await resolveSetting(rt(), db, KEY, { orgId: a.orgId, projectId: a.projectId }),
-    ).toMatchObject({ value: "any", source: "db" });
+    ).toMatchObject({ value: "no_agents", source: "db" });
     // org B's project is untouched
     expect(
       await resolveSetting(rt(), db, KEY, { orgId: b.orgId, projectId: b.projectId }),
@@ -253,7 +283,7 @@ describe("the same refusals on every path", () => {
       { registry, db, settings: rt(), allowInstance: true } as DispatchEnv,
       { kind: "bearer", token: instanceSecret },
       "instance_set_setting",
-      { key: KEY, value: "any", target_org: "org-a" },
+      { key: KEY, value: "human", target_org: "org-a" },
     );
     expect(!missing.ok && missing.error.message).toMatch(/target_project/);
   });
@@ -310,19 +340,20 @@ describe("the same refusals on every path", () => {
   });
 
   test("the alias writes through to the settings table and audits old and new", async () => {
+    await seed("any");
     const r = await asInstance(rt(), {
       target_project: a.projectSlug,
-      untrusted_run_approval: "any",
+      untrusted_run_approval: "no_agents",
     });
     expect(r.ok).toBe(true);
     const got = await resolveSetting(rt(), db, KEY, { orgId: a.orgId, projectId: a.projectId });
-    expect(got).toMatchObject({ value: "any", source: "db" });
+    expect(got).toMatchObject({ value: "no_agents", source: "db" });
     const row = (await listAudit(db, { orgId: a.orgId }, { limit: 10 })).find(
       (x) => x.op === "set_project_settings",
     );
     expect(JSON.parse(row!.input)).toMatchObject({
-      from: { untrustedRunApproval: "no_agents" },
-      to: { untrustedRunApproval: "any" },
+      from: { untrustedRunApproval: "any" },
+      to: { untrustedRunApproval: "no_agents" },
     });
   });
 });
@@ -386,7 +417,7 @@ describe("strictness: an org tightens, only the instance administrator loosens (
   });
 
   test("an org admin tightens any to no_agents, and it is audited", async () => {
-    expect((await setAsInstance("any")).ok).toBe(true);
+    await seed("any");
     const r = await orgSet({ value: "no_agents" });
     expect(r.ok).toBe(true);
     expect(await effective()).toBe("no_agents");
@@ -440,16 +471,16 @@ describe("strictness: an org tightens, only the instance administrator loosens (
   };
 
   test("an owner's tighten racing an admin's human keeps the stricter value", async () => {
-    expect((await setAsInstance("any")).ok).toBe(true);
+    await seed("any");
     const r = await raced("human", { value: "no_agents" });
     expect(await effective()).toBe("human");
     expect(!r.ok && r.error.message).toBe(
-      `only the instance administrator can loosen ${KEY} (current: human)`,
+      `only the org's owner can loosen ${KEY}, from a signed-in session with a passkey step-up`,
     );
   });
 
   test("an owner's reset to the default racing an admin's human keeps human", async () => {
-    expect((await setAsInstance("any")).ok).toBe(true);
+    await seed("any");
     await raced("human", { unset: true });
     expect(await effective()).toBe("human");
   });
@@ -461,7 +492,7 @@ describe("strictness: an org tightens, only the instance administrator loosens (
   });
 
   test("an owner's tighten still lands when the admin wrote an equal or looser value meanwhile", async () => {
-    expect((await setAsInstance("any")).ok).toBe(true);
+    await seed("any");
     expect((await raced("any", { value: "no_agents" })).ok).toBe(true);
     expect(await effective()).toBe("no_agents");
   });
@@ -472,7 +503,7 @@ describe("strictness: an org tightens, only the instance administrator loosens (
   // write commits, or the owner gets a conflict. The admin holds its transaction open after the
   // write, which is where an unlocked owner would read the old value and then overwrite it.
   test("an owner's tighten queues behind an admin's human on the same key, across scopes", async () => {
-    expect((await setAsInstance("any")).ok).toBe(true);
+    await seed("any");
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => (release = r));
     let wrote: () => void = () => {};
@@ -503,7 +534,7 @@ describe("strictness: an org tightens, only the instance administrator loosens (
     const r = await owner;
     expect(await effective()).toBe("human");
     expect(!r.ok && r.error.message).toBe(
-      `only the instance administrator can loosen ${KEY} (current: human)`,
+      `only the org's owner can loosen ${KEY}, from a signed-in session with a passkey step-up`,
     );
   });
 
@@ -515,14 +546,14 @@ describe("strictness: an org tightens, only the instance administrator loosens (
     expect((await setAsInstance("no_agents")).ok).toBe(true);
     const r = await orgSet({ value: "any" });
     expect(!r.ok && r.error.message).toBe(
-      `only the instance administrator can loosen ${KEY} (current: no_agents)`,
+      `only the org's owner can loosen ${KEY}, from a signed-in session with a passkey step-up`,
     );
     expect(await effective()).toBe("no_agents");
   });
 
   test("a reset to the looser default is refused; a reset to an equal default is allowed", async () => {
     // default is no_agents: any stored value above it cannot be reset by the org
-    await setAsInstance("any");
+    await seed("any");
     expect((await orgSet({ unset: true })).ok).toBe(true); // any -> default no_agents tightens
     expect(await effective()).toBe("no_agents");
     expect((await orgSet({ unset: true })).ok).toBe(true); // already default
@@ -540,13 +571,18 @@ describe("strictness: an org tightens, only the instance administrator loosens (
     );
     const r = await orgSet({ unset: true });
     expect(!r.ok && r.error.message).toBe(
-      `only the instance administrator can loosen ${KEY} (current: human)`,
+      `only the org's owner can loosen ${KEY}, from a signed-in session with a passkey step-up`,
     );
     expect(await effective()).toBe("human");
   });
 
-  test("the instance administrator loosens, and may unset", async () => {
-    expect((await setAsInstance("any")).ok).toBe(true);
+  test("the instance administrator tightens, never loosens, and may unset a looser value", async () => {
+    await seed("no_agents");
+    const loose = await setAsInstance("any");
+    expect(!loose.ok && (loose.error.details as { reason?: string }).reason).toBe(
+      "trust_loosening_needs_owner",
+    );
+    await seed("any");
     expect(await effective()).toBe("any");
     const r = await dispatch(
       { registry, db, settings: rt(), allowInstance: true } as DispatchEnv,
@@ -563,7 +599,7 @@ describe("strictness: an org tightens, only the instance administrator loosens (
   });
 
   test("over MCP it is still refused, tightening included", async () => {
-    await setAsInstance("any");
+    await seed("any");
     const r = await orgSet({ value: "no_agents" }, { viaMcp: true });
     expect(!r.ok && r.error.message).toMatch(/cannot be changed over MCP/);
     expect(await effective()).toBe("any");

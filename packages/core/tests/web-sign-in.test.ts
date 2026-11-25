@@ -735,7 +735,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       );
     const names = writes.map((o) => o.name);
     // the step-up actions of #430 are among them
-    for (const n of ["create_api_token", "set_setting", "approve_run", "request_enrolment"]) {
+    for (const n of ["create_api_token", "approve_run", "request_enrolment"]) {
       expect(names).toContain(n);
     }
     for (const op of writes) {
@@ -760,6 +760,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       "bind_installation",
       "onboard_repos", // owner or admin onboarding of repos; the op's own `admin` role gates it
       "run_default_branch", // owner or admin starts a default-branch run; same `admin` gate
+      "set_setting", // each setting's own role; loosening a trust setting also needs a step-up
     ]);
   });
 

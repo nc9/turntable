@@ -72,6 +72,8 @@ export type StepUpInput = z.infer<typeof stepUpInputSchema>;
 export const SESSION_STEP_UP_OPS: ReadonlySet<string> = new Set([
   "create_api_token",
   "invite_member",
+  // Only for loosening a trust setting; the settings guard requires it then and no other time.
+  "set_setting",
 ]);
 
 /** The target a step-up binds for a call: sha256 of the canonical validated input plus project scope. */

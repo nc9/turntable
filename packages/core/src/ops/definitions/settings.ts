@@ -48,6 +48,12 @@ const settingView = z.object({
     .describe(
       "What is at risk in changing it, for a setting whose change can weaken a protection.",
     ),
+  trust: z
+    .enum(["tighten_only"])
+    .nullable()
+    .describe(
+      "`tighten_only` for a trust setting: the instance administrator may only tighten it, and a web session loosens it only with a fresh passkey step-up. Null otherwise.",
+    ),
 });
 type SettingView = z.infer<typeof settingView>;
 
@@ -76,6 +82,7 @@ function view(def: SettingDef, r: Resolved, showFile: boolean): SettingView {
     mcp_editable: def.mcpEditable,
     strictness: def.strictness ? [...def.strictness] : null,
     warning: def.warning ?? null,
+    trust: def.trust ?? null,
   };
 }
 
@@ -127,8 +134,13 @@ function lookup(ctx: OpContext, key: string, scopes: readonly SettingScope[]): S
   return def;
 }
 
-async function read(ctx: OpContext, def: SettingDef, showFile: boolean): Promise<SettingView> {
-  const subject = await subjectOf(ctx, def);
+async function read(
+  ctx: OpContext,
+  def: SettingDef,
+  showFile: boolean,
+  target?: { org: string; project?: string | undefined },
+): Promise<SettingView> {
+  const subject = target ? await targetSubject(ctx, def, target) : await subjectOf(ctx, def);
   return view(def, await resolveSetting(runtimeOf(ctx), ctx.db, def.key, subject), showFile);
 }
 
@@ -150,7 +162,7 @@ export async function setSetting(
   const after = await ctx.db.transaction(async (tx) => {
     // One lock per (org, key) for every scope that feeds the effective value, taken before the
     // first read, so a write at another scope cannot land between the guard's read and the write.
-    if (subject.orgId && (def.strictness || def.instanceAdminOnly)) {
+    if (subject.orgId && (def.strictness || def.instanceAdminOnly || def.trust)) {
       await lockSettingKey(tx, subject.orgId, def.key);
     }
     for (let attempt = 0; ; attempt++) {
@@ -164,7 +176,11 @@ export async function setSetting(
         tx,
         def,
         subject,
-        { principal: ctx.principal, viaMcp: ctx.viaMcp },
+        {
+          principal: ctx.principal,
+          viaMcp: ctx.viaMcp,
+          stepUpVerified: ctx.stepUp?.action === "set_setting",
+        },
         i,
       );
       const written = await putStoredSetting(
@@ -282,7 +298,9 @@ export const setSettingOp = defineOp({
     "raises a limit or widens what runs may do (`mcp_editable` is false in `list_settings`). " +
     "A setting with a `strictness` order may be tightened by its role but only loosened by the " +
     "instance administrator, and unsetting counts as setting the default. " +
-    "The old and new values are audited. Returns the setting as `get_setting` does.",
+    "A setting marked `trust: tighten_only` (`list_settings` shows it) may only be tightened by a " +
+    "token; an owner's web session loosens it with a fresh passkey step-up (`step_up_required` " +
+    "without one). The old and new values are audited. Returns the setting as `get_setting` does.",
   roleNote:
     "Requires role operator, and the setting's own role (shown by `list_settings`); a few " +
     "settings need a role only people hold.",
@@ -298,7 +316,7 @@ export const setSettingOp = defineOp({
   },
 });
 
-const instanceSetInput = setInput.extend({
+const targetFields = {
   target_org: z
     .string()
     .min(1)
@@ -311,17 +329,35 @@ const instanceSetInput = setInput.extend({
     .max(64)
     .optional()
     .describe("Slug of the project, for a project setting."),
-});
+};
+const instanceKeyInput = keyInput.extend(targetFields);
+const instanceSetInput = setInput.extend(targetFields);
+
+/** The org or project an instance call names for a setting that is not an instance one. */
+function targetOf(
+  def: SettingDef,
+  i: { target_org?: string | undefined; target_project?: string | undefined },
+): { org: string; project?: string | undefined } | undefined {
+  if (def.scope === "instance") return undefined;
+  if (!i.target_org) {
+    throw new OpError(
+      "invalid_input",
+      `${def.key} is an ${def.scope} setting: target_org is required`,
+    );
+  }
+  return { org: i.target_org, project: i.target_project };
+}
 
 export const instanceGetSettingOp = defineOp({
   name: "instance_get_setting",
   summary: "One instance setting: effective value, source and lock.",
   description:
-    "Returns the effective value of one instance setting, which layer it comes from (`env`, " +
+    "Returns the effective value of one instance setting, or with `target_org` (and " +
+    "`target_project` for a project setting) of that tenant's org or project setting, which layer it comes from (`env`, " +
     "`toml`, `db` or `default`) and, for a locked one, the variable or file that sets it. " +
     "Only the instance administrator can call it. Not an MCP tool: instance settings are the " +
     "operator's. Read-only.",
-  input: keyInput,
+  input: instanceKeyInput,
   output: settingView,
   effect: "read",
   auth: { type: "instance", minRole: "admin" },
@@ -330,7 +366,8 @@ export const instanceGetSettingOp = defineOp({
   http: { method: "GET", path: "/instance/settings/{key}" },
   mcp: false,
   async handler(ctx, i) {
-    return read(ctx, lookup(ctx, i.key, ["instance"]), true);
+    const def = lookup(ctx, i.key, ["instance", ...ORG_SCOPES]);
+    return read(ctx, def, true, targetOf(def, i));
   },
 });
 
@@ -338,10 +375,18 @@ export const instanceListSettingsOp = defineOp({
   name: "instance_list_settings",
   summary: "Every instance setting with source and lock.",
   description:
-    "Lists the instance settings with their effective value, default, source (`env`, `toml`, " +
+    "Lists the instance settings (and, with `target_org`, that org's org settings, and with " +
+    "`target_project` the project's) with their effective value, default, source (`env`, `toml`, " +
     "`db` or `default`) and lock. Only the instance administrator can call it. Not an MCP " +
     "tool: instance settings are the operator's. Read-only.",
-  input: z.object({}),
+  input: z.object({
+    target_org: targetFields.target_org.describe(
+      "Also list this org's org settings (and the project's, with `target_project`).",
+    ),
+    target_project: targetFields.target_project.describe(
+      "With `target_org`: also list this project's project settings.",
+    ),
+  }),
   output: z.object({ settings: z.array(settingView) }),
   effect: "read",
   auth: { type: "instance", minRole: "admin" },
@@ -349,9 +394,22 @@ export const instanceListSettingsOp = defineOp({
   scope: "org",
   http: { method: "GET", path: "/instance/settings" },
   mcp: false,
-  async handler(ctx) {
-    const defs = runtimeOf(ctx).registry.byScope("instance");
-    return { settings: await Promise.all(defs.map((d) => read(ctx, d, true))) };
+  async handler(ctx, i) {
+    const reg = runtimeOf(ctx).registry;
+    const target = i.target_org ? { org: i.target_org, project: i.target_project } : undefined;
+    if (i.target_project && !i.target_org) {
+      throw new OpError("invalid_input", "target_project needs target_org");
+    }
+    const defs = [
+      ...reg.byScope("instance"),
+      ...(target ? reg.byScope("org") : []),
+      ...(target?.project ? reg.byScope("project") : []),
+    ];
+    return {
+      settings: await Promise.all(
+        defs.map((d) => read(ctx, d, true, d.scope === "instance" ? undefined : target)),
+      ),
+    };
   },
 });
 
@@ -363,10 +421,12 @@ export const instanceSetSettingOp = defineOp({
     "the environment or turntable.toml sets it (the error says which): change it there. The " +
     "old and new values are audited in the system org's chain. Only the instance administrator " +
     "can call it. Not an MCP tool: instance settings are the operator's, and a value in an " +
-    "agent's context is not an operator's decision. An org or project setting that only the " +
-    "instance administrator may change (`instance_admin` role in `list_settings`, such as " +
-    "`untrusted_run_approval`) is set here with `target_org` and, for a project setting, " +
-    "`target_project`; the change is audited in the system org's chain and the target's.",
+    "agent's context is not an operator's decision. Any org or project setting is set here " +
+    "with `target_org` and, for a project setting, `target_project`; the change is audited in " +
+    "the system org's chain and the target org's, with the old and new values. A setting marked " +
+    "`trust: tighten_only` (such as `untrusted_run_approval`) may be tightened but not loosened " +
+    "here (`trust_loosening_needs_owner`): only the org's owner loosens it. The environment and " +
+    "turntable.toml locks still apply.",
   input: instanceSetInput,
   output: settingView,
   effect: "write",
@@ -376,16 +436,7 @@ export const instanceSetSettingOp = defineOp({
   http: { method: "POST", path: "/instance/settings" },
   mcp: false,
   async handler(ctx, i) {
-    const def = runtimeOf(ctx).registry.get(i.key);
-    if (def && def.scope !== "instance" && def.instanceAdminOnly) {
-      if (!i.target_org) {
-        throw new OpError(
-          "invalid_input",
-          `${i.key} is an ${def.scope} setting: target_org is required`,
-        );
-      }
-      return setSetting(ctx, def, i, true, { org: i.target_org, project: i.target_project });
-    }
-    return setSetting(ctx, lookup(ctx, i.key, ["instance"]), i, true);
+    const def = lookup(ctx, i.key, ["instance", ...ORG_SCOPES]);
+    return setSetting(ctx, def, i, true, targetOf(def, i));
   },
 });

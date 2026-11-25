@@ -155,6 +155,7 @@ export const runDispatchAgentsSetting = defineSetting({
   role: "owner",
   instanceAdminOnly: true,
   strictness: ["any", "unprivileged", "none"],
+  trust: "tighten_only",
   // A protected or release run can hold deploy credentials and an agent reads untrusted text, so
   // a value in an agent's context must not widen what agents may dispatch.
   mcpEditable: false,
@@ -177,6 +178,7 @@ export const untrustedRunApprovalSetting = defineSetting({
   // An org owner may tighten it (any, then no_agents, then human) but never loosen it, and a
   // reset to the looser default is a loosening: only the instance administrator does that.
   strictness: ["any", "no_agents", "human"],
+  trust: "tighten_only",
   // Raising it to `any` lets agents approve: a value in an agent's context is not a human decision.
   mcpEditable: false,
   mcpReason: "it decides whether agents may approve runs, so only a person changes it",

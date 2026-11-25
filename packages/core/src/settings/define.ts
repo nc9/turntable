@@ -42,6 +42,15 @@ export type SettingSpec<T> = {
    */
   strictness?: readonly string[];
   /**
+   * A trust control: the instance administrator may tighten it for a tenant but never loosen it
+   * (only the org's owner, from a session with a fresh passkey step-up, may). The direction comes
+   * from `strictness` (an enum, listed least to most strict) or, for a boolean, from
+   * `strictValue`. Opt in at definition time so a new trust setting is covered everywhere.
+   */
+  trust?: "tighten_only";
+  /** For a boolean trust setting: the strict value. */
+  strictValue?: boolean;
+  /**
    * Whether `set_setting` may change it over MCP. False for anything that raises a limit or
    * widens what a run may do: a value in an agent's context is not a human decision (#188).
    */
@@ -129,9 +138,40 @@ export function defineSetting<T>(spec: SettingSpec<T>): SettingDef {
       throw new Error(`${k}: the default is not in strictness`);
     }
   }
+  if (spec.trust) {
+    if (spec.scope === "instance")
+      throw new Error(`${k}: trust applies to org and project settings`);
+    if (!spec.strictness && typeof spec.strictValue !== "boolean") {
+      throw new Error(`${k}: a trust setting needs a strictness order or a boolean strictValue`);
+    }
+    if (spec.strictness && spec.strictValue !== undefined) {
+      throw new Error(`${k}: give strictness or strictValue, not both`);
+    }
+  } else if (spec.strictValue !== undefined) {
+    throw new Error(`${k}: strictValue needs trust`);
+  }
   const bad = spec.type.safeParse(spec.default);
   if (!bad.success) throw new Error(`${k}: the default does not satisfy its own type`);
   return { ...spec, env: spec.env ?? [] } as SettingDef;
+}
+
+/**
+ * Whether changing a trust setting from `from` to `to` makes it less strict. False for a setting
+ * that is not `trust: "tighten_only"`. A current value the order does not list ranks as the
+ * strictest, so it fails closed. An unset is a change to the default.
+ */
+export function loosens(def: SettingDef, from: unknown, to: unknown): boolean {
+  if (def.trust !== "tighten_only") return false;
+  if (def.strictness) {
+    const order = def.strictness;
+    const rank = (v: unknown): number => {
+      const i = order.indexOf(v as string);
+      return i < 0 ? order.length : i;
+    };
+    return rank(to) < rank(from);
+  }
+  if (typeof def.strictValue === "boolean") return from === def.strictValue && to !== from;
+  return false;
 }
 
 /** Builds a registry. A value, not a global, so tests can add settings the shipped one never has. */

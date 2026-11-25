@@ -8,7 +8,7 @@ import {
   formatValue,
   kindOf,
   lockNote,
-  loosens,
+  pickable,
   SOURCE_LABEL,
 } from "@/lib/settings";
 import type { Role } from "@/lib/roles";
@@ -73,7 +73,7 @@ function Editor({
         className="h-9 w-full rounded-md border border-line-strong bg-surface px-2 text-sm disabled:opacity-50"
       >
         {s.strictness.map((v) => (
-          <option key={v} value={v} disabled={loosens(s, v)}>
+          <option key={v} value={v} disabled={!pickable(s, v)}>
             {v}
           </option>
         ))}
@@ -156,9 +156,9 @@ function Row({ s, p }: { s: Setting; p: SettingsPanelProps }) {
           <Button
             size="sm"
             variant="ghost"
-            disabled={saving || loosens(s, s.default)}
+            disabled={saving || !pickable(s, s.default)}
             title={
-              loosens(s, s.default)
+              !pickable(s, s.default)
                 ? "Only the instance administrator can loosen this setting."
                 : undefined
             }
@@ -172,6 +172,11 @@ function Row({ s, p }: { s: Setting; p: SettingsPanelProps }) {
         Default <span className="font-mono">{formatValue(s.default)}</span>
         {s.source === "default" ? "" : ` · effective ${formatValue(s.value)}`}
       </p>
+      {editable && s.trust === "tighten_only" ? (
+        <p data-trust={s.key} className="mt-1 text-xs text-dim">
+          Tightening saves at once. Loosening asks you to confirm with your passkey.
+        </p>
+      ) : null}
       {reason ? <p className="mt-1 text-xs text-dim">{reason}</p> : null}
       {error ? (
         <p role="alert" className="mt-1.5 text-[13px] font-medium text-st-failure">

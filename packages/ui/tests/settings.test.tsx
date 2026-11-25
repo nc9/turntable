@@ -6,7 +6,15 @@ import { createHttpApi, mapSetting } from "../src/api/http-adapter";
 import type { Setting } from "../src/api/types";
 import type { WireSetting } from "../src/api/wire";
 import { SettingsPanel, type SettingsPanelProps } from "../src/features/settings/settings-panel";
-import { editability, lockNote, loosens, saveSetting, valueOfDraft } from "../src/lib/settings";
+import {
+  editability,
+  lockNote,
+  loosens,
+  needsStepUp,
+  saveSetting,
+  valueOfDraft,
+} from "../src/lib/settings";
+import { ApiError } from "../src/api/http-adapter";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -24,6 +32,7 @@ const wire = (over: Partial<WireSetting> = {}): WireSetting => ({
   mcp_editable: false,
   strictness: null,
   warning: null,
+  trust: null,
   ...over,
 });
 
@@ -246,6 +255,126 @@ describe("a setting that may only be tightened", () => {
   test("nothing is disabled when the effective value is the loosest", () => {
     const html = panel({ settings: [strict({ value: "any" })] });
     expect(html).not.toMatch(/<option [^>]*disabled/);
+  });
+});
+
+describe("a trust setting (#578)", () => {
+  const trust = (over: Partial<Setting> = {}) =>
+    setting({
+      key: "untrusted_run_approval",
+      scope: "project",
+      role: "owner",
+      value: "human",
+      default: "no_agents",
+      source: "db",
+      strictness: ["any", "no_agents", "human"],
+      trust: "tighten_only",
+      ...over,
+    });
+  const proof = {
+    id: "su-1",
+    approver: "ap",
+    signature: {
+      credential_id: "c",
+      client_data_json: "d",
+      authenticator_data: "a",
+      signature: "s",
+    },
+  };
+
+  test("the adapter maps trust, and Save shows only for a role that satisfies the setting's", () => {
+    expect(mapSetting(wire({ trust: "tighten_only" })).trust).toBe("tighten_only");
+    expect(mapSetting(wire()).trust).toBeUndefined();
+    const edited = { drafts: { untrusted_run_approval: "no_agents" } };
+    expect(panel({ settings: [trust()], role: "owner", ...edited })).toContain(">Save</button>");
+    for (const role of ["admin", "member", "viewer"] as const) {
+      expect(panel({ settings: [trust()], role, ...edited }), role).not.toContain(">Save</button>");
+    }
+    // a setting only the instance administrator changes offers no Save to anyone in an org
+    const html = panel({
+      settings: [setting({ role: "instance_admin" as Setting["role"] })],
+      role: "owner",
+      drafts: { log_retention_days: "45" },
+    });
+    expect(html).not.toContain(">Save</button>");
+    expect(html).toContain("Only the instance administrator");
+  });
+
+  test("looser options stay selectable for the owner, with a note about the passkey", () => {
+    const html = panel({ settings: [trust()], role: "owner" });
+    expect(html).not.toMatch(/<option [^>]*disabled/);
+    expect(html).toContain('data-trust="untrusted_run_approval"');
+    expect(html).toContain("confirm with your passkey");
+  });
+
+  test("a loosening needs the passkey first; a tightening does not", async () => {
+    expect(needsStepUp(trust(), { draft: "any" })).toBe(true);
+    expect(needsStepUp(trust(), { unset: true })).toBe(true); // human -> default no_agents
+    expect(needsStepUp(trust({ value: "any" }), { draft: "human" })).toBe(false);
+    expect(needsStepUp(setting(), { draft: "1" })).toBe(false);
+    const calls: Record<string, unknown>[] = [];
+    const order: string[] = [];
+    const save = async (a: Record<string, unknown>) => {
+      order.push("save");
+      calls.push(a);
+      return trust();
+    };
+    const confirm = async (a: Record<string, unknown>) => {
+      order.push("confirm");
+      expect(a).toMatchObject({ key: "untrusted_run_approval", value: "any", project: "web" });
+      return proof;
+    };
+    const r = await saveSetting(save, trust(), { draft: "any" }, "web", confirm);
+    expect(r.ok).toBe(true);
+    expect(order).toEqual(["confirm", "save"]);
+    expect(calls[0]!.stepUp).toEqual(proof);
+    order.length = 0;
+    await saveSetting(save, trust({ value: "any" }), { draft: "human" }, "web", confirm);
+    expect(order).toEqual(["save"]);
+  });
+
+  test("a server step_up_required for a setting the page did not predict asks, then retries", async () => {
+    let n = 0;
+    const save = async (a: Record<string, unknown>) => {
+      n += 1;
+      if (!a.stepUp)
+        throw new ApiError(
+          403,
+          "forbidden",
+          "This needs passkey confirmation.",
+          "step_up_required",
+        );
+      return setting();
+    };
+    const r = await saveSetting(save, setting(), { draft: "45" }, undefined, async () => proof);
+    expect(r.ok).toBe(true);
+    expect(n).toBe(2);
+  });
+
+  test("a 403 shows the server's message in place and is never a session end", async () => {
+    let ended = 0;
+    const api = createHttpApi({
+      org: () => "acme",
+      token: () => null,
+      session: () => true,
+      onUnauthenticated: () => void (ended += 1),
+      fetch: (async () =>
+        json(
+          {
+            error: {
+              code: "forbidden",
+              message: "changing untrusted_run_approval requires role owner",
+            },
+          },
+          403,
+        )) as unknown as typeof fetch,
+    });
+    const r = await saveSetting((a) => api.setSetting(a), trust(), { draft: "human" });
+    expect(r).toEqual({
+      ok: false,
+      message: "changing untrusted_run_approval requires role owner",
+    });
+    expect(ended).toBe(0);
   });
 });
 

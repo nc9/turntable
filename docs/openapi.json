@@ -9461,7 +9461,7 @@
       "post": {
         "operationId": "session_step_up_challenge",
         "summary": "Start a passkey step-up for one sensitive action from a web session.",
-        "description": "Web sessions only. Names an action (create_api_token, or invite_member for an admin or owner) and the exact `input` the action will be called with (project scope included), and returns a single-use WebAuthn challenge. The signed-in person's own enrolled passkey signs `challenge`; the sensitive call then carries `step_up: {id, approver, signature}` (the assertion's credential_id, client_data_json, authenticator_data and signature). The step-up is bound to the action and to a hash of that exact input, so it authorizes no other action and no other parameters, can be used once, and lasts 5 minutes. Needs a passkey enrolled for this person in the org (an approver key under their GitHub login that satisfies the org's key policy). Issuing a challenge changes nothing else. Audited. Not an MCP tool.\n\nRequired role: viewer. Side effects: write; audited.",
+        "description": "Web sessions only. Names an action (create_api_token, invite_member for an admin or owner, or set_setting to loosen a trust setting) and the exact `input` the action will be called with (project scope included), and returns a single-use WebAuthn challenge. The signed-in person's own enrolled passkey signs `challenge`; the sensitive call then carries `step_up: {id, approver, signature}` (the assertion's credential_id, client_data_json, authenticator_data and signature). The step-up is bound to the action and to a hash of that exact input, so it authorizes no other action and no other parameters, can be used once, and lasts 5 minutes. Needs a passkey enrolled for this person in the org (an approver key under their GitHub login that satisfies the org's key policy). Issuing a challenge changes nothing else. Audited. Not an MCP tool.\n\nRequired role: viewer. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -9474,7 +9474,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 64,
-                    "description": "create_api_token or invite_member."
+                    "description": "create_api_token, invite_member or set_setting."
                   },
                   "input": {
                     "type": "object",
@@ -9872,6 +9872,18 @@
                     "warning": {
                       "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                       "type": ["string", "null"]
+                    },
+                    "trust": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": ["tighten_only"]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "`tighten_only` for a trust setting: the instance administrator may only tighten it, and a web session loosens it only with a fresh passkey step-up. Null otherwise."
                     }
                   },
                   "required": [
@@ -9886,7 +9898,8 @@
                     "role",
                     "mcp_editable",
                     "strictness",
-                    "warning"
+                    "warning",
+                    "trust"
                   ],
                   "additionalProperties": false
                 }
@@ -10028,6 +10041,18 @@
                           "warning": {
                             "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                             "type": ["string", "null"]
+                          },
+                          "trust": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": ["tighten_only"]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "`tighten_only` for a trust setting: the instance administrator may only tighten it, and a web session loosens it only with a fresh passkey step-up. Null otherwise."
                           }
                         },
                         "required": [
@@ -10042,7 +10067,8 @@
                           "role",
                           "mcp_editable",
                           "strictness",
-                          "warning"
+                          "warning",
+                          "trust"
                         ],
                         "additionalProperties": false
                       }
@@ -10082,7 +10108,7 @@
       "post": {
         "operationId": "set_setting",
         "summary": "Set an org or project setting (database layer).",
-        "description": "Sets, or with `unset` removes, the stored value of one org or project setting. It is refused when the setting is locked (the environment or turntable.toml sets it; the error says which), when your role is below the setting's own, and over MCP for a setting that raises a limit or widens what runs may do (`mcp_editable` is false in `list_settings`). A setting with a `strictness` order may be tightened by its role but only loosened by the instance administrator, and unsetting counts as setting the default. The old and new values are audited. Returns the setting as `get_setting` does.\n\nRequired role: operator. Side effects: write; audited.",
+        "description": "Sets, or with `unset` removes, the stored value of one org or project setting. It is refused when the setting is locked (the environment or turntable.toml sets it; the error says which), when your role is below the setting's own, and over MCP for a setting that raises a limit or widens what runs may do (`mcp_editable` is false in `list_settings`). A setting with a `strictness` order may be tightened by its role but only loosened by the instance administrator, and unsetting counts as setting the default. A setting marked `trust: tighten_only` (`list_settings` shows it) may only be tightened by a token; an owner's web session loosens it with a fresh passkey step-up (`step_up_required` without one). The old and new values are audited. Returns the setting as `get_setting` does.\n\nRequired role: operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -10180,6 +10206,18 @@
                     "warning": {
                       "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                       "type": ["string", "null"]
+                    },
+                    "trust": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": ["tighten_only"]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "`tighten_only` for a trust setting: the instance administrator may only tighten it, and a web session loosens it only with a fresh passkey step-up. Null otherwise."
                     }
                   },
                   "required": [
@@ -10194,7 +10232,8 @@
                     "role",
                     "mcp_editable",
                     "strictness",
-                    "warning"
+                    "warning",
+                    "trust"
                   ],
                   "additionalProperties": false
                 }
@@ -13887,13 +13926,35 @@
       "get": {
         "operationId": "instance_get_setting",
         "summary": "One instance setting: effective value, source and lock.",
-        "description": "Returns the effective value of one instance setting, which layer it comes from (`env`, `toml`, `db` or `default`) and, for a locked one, the variable or file that sets it. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's. Read-only.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "description": "Returns the effective value of one instance setting, or with `target_org` (and `target_project` for a project setting) of that tenant's org or project setting, which layer it comes from (`env`, `toml`, `db` or `default`) and, for a locked one, the variable or file that sets it. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's. Read-only.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
         "parameters": [
           {
             "name": "key",
             "in": "path",
             "required": true,
             "description": "The setting's key.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "target_org",
+            "in": "query",
+            "required": false,
+            "description": "Slug of the org, for an org or project setting.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "target_project",
+            "in": "query",
+            "required": false,
+            "description": "Slug of the project, for a project setting.",
             "schema": {
               "type": "string",
               "minLength": 1,
@@ -13958,6 +14019,18 @@
                     "warning": {
                       "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                       "type": ["string", "null"]
+                    },
+                    "trust": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": ["tighten_only"]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "`tighten_only` for a trust setting: the instance administrator may only tighten it, and a web session loosens it only with a fresh passkey step-up. Null otherwise."
                     }
                   },
                   "required": [
@@ -13972,7 +14045,8 @@
                     "role",
                     "mcp_editable",
                     "strictness",
-                    "warning"
+                    "warning",
+                    "trust"
                   ],
                   "additionalProperties": false
                 }
@@ -14006,8 +14080,31 @@
       "get": {
         "operationId": "instance_list_settings",
         "summary": "Every instance setting with source and lock.",
-        "description": "Lists the instance settings with their effective value, default, source (`env`, `toml`, `db` or `default`) and lock. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's. Read-only.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
-        "parameters": [],
+        "description": "Lists the instance settings (and, with `target_org`, that org's org settings, and with `target_project` the project's) with their effective value, default, source (`env`, `toml`, `db` or `default`) and lock. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's. Read-only.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "parameters": [
+          {
+            "name": "target_org",
+            "in": "query",
+            "required": false,
+            "description": "Also list this org's org settings (and the project's, with `target_project`).",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "target_project",
+            "in": "query",
+            "required": false,
+            "description": "With `target_org`: also list this project's project settings.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -14070,6 +14167,18 @@
                           "warning": {
                             "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                             "type": ["string", "null"]
+                          },
+                          "trust": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": ["tighten_only"]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "`tighten_only` for a trust setting: the instance administrator may only tighten it, and a web session loosens it only with a fresh passkey step-up. Null otherwise."
                           }
                         },
                         "required": [
@@ -14084,7 +14193,8 @@
                           "role",
                           "mcp_editable",
                           "strictness",
-                          "warning"
+                          "warning",
+                          "trust"
                         ],
                         "additionalProperties": false
                       }
@@ -14121,7 +14231,7 @@
       "post": {
         "operationId": "instance_set_setting",
         "summary": "Set an instance setting (database layer, instance administrator only).",
-        "description": "Sets, or with `unset` removes, the stored value of one instance setting. Refused when the environment or turntable.toml sets it (the error says which): change it there. The old and new values are audited in the system org's chain. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's, and a value in an agent's context is not an operator's decision. An org or project setting that only the instance administrator may change (`instance_admin` role in `list_settings`, such as `untrusted_run_approval`) is set here with `target_org` and, for a project setting, `target_project`; the change is audited in the system org's chain and the target's.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "description": "Sets, or with `unset` removes, the stored value of one instance setting. Refused when the environment or turntable.toml sets it (the error says which): change it there. The old and new values are audited in the system org's chain. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's, and a value in an agent's context is not an operator's decision. Any org or project setting is set here with `target_org` and, for a project setting, `target_project`; the change is audited in the system org's chain and the target org's, with the old and new values. A setting marked `trust: tighten_only` (such as `untrusted_run_approval`) may be tightened but not loosened here (`trust_loosening_needs_owner`): only the org's owner loosens it. The environment and turntable.toml locks still apply.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -14219,6 +14329,18 @@
                     "warning": {
                       "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                       "type": ["string", "null"]
+                    },
+                    "trust": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": ["tighten_only"]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "`tighten_only` for a trust setting: the instance administrator may only tighten it, and a web session loosens it only with a fresh passkey step-up. Null otherwise."
                     }
                   },
                   "required": [
@@ -14233,7 +14355,8 @@
                     "role",
                     "mcp_editable",
                     "strictness",
-                    "warning"
+                    "warning",
+                    "trust"
                   ],
                   "additionalProperties": false
                 }

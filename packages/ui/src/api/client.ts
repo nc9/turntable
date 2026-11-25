@@ -32,6 +32,8 @@ import type {
   OrgQuotas,
   RerunResult,
   Setting,
+  StepUpChallenge,
+  StepUpProof,
   Whoami,
 } from "./types";
 
@@ -180,7 +182,14 @@ export interface TurntableApi {
     value?: unknown;
     unset?: boolean;
     project?: string;
+    /** Loosening a trust setting from a web session: a passkey confirmation for these exact args. */
+    stepUp?: StepUpProof;
   }): Promise<Setting>;
+  /** Starts a passkey confirmation for `set_setting` with exactly `input` (`session_step_up_challenge`). */
+  stepUpChallenge(args: {
+    action: "set_setting";
+    input: Record<string, unknown>;
+  }): Promise<StepUpChallenge>;
   /** Whether scheduling is frozen for the org (or the project, when given), and why. */
   incidentStatus(args?: { project?: string }): Promise<IncidentStatus>;
   cancel(args: { runId: string }): Promise<void>;
