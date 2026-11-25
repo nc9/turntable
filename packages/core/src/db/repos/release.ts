@@ -21,7 +21,7 @@ export function createReleaseRequest(
     tag: string;
     artifacts: readonly string[];
     /** Co-signatures the requester carries (#544): untrusted, verified only by the lane. */
-    cosignatures?: readonly { name: string; file?: string | undefined; signature_b64: string }[];
+    cosignatures?: readonly { key: string; file: string; signature_b64: string }[];
     dryRun?: boolean;
     requestedBy: string;
   },

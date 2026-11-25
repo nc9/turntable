@@ -217,13 +217,17 @@ function setKey(over: Record<string, unknown> = {}): void {
   );
 }
 
-type Carried = { name: string; file?: string; signature_b64: string };
+type Carried = { key: string; file: string; signature_b64: string };
 /** The co-signatures the client's owner makes over the files as they are now. */
 function goodSigs(p: Pair = pair): Carried[] {
   return [
-    { name: "acme", signature_b64: b64(sigOf(p, files.get("manifest.json")!)) },
+    {
+      key: "acme",
+      file: "manifest.json",
+      signature_b64: b64(sigOf(p, files.get("manifest.json")!)),
+    },
     ...PLATFORMS.map((pl) => ({
-      name: "acme",
+      key: "acme",
       file: binName(pl),
       signature_b64: b64(sigOf(p, files.get(binName(pl))!)),
     })),
@@ -452,10 +456,19 @@ describe("the lane refuses, signs nothing and publishes nothing", () => {
     await refused("cosign_unexpected", /SHA256SUMS/, [
       ...goodSigs(),
       {
-        name: "acme",
+        key: "acme",
         file: "SHA256SUMS",
         signature_b64: b64(sigOf(pair, files.get("SHA256SUMS")!)),
       },
+    ]);
+  });
+
+  test("a duplicate entry for one file, and an entry for a key that is not configured", async () => {
+    const sigs = goodSigs();
+    await refused("cosign_duplicate", /given twice/, [...sigs, sigs[1]!]);
+    await refused("cosign_unexpected", /not a configured co-signing key/, [
+      ...sigs,
+      { ...sigs[1]!, key: "other" },
     ]);
   });
 
@@ -480,7 +493,7 @@ describe("the lane refuses, signs nothing and publishes nothing", () => {
 
   test("a binary signature given for a key that signs one file only", async () => {
     setKey({ manifest: undefined });
-    await refused("cosign_unexpected", /signs one file/, goodSigs());
+    await refused("cosign_unexpected", /does not cover/, goodSigs());
   });
 
   test("a signature asset name that another file of the artifact already has", async () => {
@@ -665,6 +678,48 @@ describe("a dry run", () => {
     const real = await release();
     expect(real.row.status).toBe("signed");
     expect(signs).toBe(1);
+  });
+
+  test("with a co-signing key set and NO co-signatures (the client signs after the approval) it still verifies the manifest and plans the .sig assets", async () => {
+    const { row, result } = await release([], { dry: true });
+    expect(row).toMatchObject({ status: "signed", reason: null, dryRun: true });
+    nothingHappened();
+    const facts = JSON.parse(row.facts!) as { cosignatures: { status: string; file: string }[] };
+    expect(facts.cosignatures.every((c) => c.status === "missing")).toBe(true);
+    expect(facts.cosignatures.map((c) => c.file).toSorted()).toEqual(
+      ["manifest.json", ...PLATFORMS.map((p) => binName(p))].toSorted(),
+    );
+    const planned = (result.plan!.targets[0] as { assets: string[] }).assets;
+    expect(planned).toContain("manifest.json.sig");
+    expect(planned).toContain(`${binName("linux-x64")}.sig`);
+    // the manifest is still checked: a wrong key id is refused without any signature
+    files.set("manifest.json", manifestBytes({ signing_key_id: "0123456789abcdef" }));
+    pack();
+    expect((await release([], { dry: true })).row).toMatchObject({
+      status: "refused",
+      reason: "cosign_manifest_check",
+    });
+    // and an extra unsigned binary too
+    files.set("manifest.json", manifestBytes());
+    files.set("acme-1.0.0-windows-x64.exe", enc("unsigned"));
+    pack();
+    expect((await release([], { dry: true })).row).toMatchObject({
+      status: "refused",
+      reason: "cosign_manifest_check",
+    });
+  });
+
+  test("with SOME co-signatures given they are all required: a partial set is refused in a dry run too", async () => {
+    const sigs = goodSigs().slice(0, 2);
+    const { row } = await release(sigs, { dry: true });
+    expect(row).toMatchObject({ status: "refused", reason: "cosign_missing" });
+    nothingHappened();
+  });
+
+  test("a real request with no co-signatures is still refused when a key is configured", async () => {
+    const { row } = await release([]);
+    expect(row).toMatchObject({ status: "refused", reason: "cosign_missing" });
+    nothingHappened();
   });
 
   test("with no target configured the plan says so", async () => {

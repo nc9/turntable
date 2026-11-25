@@ -189,7 +189,7 @@ afterEach(async () => {
   attest.close();
 });
 
-async function release(cosignatures?: { name: string; signature_b64: string }[]) {
+async function release(cosignatures?: { key: string; file: string; signature_b64: string }[]) {
   const r = await createReleaseRequest(db, a.scope, {
     runId: a.runId,
     tag: "v1.0.0",
@@ -201,7 +201,7 @@ async function release(cosignatures?: { name: string; signature_b64: string }[])
   return (await getReleaseRequest(db, a.scope, r.id))!;
 }
 const goodSig = (p = pair, bytes = blobs.get("manifest.json")!) => [
-  { name: "pinned", signature_b64: b64(sigOf(p, bytes)) },
+  { key: "pinned", file: "manifest.json", signature_b64: b64(sigOf(p, bytes)) },
 ];
 const heldAssets = () => [...(gh.release?.assets.values() ?? [])].map((x) => x.name).toSorted();
 const nothingPublished = () => {
@@ -213,7 +213,7 @@ describe("a valid co-signature", () => {
   test("publishes both signatures: the lane's provenance and the co-signature under its exact name", async () => {
     configure(pair);
     const sig = sigOf(pair, blobs.get("manifest.json")!);
-    const row = await release([{ name: "pinned", signature_b64: b64(sig) }]);
+    const row = await release([{ key: "pinned", file: "manifest.json", signature_b64: b64(sig) }]);
     expect(row.status).toBe("signed");
     expect(signed).toBe(1);
     expect(gh.release?.draft).toBe(false);
@@ -227,9 +227,9 @@ describe("a valid co-signature", () => {
     expect(Buffer.from(held.bytes).equals(Buffer.from(sig))).toBe(true); // raw DER, not base64
     expect(JSON.parse(row.result!).cosignatures).toEqual([
       {
-        name: "pinned",
+        key: "pinned",
+        file: "manifest.json",
         key_id: cosignKeyId(pair.pem),
-        signs: "manifest.json",
         output_name: "manifest.json.sig",
         signature_sha256: sha256(sig),
       },
@@ -251,14 +251,16 @@ describe("a valid co-signature", () => {
     const get = async () => {
       const r = await dispatch(env, { kind: "bearer", token: tok }, "get_release_request", { id });
       return (r.ok ? r.output : r) as {
-        cosignatures: { name: string; status: string; key_id?: string }[];
+        cosignatures: { key: string; file: string; status: string; key_id?: string }[];
       };
     };
-    expect((await get()).cosignatures).toEqual([{ name: "pinned", status: "present" }]);
+    expect((await get()).cosignatures).toEqual([
+      { key: "pinned", file: "manifest.json", status: "present" },
+    ]);
     expect(await lane.processNext()).toBe(true);
     const done = await get();
     expect(done.cosignatures).toEqual([
-      { name: "pinned", status: "verified", key_id: cosignKeyId(pair.pem) },
+      { key: "pinned", file: "manifest.json", status: "verified", key_id: cosignKeyId(pair.pem) },
     ]);
     expect(JSON.stringify(done)).not.toContain("BEGIN PUBLIC KEY");
   });
@@ -285,7 +287,8 @@ describe("a co-signature that is missing or bad publishes nothing", () => {
     expect(row.detail).toContain("pinned must co-sign manifest.json");
     expect(JSON.parse(row.facts!).cosignatures).toEqual([
       {
-        name: "pinned",
+        key: "pinned",
+        file: "manifest.json",
         status: "missing",
         key_id: cosignKeyId(pair.pem),
         reason: "cosign_missing",
@@ -337,20 +340,26 @@ describe("a co-signature that is missing or bad publishes nothing", () => {
       ...rest,
     ]);
     if (!(r[0]! & 0x80)) expect(isMinimalEcdsaDer(lead)).toBe(false);
-    const row = await release([{ name: "pinned", signature_b64: b64(padded) }]);
+    const row = await release([
+      { key: "pinned", file: "manifest.json", signature_b64: b64(padded) },
+    ]);
     expect(row).toMatchObject({ status: "refused", reason: "signature_not_minimal_der" });
     nothingPublished();
   });
 
   test("not base64, repeated, or naming an unknown key", async () => {
     configure(pair);
-    expect(await release([{ name: "pinned", signature_b64: "not base64!" }])).toMatchObject({
+    expect(
+      await release([{ key: "pinned", file: "manifest.json", signature_b64: "not base64!" }]),
+    ).toMatchObject({
       reason: "cosign_bad_encoding",
     });
     expect(await release([...goodSig(), ...goodSig()])).toMatchObject({
       reason: "cosign_duplicate",
     });
-    expect(await release([...goodSig(), { name: "extra", signature_b64: "AAAA" }])).toMatchObject({
+    expect(
+      await release([...goodSig(), { key: "extra", file: "manifest.json", signature_b64: "AAAA" }]),
+    ).toMatchObject({
       reason: "cosign_unexpected",
     });
     nothingPublished();
@@ -369,7 +378,9 @@ describe("a co-signature that is missing or bad publishes nothing", () => {
       },
       0,
     );
-    const row = await release(goodSig());
+    const row = await release([
+      { key: "pinned", file: "absent.json", signature_b64: b64(sigOf(pair, enc("whatever"))) },
+    ]);
     expect(row).toMatchObject({ status: "refused", reason: "cosign_artifact_missing" });
     nothingPublished();
   });
@@ -496,11 +507,11 @@ describe("the main process neither verifies nor reads the co-signing configurati
       run_id: a.runId,
       tag: "v1.0.0",
       artifacts: ["cli-linux"],
-      cosignatures: [{ name: "pinned", signature_b64: "AAAA" }],
+      cosignatures: [{ key: "pinned", file: "manifest.json", signature_b64: "AAAA" }],
     });
     expect(r.ok && (r.output as { status: string }).status).toBe("pending");
     expect(r.ok && (r.output as { cosignatures: unknown[] }).cosignatures).toEqual([
-      { name: "pinned", status: "present" },
+      { key: "pinned", file: "manifest.json", status: "present" },
     ]);
   });
 

@@ -664,6 +664,12 @@ async function call(w: World, who: Who, op: Op, input: Record<string, unknown>):
 
 /** Ops no token can call, and ops with no input to aim. Each needs a reason. */
 const UNREACHABLE: Record<string, string> = {
+  get_artifact:
+    "the fixture has no artifact store (artifacts are off), so the call is refused for A as well; B is still probed and finds no such artifact of its own. The bytes, the traversal refusals and the other-org not_found are in release-artifact-bytes.test.ts",
+  get_artifact_file:
+    "the fixture has no artifact store (artifacts are off), so the call is refused for A as well; B is still probed and finds no such artifact of its own. The bytes, the traversal refusals and the other-org not_found are in release-artifact-bytes.test.ts",
+  get_artifact_files:
+    "the fixture has no artifact store (artifacts are off), so the call is refused for A as well; B is still probed and finds no such artifact of its own. The bytes, the traversal refusals and the other-org not_found are in release-artifact-bytes.test.ts",
   release_approval_challenge:
     "needs a run whose jobs wait on the project's release environment with recorded release-class artifacts, which the fixture lacks; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such run. The approval itself is covered in release-approval-v2.test.ts",
   key_policy_challenge:

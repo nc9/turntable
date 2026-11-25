@@ -369,6 +369,7 @@ export class ReleaseLane {
       // Co-signatures (#544): checked here, by the lane, under the public keys in its own file,
       // over the exact bytes it re-hashed, before anything is attested, signed or published.
       let cosigs: VerifiedCosign[] = [];
+      let cosigOutputs: string[] = [];
       {
         let keys;
         let carried: CosignInput[] = [];
@@ -397,10 +398,12 @@ export class ReleaseLane {
             },
             digests,
             req.tag,
+            { signaturesOptional: dry },
           );
           facts.cosignatures = out.reports;
           if (!out.ok) return refuse(out.reason as LaneDenial, out.detail);
           cosigs = out.verified;
+          cosigOutputs = out.outputs;
         }
       }
       // ...and what this lane attested for this TAG before, in a store the main process cannot
@@ -421,7 +424,7 @@ export class ReleaseLane {
           return refuse("no_signing_key", "this lane's signer cannot check its key");
         const key = await this.#o.signer.checkKey(scope);
         if (!key.ok) return refuse("no_signing_key", key.reason);
-        const planned = await this.#plan(req, scope, files, cosigs);
+        const planned = await this.#plan(req, scope, files, cosigOutputs);
         if (!planned.ok) return refuse(planned.reason as LaneDenial, planned.detail);
         return {
           status: "planned",
@@ -484,9 +487,9 @@ export class ReleaseLane {
           ...(cosigs.length > 0
             ? {
                 cosignatures: cosigs.map((c) => ({
-                  name: c.name,
+                  key: c.key,
+                  file: c.signs,
                   key_id: c.keyId,
-                  signs: c.signs,
                   output_name: c.outputName,
                   signature_sha256: c.signatureSha256,
                 })),
@@ -517,7 +520,7 @@ export class ReleaseLane {
     req: ReleaseRequest,
     scope: { orgId: string; projectId: string },
     files: ReleaseFiles,
-    cosigs: readonly VerifiedCosign[],
+    cosigOutputs: readonly string[],
   ): Promise<
     | { ok: true; plan: { targets: unknown[]; note?: string } }
     | { ok: false; reason: string; detail: string }
@@ -528,7 +531,7 @@ export class ReleaseLane {
     const ctx = {
       filesOf: (a: string) => files.filesOf(a),
       digests: files.digests,
-      cosignatures: cosigs.map((c) => ({ outputName: c.outputName, signature: c.signature })),
+      cosignatures: cosigOutputs.map((outputName) => ({ outputName, signature: new Uint8Array() })),
     };
     const out: unknown[] = [];
     for (const key of keys) {

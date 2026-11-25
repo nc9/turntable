@@ -215,24 +215,36 @@ Once a key is configured, every release of the project needs a valid co-signatur
 
 **Files, not artifacts.** A recorded artifact is one zip per `upload-artifact` name, and the lane signs the files inside it, named by their path in the zip. For example, an artifact `release-binaries` holds the versioned binaries, `manifest.json` and `SHA256SUMS`, and an artifact `npm-package` holds the one `.tgz`. Request both artifacts.
 
-**Sign and request.** Sign `manifest.json` and each binary file (for example `openssl dgst -sha256 -sign pinned.key -out manifest.json.sig manifest.json`), base64 each signature, and pass them. A signature over a binary names it in `file`:
+**The flow.** Co-signing happens after the human approval, so the client signs exactly what was approved:
+
+1. The tag run completes and the release gate waits for approval.
+2. Dry-run the release with no signatures: `request_release` with `dry_run: true` (see [Dry run](#dry-run)).
+3. The maintainer sets the publish targets and approves the release (v2 approval, over the manifest digest).
+4. The client reads the approval: `GET /api/v1/runs/{run_id}/release-approval` (`get_release_approval`, release_operator) returns `manifest_sha256`, `lane_config_version`, `approved_at` and `statement_hash`.
+5. The client downloads `manifest.json` and each binary: `GET /api/v1/runs/{run_id}/artifacts/{name}/files/{path}` (`get_artifact_file`, reader) streams one file out of the stored artifact zip; `GET /api/v1/runs/{run_id}/artifacts/{name}` (`get_artifact`) streams the whole stored blob; `GET /api/v1/runs/{run_id}/artifacts/{name}/files` (`get_artifact_files`, also an MCP tool) lists the files. Both downloads are `application/octet-stream` with a `Content-Disposition` of the basename, tenant-scoped, and audited as reads. The stored digest is checked against what the build recorded before a byte is sent, and a path with a `..` segment or an unsafe zip entry is refused.
+6. The client checks that its hash of the manifest equals the approved digest, then signs `manifest.json` and every listed binary.
+7. The client calls `request_release` with the `cosignatures`; the lane verifies each and publishes.
+
+**Sign and request.** Sign `manifest.json` and each binary file (for example `openssl dgst -sha256 -sign pinned.key -out manifest.json.sig manifest.json`), base64 each signature (the exact bytes of the `.sig` file) and pass ONE entry per file: `key` is the co-signing key's name, `file` is `manifest.json` or a `binaries[*].filename` of that manifest:
 
 ```json
 { "run_id": "...", "tag": "v1.2.3", "artifacts": ["release-binaries", "npm-package"],
   "cosignatures": [
-    { "name": "pinned", "signature_b64": "MEUCIQ..." },
-    { "name": "pinned", "file": "app-1.2.3-linux-x64", "signature_b64": "MEQCIB..." } ] }
+    { "key": "pinned", "file": "manifest.json", "signature_b64": "MEUCIQ..." },
+    { "key": "pinned", "file": "app-1.2.3-linux-x64", "signature_b64": "MEQCIB..." } ] }
 ```
+
+The set must cover `manifest.json` and every binary the manifest lists: no extra entry and no duplicate. The lane publishes `<file>.sig` with exactly the decoded bytes.
 
 **What the lane checks, before it signs or publishes anything.** The manifest signature is verified over the exact bytes of the file, the bytes it re-hashed for the approved manifest, under the configured key, in minimal DER (a non-minimal encoding of a valid signature is rejected, because strict clients reject it). Then, for the manifest: `signing_key_id` equals the configured key's id; `version` matches the tag; and for every entry of `binaries`, `filename` is a file of the run's artifacts, its `sha256` (lowercase hex) is that file's digest, and `<filename>.sig` verifies under the key. A listed file that is missing, an unsigned binary in the manifest's artifact that the manifest does not list (only `SHA256SUMS` is allowed besides), a signature for an unlisted file, a duplicate file name and a signature asset name another file already has are all refused. A missing, invalid, wrong-key, wrong-bytes, wrong-release, duplicate or unknown co-signature means nothing is signed or published, with a reason (see the table below).
 
 **What gets published.** Each verified signature is attached to the GitHub release as raw bytes under its output name (`manifest.json.sig`, and `<filename>.sig` per binary), next to the provenance. The request result lists each co-signature's name, key id and signature digest.
 
-**See the status.** `get_release_request` returns `cosignatures`: each is `present` (carried, not yet checked), `verified`, `missing`, `invalid` or `unexpected`, with the key's public fingerprint only (and the `file` for a binary).
+**See the status.** `get_release_request` returns `cosignatures`: one per file, each with its `key` and `file`, and a status `present` (carried, not yet checked), `verified`, `missing`, `invalid` or `unexpected`, with the key's public fingerprint only.
 
 ### Dry run
 
-`request_release` with `dry_run: true` (an `operator` or `release_operator` may ask) runs every check a real request runs, in the lane, and stops before it signs: the run is finished, successful and built from `refs/tags/<tag>`, every artifact digest, the manifest and every `.sig` as above, the version against the tag, an npm tarball's own version, and that the lane holds the project's signing key. It needs no approval and spends none, signs nothing and publishes nothing, and is audited. `get_release_request` then shows status `verified` and a `plan`: the configured targets in publish order with the assets each would publish, or `none configured`. Run it before asking for approval.
+`request_release` with `dry_run: true` (an `operator` or `release_operator` may ask) runs every check a real request runs, in the lane, and stops before it signs: the run is finished, successful and built from `refs/tags/<tag>`, every artifact digest, the manifest and every `.sig` as above, the version against the tag, an npm tarball's own version, and that the lane holds the project's signing key. It needs no approval and spends none, signs nothing and publishes nothing, and is audited. `cosignatures` are optional: with none, the manifest is still checked against the key id, the tag and the bytes (and no unsigned binary may sit beside it) and the signatures are reported `missing`; with some, they are all verified. `get_release_request` then shows status `verified` and a `plan`: the configured targets in publish order with the assets each would publish, or `none configured`. Run it before asking for approval.
 
 ### Publishing a release with both a GitHub release and npm
 
@@ -268,7 +280,7 @@ A `reason` on a release request comes from the lane (`release/lane.ts`) or the s
 | `artifact_bytes_missing`, `digest_mismatch`, `size_mismatch` | The lane could not read the bytes, or they differ from the record. | Check `TURNTABLE_RELEASE_ARTIFACT_DIR`; rebuild. |
 | `unpack_failed`, `duplicate_subject` | A zip the lane refuses to unpack, or two files with one name. | See the limits in [Artifacts from jobs](/release-lane#artifacts-from-jobs). |
 | `attestation_mismatch` | The tag was attested before with other digests. | Release a new tag. |
-| `cosign_missing`, `cosign_unexpected`, `cosign_duplicate`, `cosign_bad_encoding` | A configured co-signature was not carried, one names no configured key, one repeats, or one is not base64. | Send exactly one `cosignatures` entry per configured key. |
+| `cosign_missing`, `cosign_unexpected`, `cosign_duplicate`, `cosign_bad_encoding` | A signature for a file was not carried, one names a key or file the lane does not ask for, one repeats, or one is not base64. | Send exactly one `cosignatures` entry per file: `manifest.json` and every binary in it. |
 | `signature_invalid`, `signature_not_minimal_der` | The signature does not verify over the exact bytes under the configured key, or is not minimal DER. | Sign this release's file with the pinned key and emit minimal DER. |
 | `cosign_artifact_missing`, `cosign_artifact_differs`, `cosign_manifest_check`, `cosign_config_error` | The signed file is not in the release, differs from the approved digest, fails the manifest check (key id, version, a binary's digest, a missing or unlisted binary), or the lane's co-signing configuration is unreadable. | Check the `signs` file is in a requested artifact, and the manifest's `signing_key_id`, `version` and `sha256` values. |
 | `run_not_successful`, `no_signing_key`, `publish_plan_refused` | A dry run: the run is not `success`, the lane holds no signing key for the project, or a target could not publish (the detail names it). | Fix it, then dry-run again. |

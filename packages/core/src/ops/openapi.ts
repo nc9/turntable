@@ -92,24 +92,40 @@ function operation(op: Op): Json {
     responses: {
       "200": {
         description: "Success.",
-        ...(op.untrustedOutput
+        ...(op.untrustedOutput || op.download
           ? {
               headers: {
-                "X-Turntable-Untrusted-Content": {
-                  description: "Always `true` on this operation: the body carries untrusted text.",
-                  schema: { type: "string", enum: ["true"] },
-                },
-                "X-Longshore-Untrusted-Content": {
-                  // rename-keep
-                  description:
-                    "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
-                  deprecated: true,
-                  schema: { type: "string", enum: ["true"] },
-                },
+                ...(op.download
+                  ? {
+                      "Content-Disposition": {
+                        description: '`attachment; filename="<basename>"`: a plain name.',
+                        schema: { type: "string" },
+                      },
+                      "Content-Length": { schema: { type: "integer" } },
+                    }
+                  : {}),
+                ...(op.untrustedOutput
+                  ? {
+                      "X-Turntable-Untrusted-Content": {
+                        description:
+                          "Always `true` on this operation: the body carries untrusted text.",
+                        schema: { type: "string", enum: ["true"] },
+                      },
+                      "X-Longshore-Untrusted-Content": {
+                        // rename-keep
+                        description:
+                          "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                        deprecated: true,
+                        schema: { type: "string", enum: ["true"] },
+                      },
+                    }
+                  : {}),
               },
             }
           : {}),
-        content: { "application/json": { schema: outputJsonSchema(op) } },
+        content: {
+          [op.download?.contentType ?? "application/json"]: { schema: outputJsonSchema(op) },
+        },
       },
       "400": { $ref: "#/components/responses/InvalidInput" },
       "401": { $ref: "#/components/responses/Unauthenticated" },

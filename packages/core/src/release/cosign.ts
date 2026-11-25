@@ -196,19 +196,22 @@ export function checkCosignSet(keys: readonly CosignKey[]): void {
 
 // ---- verification ----
 
-/** One carried co-signature: over the key's `signs` file, or (with `file`) over a manifest's binary. */
+/**
+ * One carried co-signature: the key's name, the file it signs (the key's `signs` file, or a
+ * binary the manifest lists) and the base64 of the raw DER signature, exactly the `.sig` file bytes.
+ * One entry per file.
+ */
 export interface CosignInput {
-  name: string;
-  file?: string;
+  key: string;
+  file: string;
   signature_b64: string;
 }
 
 export type CosignStatus = "verified" | "missing" | "invalid" | "unexpected";
 
 export interface CosignReport {
-  name: string;
-  /** The binary this report is about, for a manifest's per-binary signature. */
-  file?: string;
+  key: string;
+  file: string;
   status: CosignStatus;
   /** Public-key fingerprint (never key material). Absent for an unknown name. */
   key_id?: string;
@@ -216,8 +219,10 @@ export interface CosignReport {
 }
 
 export interface VerifiedCosign {
-  /** The key name, plus `/<file>` for a binary's signature: unique per run. */
+  /** `<key>/<file>`: unique per run. */
   name: string;
+  /** The co-signing key's name. */
+  key: string;
   keyId: string;
   /** The file in the release whose bytes were signed. */
   signs: string;
@@ -229,7 +234,13 @@ export interface VerifiedCosign {
 }
 
 export type CosignOutcome =
-  | { ok: true; reports: CosignReport[]; verified: VerifiedCosign[] }
+  | {
+      ok: true;
+      reports: CosignReport[];
+      verified: VerifiedCosign[];
+      /** Every signature asset a publish would carry, verified or (in a dry run with none given) still to come. */
+      outputs: string[];
+    }
   | { ok: false; reason: string; detail: string; reports: CosignReport[] };
 
 /** What verification reads of the release: its files (unpacked from the artifacts) by path. */
@@ -249,7 +260,7 @@ const stripV = (v: string): string => v.replace(/^v/, "");
 /**
  * Verifies the carried co-signatures against the configured keys. Every configured key needs
  * one over its `signs` file; a key with a manifest check needs one more over each binary the
- * manifest lists (and no other). An unknown name, a repeat or a stray one is refused. `digests` is
+ * manifest lists (and no other). An unknown key, a repeat or a stray one is refused. `digests` is
  * the lane's own digest map by file path; `tag` is the release tag the manifest's version must match.
  */
 export async function verifyCosignatures(
@@ -258,7 +269,12 @@ export async function verifyCosignatures(
   files: CosignFiles,
   digests: Readonly<Record<string, string>>,
   tag: string,
+  opts: { signaturesOptional?: boolean } = {},
 ): Promise<CosignOutcome> {
+  // A dry run that carries NO signature (the client signs after the approval) still checks
+  // everything else: the manifest against the key id, the tag and the bytes, and the files beside it.
+  const optional = opts.signaturesOptional === true && carried.length === 0;
+  const outputs: string[] = [];
   const reports: CosignReport[] = [];
   const verified: VerifiedCosign[] = [];
   const byName = new Map(keys.map((k) => [k.name, k]));
@@ -268,25 +284,15 @@ export async function verifyCosignatures(
   const fail = (reason: string, detail: string): void => {
     firstFail ??= { reason, detail };
   };
-  const refKey = (c: { name: string; file?: string | undefined }): string =>
-    c.file === undefined ? c.name : `${c.name}/${c.file}`;
+  const refKey = (c: { key: string; file: string }): string => `${c.key}/${c.file}`;
   for (const c of carried) {
-    const bad = (reason: string, detail: string, status: CosignStatus): void => {
-      reports.push({
-        name: c.name,
-        ...(c.file === undefined ? {} : { file: c.file }),
-        status,
-        reason,
-      });
-      fail(reason, detail);
-    };
-    const k = byName.get(c.name);
-    if (!k) bad("cosign_unexpected", `${c.name} is not a configured co-signing key`, "unexpected");
-    else if (c.file !== undefined && !k.manifest)
-      bad("cosign_unexpected", `${c.name} signs one file, not a manifest's binaries`, "unexpected");
-    else if (given.has(refKey(c)))
-      bad("cosign_duplicate", `${refKey(c)} is given twice`, "invalid");
-    else given.set(refKey(c), c);
+    if (!byName.has(c.key)) {
+      reports.push({ key: c.key, file: c.file, status: "unexpected", reason: "cosign_unexpected" });
+      fail("cosign_unexpected", `${c.key} is not a configured co-signing key`);
+    } else if (given.has(refKey(c))) {
+      reports.push({ key: c.key, file: c.file, status: "invalid", reason: "cosign_duplicate" });
+      fail("cosign_duplicate", `${refKey(c)} is given twice`);
+    } else given.set(refKey(c), c);
   }
   const decode = (c: CosignInput): Uint8Array | undefined =>
     c.signature_b64.length > MAX_SIG || !B64.test(c.signature_b64)
@@ -297,14 +303,8 @@ export async function verifyCosignatures(
     const keyId = cosignKeyId(k.public_key_pem);
     const pub = createPublicKey(k.public_key_pem);
     const fmt = FORMATS[k.format]!;
-    const bad = (reason: string, detail: string, file?: string): void => {
-      reports.push({
-        name: k.name,
-        ...(file === undefined ? {} : { file }),
-        status: "invalid",
-        key_id: keyId,
-        reason,
-      });
+    const bad = (reason: string, detail: string, file: string = k.signs): void => {
+      reports.push({ key: k.name, file, status: "invalid", key_id: keyId, reason });
       fail(reason, `${k.name}: ${detail}`);
     };
     /** Checks one signature over one file's exact bytes; returns the verified record or undefined. */
@@ -312,33 +312,33 @@ export async function verifyCosignatures(
       c: CosignInput | undefined,
       file: string,
       outputName: string,
-      reportFile?: string,
     ): Promise<VerifiedCosign | undefined> => {
+      outputs.push(outputName);
       if (!c) {
         reports.push({
-          name: k.name,
-          ...(reportFile === undefined ? {} : { file: reportFile }),
+          key: k.name,
+          file,
           status: "missing",
           key_id: keyId,
           reason: "cosign_missing",
         });
-        fail("cosign_missing", `${k.name} must co-sign ${file}`);
+        if (!optional) fail("cosign_missing", `${k.name} must co-sign ${file}`);
         return undefined;
       }
       used.add(refKey(c));
       const sig = decode(c);
       if (!sig) {
-        bad("cosign_bad_encoding", "signature_b64 is not base64", reportFile);
+        bad("cosign_bad_encoding", "signature_b64 is not base64", file);
         return undefined;
       }
       const signed = await files.read(file);
       if (!signed || !(file in digests)) {
-        bad("cosign_artifact_missing", `${file} is not a file of this release`, reportFile);
+        bad("cosign_artifact_missing", `${file} is not a file of this release`, file);
         return undefined;
       }
       // The bytes checked are the bytes whose digest the approved manifest binds.
       if (createHash("sha256").update(signed).digest("hex") !== digests[file]) {
-        bad("cosign_artifact_differs", `${file} differs from the approved digest`, reportFile);
+        bad("cosign_artifact_differs", `${file} differs from the approved digest`, file);
         return undefined;
       }
       const res = fmt.verify(pub, signed, sig);
@@ -346,18 +346,14 @@ export async function verifyCosignatures(
         bad(
           res.reason,
           `the signature over ${file} does not verify under the configured key`,
-          reportFile,
+          file,
         );
         return undefined;
       }
-      reports.push({
-        name: k.name,
-        ...(reportFile === undefined ? {} : { file: reportFile }),
-        status: "verified",
-        key_id: keyId,
-      });
+      reports.push({ key: k.name, file, status: "verified", key_id: keyId });
       return {
-        name: reportFile === undefined ? k.name : `${k.name}/${reportFile}`,
+        name: `${k.name}/${file}`,
+        key: k.name,
         keyId,
         signs: file,
         outputName,
@@ -366,9 +362,9 @@ export async function verifyCosignatures(
       };
     };
 
-    const head = await check(given.get(k.name), k.signs, k.output_name);
-    if (!head) continue;
-    verified.push(head);
+    const head = await check(given.get(`${k.name}/${k.signs}`), k.signs, k.output_name);
+    if (head) verified.push(head);
+    else if (!optional) continue;
     if (!k.manifest) continue;
 
     // The manifest: the exact bytes just verified, read as the fixed shape.
@@ -378,7 +374,7 @@ export async function verifyCosignatures(
       continue;
     }
     const listed = new Set<string>();
-    const outputs = new Set<string>([k.output_name]);
+    const sigNames = new Set<string>([k.output_name]);
     for (const [platform, e] of Object.entries(parsed.binaries)) {
       if (listed.has(e.filename)) {
         bad("cosign_manifest_check", `${platform}: ${e.filename} is listed twice`);
@@ -397,12 +393,12 @@ export async function verifyCosignatures(
         continue;
       }
       const out = `${e.filename}.sig`;
-      if (!OUTPUT_NAME.test(out) || out in digests || outputs.has(out)) {
+      if (!OUTPUT_NAME.test(out) || out in digests || sigNames.has(out)) {
         bad("cosign_manifest_check", `${platform}: ${out} is not a usable signature asset name`);
         continue;
       }
-      outputs.add(out);
-      const v = await check(given.get(`${k.name}/${e.filename}`), e.filename, out, e.filename);
+      sigNames.add(out);
+      const v = await check(given.get(`${k.name}/${e.filename}`), e.filename, out);
       if (v) verified.push(v);
     }
     // No unsigned binary beside the signed ones: every other file of the manifest's artifact
@@ -413,19 +409,14 @@ export async function verifyCosignatures(
       bad("cosign_manifest_check", `${f} is in ${art} but not listed in the manifest (unsigned)`);
     }
   }
-  // A signature that matched no file the lane checked.
+  // A signature for a file the lane did not ask this key to cover: an extra one.
   for (const [ref, c] of given) {
-    if (used.has(ref) || !byName.has(c.name)) continue;
-    reports.push({
-      name: c.name,
-      ...(c.file === undefined ? {} : { file: c.file }),
-      status: "unexpected",
-      reason: "cosign_unexpected",
-    });
-    fail("cosign_unexpected", `${ref} signs a file the manifest does not list`);
+    if (used.has(ref) || !byName.has(c.key)) continue;
+    reports.push({ key: c.key, file: c.file, status: "unexpected", reason: "cosign_unexpected" });
+    fail("cosign_unexpected", `${ref} signs a file ${c.key} does not cover`);
   }
   if (firstFail) return { ok: false, ...firstFail, reports };
-  return { ok: true, reports, verified };
+  return { ok: true, reports, verified, outputs };
 }
 
 /** The fixed manifest shape; returns the problem as a string, or the parsed manifest. */

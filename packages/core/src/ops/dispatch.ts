@@ -18,7 +18,7 @@ import {
   touchInstanceToken,
 } from "../db/repos";
 import type { DoctorReport } from "../doctor/types";
-import type { Op, OpContext } from "./define";
+import type { ArtifactBlobs, Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
 import type { LaneConfigClient } from "../release/channel-client";
@@ -87,6 +87,8 @@ export type DispatchEnv = {
   webauthn?: RelyingParty | undefined;
   /** The release lane's config channel; absent when no lane is configured on this instance. */
   releaseConfig?: LaneConfigClient | undefined;
+  /** The artifact store's reads, for the download ops; absent when artifacts are off. */
+  artifactBlobs?: ArtifactBlobs | undefined;
   /** Slug of the operator org (TURNTABLE_BOOTSTRAP_ORG, default `local`): its owners configure the release lane. */
   operatorOrgSlug?: string | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent. */
@@ -675,6 +677,7 @@ export async function dispatch(
       webhooks: env.webhooks,
       webauthn: env.webauthn,
       releaseConfig: env.releaseConfig,
+      artifactBlobs: env.artifactBlobs,
       operatorOrgSlug: env.operatorOrgSlug,
       transport: env.transport,
       instanceOrgCap: env.instanceOrgCap,
