@@ -395,6 +395,21 @@ export function findLiveSession(
   });
 }
 
+/**
+ * When the session row was created. A session is created only by a completed GitHub sign-in, so
+ * this is the moment the person last authenticated with GitHub. Null when the row is gone.
+ */
+export function getSessionSignedInAt(db: Db, hash: string): Promise<number | null> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select({ at: s.webSessions.createdAt })
+      .from(s.webSessions)
+      .where(eq(s.webSessions.id, hash))
+      .limit(1);
+    return row ? Number(row.at) : null;
+  });
+}
+
 export function touchSession(db: Db, hash: string, now: number): Promise<void> {
   return db.run(async (h) => {
     await h.orm.update(s.webSessions).set({ lastSeenAt: now }).where(eq(s.webSessions.id, hash));

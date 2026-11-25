@@ -692,6 +692,18 @@ function RunStep({
             canGoLive
             goLive={live}
             onGoLive={goLive}
+            passkeySlot={
+              <>
+                An org owner enrols the first approver with a passkey, once.{" "}
+                <Link
+                  to="/$org/-/approvers"
+                  params={{ org }}
+                  className="underline underline-offset-4"
+                >
+                  Enrol your passkey
+                </Link>
+              </>
+            }
             agentSlot={<AgentSlot api={api} org={org} />}
           />
           {error ? (

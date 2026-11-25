@@ -755,6 +755,8 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     expect([...SESSION_WRITE_OPS]).toEqual([
       "invite_member", // a viewer or member invite needs no step-up (admin and owner invites do)
       "session_step_up_challenge", // the challenge is how a session obtains a step-up at all
+      "first_approver_challenge", // an owner session under 10 minutes from GitHub sign-in (#587)
+      "enrol_first_approver", // the same gate, enforced again in one transaction
       "onboarding_create_org",
       "start_installation_claim",
       "bind_installation",

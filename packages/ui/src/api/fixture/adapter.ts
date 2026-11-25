@@ -230,6 +230,20 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
         expiresAt: Date.now() + 600_000,
         attestation: "none" as const,
       })),
+    firstApproverChallenge: () =>
+      delay(() => ({
+        challenge: "Zmlyc3QtYXBwcm92ZXItY2hhbGxlbmdl",
+        rpId: "localhost",
+        expiresAt: Date.now() + 600_000,
+        attestation: "none" as const,
+      })),
+    enrolFirstApprover: ({ person }) =>
+      delay(() => ({
+        approverId: "ap_first",
+        person: person ?? "you",
+        keyFingerprint: "c1".repeat(32),
+        warnings: [],
+      })),
     keyPolicyChallenge: (args) => delay(() => world.keyPolicyChallenge(args)),
     approveKeyPolicy: ({ statement }) => delay(() => world.approveKeyPolicy(statement)),
     requestEnrolment: ({ person }) =>
