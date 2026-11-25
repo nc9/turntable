@@ -1,5 +1,7 @@
+import { retryableAfterSteps } from "@turntable/act-runner";
 import {
   type Claim,
+  DRAIN_CUT_NOT_RETRIED,
   finishAttempt,
   CONTROLLER_LOST,
   DRAIN_CUT,
@@ -128,18 +130,23 @@ export async function reconcileExpired(
       }
     }
     const scope = { orgId: attempt.orgId, projectId: attempt.projectId };
-    // An attempt a drain timeout cut (a deploy) is retried once: it goes back to the queue under a
-    // new attempt and is never a job failure. Any other loss, and a second one, ends the job.
-    const errorClass = `${CONTROLLER_LOST} (${probe})`.slice(0, 200);
-    const requeued =
-      attempt.errorClass === DRAIN_CUT &&
-      (await requeueLostAttemptOnce(db, scope, {
-        attemptId: attempt.id,
-        owner: attempt.leaseOwner ?? "",
-        errorClass,
-        now,
-      }));
-    if (requeued) {
+    // An attempt a drain timeout cut (a deploy) is retried once, by the infra-retry rule: it goes
+    // back to the queue under a new attempt and is never a job failure. A protected or release job
+    // cut after a step started ends with its own reason instead (#565). Any other loss, and a
+    // second one, ends the job.
+    let errorClass = `${CONTROLLER_LOST} (${probe})`.slice(0, 200);
+    const requeue =
+      attempt.errorClass === DRAIN_CUT
+        ? await requeueLostAttemptOnce(db, scope, {
+            attemptId: attempt.id,
+            owner: attempt.leaseOwner ?? "",
+            errorClass,
+            now,
+            retryableAfterSteps,
+          })
+        : "no";
+    if (requeue === "not_retried") errorClass = DRAIN_CUT_NOT_RETRIED;
+    if (requeue === "requeued") {
       report.resolved.push({ attemptId: attempt.id, sandboxId: attempt.sandboxId, probe });
       continue;
     }

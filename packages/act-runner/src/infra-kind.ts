@@ -50,6 +50,16 @@ export function isInfraKind(v: unknown): v is InfraKind {
 }
 
 /**
+ * True when a failure that may have followed job steps is worth one retry for this trust class:
+ * only a pull request job (`trusted_pr`, `untrusted_pr`). `protected` and `release` jobs may have
+ * deployed or published already. An unknown or unrecorded class counts as not a pull request.
+ * The drain-cut requeue (#565) applies this same rule.
+ */
+export function retryableAfterSteps(trustClass: string | null | undefined): boolean {
+  return trustClass === "trusted_pr" || trustClass === "untrusted_pr";
+}
+
+/**
  * True for a kind worth one retry on a fresh sandbox. A kind that can happen mid-run is retried
  * only for a pull request job (`trusted_pr`, `untrusted_pr`); `protected` and `release` jobs may
  * have deployed or published before the sandbox died, so they end `infra_error`. An unknown class
@@ -60,7 +70,5 @@ export function isRetryableInfra(
   trustClass: string | null | undefined,
 ): boolean {
   if (kind == null || !INFRA_KINDS[kind].transient) return false;
-  return (
-    INFRA_KINDS[kind].beforeSteps || trustClass === "trusted_pr" || trustClass === "untrusted_pr"
-  );
+  return INFRA_KINDS[kind].beforeSteps || retryableAfterSteps(trustClass);
 }

@@ -42,6 +42,7 @@ export const EVENT_TYPES = [
   "attempt.step",
   "attempt.cut",
   "attempt.infra_retry",
+  "attempt.drain_cut_not_retried",
   "approval.required",
   "approval.changed",
   "infra.error",

@@ -15,7 +15,10 @@ import {
   getJob,
   listAttempts,
   listAudit,
+  listEvents,
   markDrainCut,
+  recordTrustClass,
+  upsertStep,
   openDatabase,
   type Scope,
   setProjectChecksMode,
@@ -207,6 +210,90 @@ describe("restart recovery of an attempt a drain cut", () => {
     await probe();
     expect(await listAttempts(db, a.scope, q.job.id)).toHaveLength(1);
     expect((await getJob(db, a.scope, q.job.id))?.state).toBe("infra_error");
+  });
+
+  // #565: the requeue follows the infra-retry rule: a pull request job once, any other class only
+  // when it was cut before its first step started.
+  describe("the drain-cut rule (#565)", () => {
+    const NOT_RETRIED =
+      "cut by a drain after steps started; not retried for a protected or release job: rerun it by hand";
+    async function cutJob(klass: string | null, stepsStarted: boolean) {
+      const q = await queueJob(a.scope);
+      await claim("old");
+      if (klass) expect(await recordTrustClass(db, a.scope, q.attempt.id, "old", klass)).toBe(true);
+      if (stepsStarted) {
+        await upsertStep(db, a.scope, {
+          attemptId: q.attempt.id,
+          stepKey: "0",
+          stage: "main",
+          index: 0,
+          name: "deploy",
+          startedAt: T0,
+        });
+      }
+      expect(await markDrainCut(db, a.scope, q.attempt.id, "old")).toBe(true);
+      await probe();
+      return { q, attempts: await listAttempts(db, a.scope, q.job.id) };
+    }
+    const notRetried = async (jobId: string) =>
+      (await listEvents(db, a.scope, { after: 0, limit: 100 })).filter(
+        (e) => e.type === "attempt.drain_cut_not_retried" && e.jobId === jobId,
+      );
+
+    for (const klass of ["trusted_pr", "untrusted_pr"]) {
+      test(`a ${klass} attempt cut mid-run is requeued once`, async () => {
+        const { q, attempts } = await cutJob(klass, true);
+        expect(attempts).toHaveLength(2);
+        expect(attempts[0]!.errorClass).toStartWith("controller_lost");
+        expect(attempts[1]).toMatchObject({ state: "queued" });
+        expect((await getJob(db, a.scope, q.job.id))?.state).toBe("queued");
+        expect(await notRetried(q.job.id)).toHaveLength(0);
+      });
+    }
+
+    test("a protected attempt cut after step 1 is not requeued: infra_error, the reason, an event and an audit entry", async () => {
+      const { q, attempts } = await cutJob("protected", true);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]).toMatchObject({ state: "infra_error", errorClass: NOT_RETRIED });
+      expect((await getJob(db, a.scope, q.job.id))?.state).toBe("infra_error");
+      const ev = await notRetried(q.job.id);
+      expect(ev).toHaveLength(1);
+      expect(
+        typeof ev[0]!.payload === "string" ? JSON.parse(ev[0]!.payload) : ev[0]!.payload,
+      ).toMatchObject({
+        job_id: q.job.id,
+        org_id: a.orgId,
+        project_id: a.scope.projectId,
+      });
+      const audit = await listAudit(db, { orgId: a.orgId }, { limit: 100 });
+      expect(audit.some((r) => r.op === "attempt.drain_cut_not_retried")).toBe(true);
+    });
+
+    test("a release attempt cut after a step, and one with no recorded class, are not requeued", async () => {
+      expect((await cutJob("release", true)).attempts).toHaveLength(1);
+      const none = await cutJob(null, true);
+      expect(none.attempts).toHaveLength(1);
+      expect(none.attempts[0]!.errorClass).toBe(NOT_RETRIED);
+    });
+
+    test("a release attempt cut before its first step is requeued", async () => {
+      const { q, attempts } = await cutJob("release", false);
+      expect(attempts).toHaveLength(2);
+      expect(attempts[1]).toMatchObject({ state: "queued" });
+      expect((await getJob(db, a.scope, q.job.id))?.state).toBe("queued");
+      expect(await notRetried(q.job.id)).toHaveLength(0);
+    });
+
+    test("a second cut of the same job is not requeued", async () => {
+      const { q, attempts } = await cutJob("trusted_pr", true);
+      await claim("old2");
+      expect(await markDrainCut(db, a.scope, attempts[1]!.id, "old2")).toBe(true);
+      await probe();
+      const after = await listAttempts(db, a.scope, q.job.id);
+      expect(after).toHaveLength(2);
+      expect(after[1]).toMatchObject({ state: "infra_error" });
+      expect((await getJob(db, a.scope, q.job.id))?.state).toBe("infra_error");
+    });
   });
 
   test("markDrainCut is fenced by the lease holder and by the running state", async () => {
