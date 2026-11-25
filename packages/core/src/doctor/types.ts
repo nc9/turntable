@@ -108,10 +108,9 @@ export interface DoctorInputs {
   /** Whether the release channel answers, when one is configured. */
   channel: (() => Promise<ChannelProbe>) | undefined;
   /**
-   * Whether a release lane is expected (any release channel variable is set), and the probe of its
-   * CONFIG channel. Release approval challenges need that channel: without it they are refused.
+   * The probe of the lane's CONFIG channel, present only when this process holds the main-side
+   * config channel client settings. Release approval challenges need that channel.
    */
-  releaseLaneExpected?: boolean | undefined;
   configChannel?: (() => Promise<ChannelProbe>) | undefined;
   /** What the running server has seen of forwarded headers; absent from the command line. */
   observed: ForwardedSnapshot | undefined;

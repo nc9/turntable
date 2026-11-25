@@ -29,12 +29,7 @@ import {
 } from "../src/doctor/checks";
 import { doctorCommand, renderReport } from "../src/doctor/cli";
 import { ForwardedObserver } from "../src/doctor/observe";
-import {
-  channelProbe,
-  configChannelProbe,
-  readerOf,
-  releaseLaneExpected,
-} from "../src/doctor/real";
+import { channelProbe, configChannelProbe, readerOf } from "../src/doctor/real";
 import {
   forApi,
   report,
@@ -540,31 +535,28 @@ describe("the release lane config channel", () => {
   const probe = (ok: boolean) => async () =>
     ok ? ({ ok: true } as const) : ({ ok: false, reason: "not reachable" } as const);
 
-  test("no release lane configured at all: passes", async () => {
-    const r = await checkConfigChannel(base({ releaseLaneExpected: false }));
+  test("no main-side config channel client: no release lane configured, passes", async () => {
+    const r = await checkConfigChannel(base({}));
     expect(r).toMatchObject({ status: "pass" });
-    expect(r.summary).not.toContain("unreachable");
+    expect(r.summary).toContain("no release lane configured");
   });
-  test("a lane is expected and the config channel answers: passes", async () => {
-    const r = await checkConfigChannel(
-      base({ releaseLaneExpected: true, configChannel: probe(true) }),
-    );
+  test("a client and a reachable lane: passes", async () => {
+    const r = await checkConfigChannel(base({ configChannel: probe(true) }));
     expect(r).toMatchObject({ status: "pass" });
   });
-  test("a lane is expected and the config channel cannot be reached: fails with the exact message", async () => {
-    const down = await checkConfigChannel(
-      base({ releaseLaneExpected: true, configChannel: probe(false) }),
-    );
+  test("a client and an unreachable lane: fails with the exact message", async () => {
+    const down = await checkConfigChannel(base({ configChannel: probe(false) }));
     expect(down).toMatchObject({ status: "fail", summary: MSG });
-    // no config key on this process at all: the same refusal, and the fix names the setting
-    const unset = await checkConfigChannel(base({ releaseLaneExpected: true }));
-    expect(unset).toMatchObject({ status: "fail", summary: MSG });
-    expect(JSON.stringify(unset)).toContain("TURNTABLE_PUBLISH_CONFIG_KEY_FILE");
   });
-  test("what real doctor inputs expect: any lane variable, and a probe only with a config key", () => {
-    expect(releaseLaneExpected({})).toBe(false);
-    expect(releaseLaneExpected({ TURNTABLE_PUBLISH_CHANNEL_SOCKET: "/s" })).toBe(true);
+  test("real doctor inputs probe only when the config key is set", () => {
     expect(configChannelProbe({ TURNTABLE_PUBLISH_CHANNEL_SOCKET: "/s" })).toBeUndefined();
+    expect(configChannelProbe({})).toBeUndefined();
+    expect(
+      configChannelProbe({
+        TURNTABLE_PUBLISH_CONFIG_KEY_FILE: "/k",
+        TURNTABLE_PUBLISH_CHANNEL_SOCKET: "/s",
+      }),
+    ).toBeDefined();
   });
 });
 

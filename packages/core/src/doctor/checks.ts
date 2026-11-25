@@ -643,27 +643,26 @@ export async function checkChannel(i: DoctorInputs): Promise<DoctorCheck> {
 
 /**
  * A release approval challenge reads the lane's configuration version over the config channel, so
- * with no way to it every release approval is refused (it fails closed). Passes when no release
- * lane is configured at all.
+ * with no way to it every release approval is refused. This process knows a lane is expected only
+ * through its own config channel client settings (`configChannel` is set when they are present);
+ * it reads no release lane variable. With none, no lane is configured here and the check passes.
  */
 export async function checkConfigChannel(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "release";
-  if (!i.releaseLaneExpected)
+  if (!i.configChannel)
     return pass(
       "release_config_channel",
       area,
-      "no release lane is configured, so there is no config channel to reach",
+      "no release lane configured here, so there is no config channel to reach",
     );
-  const r = i.configChannel
-    ? await i.configChannel()
-    : ({ ok: false, reason: "TURNTABLE_PUBLISH_CONFIG_KEY_FILE is not set" } as const);
+  const r = await i.configChannel();
   return r.ok
     ? pass("release_config_channel", area, "the release lane's config channel answers")
     : fail(
         "release_config_channel",
         area,
         "release lane config channel unreachable: release approvals will be refused",
-        `Set TURNTABLE_PUBLISH_CONFIG_KEY_FILE on this process to the lane's TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE and check the channel address (${r.reason}).`,
+        `Check that the lane is running, the channel address and TLS files here match it, and that the config key file here holds the same key as the lane's (${r.reason}).`,
         "detail" in r ? r.detail : undefined,
       );
 }
