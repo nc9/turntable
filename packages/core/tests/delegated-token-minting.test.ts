@@ -449,3 +449,84 @@ describe("revoking the minted subtree (#456)", () => {
     expect(after.ok ? "ok" : after.error.code).toBe("unauthenticated");
   });
 });
+
+describe("expires_in_minutes (#548)", () => {
+  const MIN = 60_000;
+  const bearer = (token: string): Credential => ({ kind: "bearer", token });
+  const alive = async (token: string, e: DispatchEnv) =>
+    (await dispatch(e, bearer(token), "list_runs", {})).ok;
+  const mint = async (parent: string, over: Record<string, unknown> = {}) => {
+    const r = await as(parent, { name: "c", role: "reader", ...over });
+    if (!r.ok) throw new Error(r.error.message);
+    return r.output as { id: string; token: string; expires_at: string };
+  };
+
+  test("a 15-minute child expires on time", async () => {
+    const parent = await orgWide("operator");
+    const child = await mint(parent.secret, { expires_in_minutes: 15 });
+    expect(child.expires_at).toBe(new Date(NOW + 15 * MIN).toISOString());
+    const at = (t: number): DispatchEnv => ({ ...env, now: () => t });
+    expect(await alive(child.token, at(NOW + 14 * MIN))).toBe(true);
+    expect(await alive(child.token, at(NOW + 15 * MIN + 1))).toBe(false);
+  });
+
+  test("a 5-minute token is refused after it expires", async () => {
+    const parent = await orgWide("operator");
+    const child = await mint(parent.secret, { expires_in_minutes: 5 });
+    expect(await alive(child.token, { ...env, now: () => NOW + 5 * MIN + 1 })).toBe(false);
+  });
+
+  test("minutes and days together are refused", async () => {
+    const parent = await orgWide("operator");
+    const r = await as(parent.secret, {
+      name: "x",
+      role: "reader",
+      expires_in_days: 1,
+      expires_in_minutes: 10,
+    });
+    expect(code(r)).toBe("invalid_input");
+  });
+
+  test("minutes are bounded to 5..1440", async () => {
+    const parent = await orgWide("operator");
+    for (const m of [4, 1441, 0, 1.5]) {
+      expect(
+        code(await as(parent.secret, { name: "x", role: "reader", expires_in_minutes: m })),
+      ).toBe("invalid_input");
+    }
+    for (const m of [5, 1440]) {
+      expect(
+        code(await as(parent.secret, { name: "x", role: "reader", expires_in_minutes: m })),
+      ).toBe("ok");
+    }
+  });
+
+  test("a minute expiry beyond the parent's is refused, as days are (not clamped)", async () => {
+    const parent = await orgWide("operator", { expiresAt: NOW + 30 * MIN });
+    expect(
+      code(await as(parent.secret, { name: "x", role: "reader", expires_in_minutes: 31 })),
+    ).toBe("forbidden");
+    const ok = await mint(parent.secret, { expires_in_minutes: 30 });
+    expect(ok.expires_at).toBe(new Date(NOW + 30 * MIN).toISOString());
+  });
+
+  test("20 expired short-lived children do not block a 21st; live ones do", async () => {
+    const parent = await orgWide("operator");
+    for (let i = 0; i < 20; i++) await mint(parent.secret, { expires_in_minutes: 5 });
+    expect(
+      code(await as(parent.secret, { name: "x", role: "reader", expires_in_minutes: 5 })),
+    ).toBe("conflict");
+    const later: DispatchEnv = { ...env, now: () => NOW + 6 * MIN };
+    const r = await as(parent.secret, { name: "x", role: "reader", expires_in_minutes: 5 }, later);
+    expect(code(r)).toBe("ok");
+  });
+
+  test("short-lived children count toward the depth limit", async () => {
+    const parent = await orgWide("operator");
+    const child = await mint(parent.secret, { role: "operator", expires_in_minutes: 60 });
+    const grand = await mint(child.token, { role: "operator", expires_in_minutes: 30 });
+    expect(code(await as(grand.token, { name: "x", role: "reader", expires_in_minutes: 5 }))).toBe(
+      "conflict",
+    );
+  });
+});

@@ -285,7 +285,7 @@ Local access to the data directory is the trust root. The command writes through
 
 - the new role is at most the caller's;
 - the scope is the caller's or narrower (an org-wide token may mint a project-scoped one, never the reverse, and never a different project);
-- `expires_in_days` is at most 365 and the new token may not outlive the caller (a request that would is refused, not clamped);
+- `expires_in_days` is at most 365, or give `expires_in_minutes` (5 to 1440) instead, never both; the new token may not outlive the caller (a request that would is refused, not clamped);
 - a `person` token may mint `person` or `agent` tokens; an `agent` token may mint only `agent` tokens, up to `operator`;
 - it is REST only: the operation is not an MCP tool, and a call arriving over MCP is refused.
 
