@@ -13,6 +13,7 @@ import { STATE_META } from "@/lib/states";
 import { cn } from "@/lib/utils";
 import type { JobSearch } from "@/router";
 import { ApprovalNotice } from "./approval";
+import { retriedAutomatically } from "./infra-retry";
 import { FailureDigestPanel } from "./failure-digest";
 import { RerunButton } from "./rerun-dialog";
 import { EgressBadge, NoticeBadges, TrustBadge, useLogNotices } from "./trust";
@@ -160,7 +161,9 @@ export function JobPage() {
               responding.{" "}
               {attempts.length > 1
                 ? "A later attempt carries the real result."
-                : "A retry is queued automatically."}
+                : selected && !retriedAutomatically(selected)
+                  ? "This error is not retried automatically: fix the cause, then re-run."
+                  : "A retry is queued automatically."}
             </p>
           </div>
         </div>

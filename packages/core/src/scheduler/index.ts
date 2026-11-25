@@ -16,6 +16,7 @@ export {
   createActRunner,
   assertNoCredentials,
   gitRepoSource,
+  CHECKOUT_PERMISSIONS,
   localRepoSource,
   type ActRunnerOptions,
   type Checkout,

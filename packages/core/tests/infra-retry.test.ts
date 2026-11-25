@@ -179,6 +179,10 @@ for (const [name, open] of dialects) {
       ["a test failure", { state: "failure", exitCode: 1, reason: "job failed: test" }],
       ["a cancel", { state: "cancelled", reason: "cancelled by user" }],
       ["a non-transient kind", transient("other", "act exited 3 without a job result")],
+      [
+        "checkout_auth_failed (a refused checkout)",
+        transient("checkout_auth_failed", "the checkout was refused by GitHub (HTTP 401)"),
+      ],
       ["an infra error with no kind", { state: "infra_error", reason: "no run has no sha" }],
     ] as [string, AttemptOutcome][]) {
       test(`${label} is never retried`, async () => {

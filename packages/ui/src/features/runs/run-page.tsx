@@ -17,6 +17,7 @@ import { groupJobs, type JobItem } from "@/lib/shards";
 import { isActive, STATE_META } from "@/lib/states";
 import { toast } from "@/lib/toast";
 import { ApprovalNotice, approvalLabel } from "./approval";
+import { retriedAutomatically } from "./infra-retry";
 import { ArtifactsPanel } from "./artifacts-panel";
 import { SandboxTimes } from "./sandbox-time";
 import { RerunButton } from "./rerun-dialog";
@@ -177,8 +178,10 @@ export function RunPage() {
             {infraAttempts.length === 1
               ? "One attempt hit an infrastructure error"
               : `${infraAttempts.length} attempts hit infrastructure errors`}
-            . The sandbox or provider failed, so those attempts say nothing about your code.
-            Turntable retries them automatically.
+            . These attempts say nothing about your code.{" "}
+            {infraAttempts.some(retriedAutomatically)
+              ? "Turntable retries them automatically."
+              : "Turntable does not retry them: fix the cause, then re-run."}
           </p>
         </div>
       ) : null}

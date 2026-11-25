@@ -13,7 +13,20 @@ import { lstat, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scrubbedEnv } from "@turntable/provider-sdk";
-import { clean, DEFAULT_FETCH_LIMITS, type FetchLimits } from "./git-fetch";
+import { clean, DEFAULT_FETCH_LIMITS, EXIT_AUTH_REFUSED, type FetchLimits } from "./git-fetch";
+import { scrubToken, tokenMessage } from "./scrub-token";
+
+/** The forge answered 401 or 403 (or 404 to a request that carried a token). Never retried. */
+export class CheckoutAuthError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(
+      `the checkout was refused by GitHub (HTTP ${status}): check that the Turntable CI App installation can read this repository`,
+    );
+    this.name = "CheckoutAuthError";
+    this.status = status;
+  }
+}
 
 export interface CheckoutConfig {
   /** Child's wall clock, in ms. Default 5 minutes. */
@@ -145,6 +158,8 @@ export interface ChildRequest {
   repo: string;
   sha: string;
   url?: string;
+  /** A repo-scoped installation token: handed to the child on stdin, never in argv or env. */
+  token?: string | undefined;
   dir: string;
   out: string;
   allowHosts?: readonly string[];
@@ -202,6 +217,7 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
     "--max-memory-mib",
     String(cfg.memoryMb),
     ...(r.url ? ["--url", r.url] : []),
+    ...(r.token ? ["--token-stdin"] : []),
     ...(r.allowHosts ?? []).flatMap((h) => ["--allow-host", h]),
     // Nothing after this is an option, whatever a name looks like.
     "--",
@@ -210,11 +226,21 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
   ];
   if (r.signal?.aborted) throw new Error("the checkout was cancelled");
   const child = (r.spawn ?? Bun.spawn)(argv, {
-    stdin: "ignore",
+    stdin: r.token ? "pipe" : "ignore",
     stdout: "pipe",
     stderr: "pipe",
     env: scrubbedEnv({}, CHILD_ENV_PASSTHROUGH),
   });
+  if (r.token) {
+    // One message, then stdin is closed. A child that is gone already is reported by its exit.
+    try {
+      const sink = child.stdin as { write(d: string): unknown; end(): unknown } | undefined;
+      sink?.write(tokenMessage(r.token));
+      void Promise.resolve(sink?.end()).catch(() => {});
+    } catch {
+      // the exit status says what happened
+    }
+  }
   let killedFor: string | undefined;
   let onKilled: () => void = () => {};
   const killed = new Promise<void>((resolve) => (onKilled = resolve));
@@ -254,9 +280,13 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
     if (killedFor) throw new Error(killedFor);
     if (res === "abandoned") throw new Error("the checkout did not stop");
     const [out, err, code] = res;
+    if (code === EXIT_AUTH_REFUSED) {
+      const m = /checkout_auth_failed HTTP (\d{3})/.exec(err);
+      throw new CheckoutAuthError(m ? Number(m[1]) : 401);
+    }
     if (code !== 0) {
       const line = err.trim().split("\n").filter(Boolean).at(-1) ?? `exit ${code}`;
-      throw new Error(`the checkout failed: ${clean(line)}`);
+      throw new Error(`the checkout failed: ${clean(scrubToken(line, r.token))}`);
     }
     const m = /^ok ([0-9a-f]{40}) files=(\d+) tarball=(\d+)$/m.exec(out);
     if (!m) throw new Error("the checkout gave no result");

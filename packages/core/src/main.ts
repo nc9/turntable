@@ -85,6 +85,7 @@ import {
   createActRunner,
   createProvider,
   gitRepoSource,
+  CHECKOUT_PERMISSIONS,
   adoptRecordedSandboxes,
   reconcileExpired,
   sweepUndestroyedSandboxes,
@@ -385,6 +386,17 @@ async function startBackground(
                 source: gitRepoSource({
                   allowHosts: allowHostsFromEnv(),
                   config: checkoutConfigFromEnv(),
+                  ...(extras.auth
+                    ? {
+                        installationToken: async (installationId: string, repo: string) =>
+                          (
+                            await extras.auth!.mint(installationId, {
+                              repositories: [repo],
+                              permissions: CHECKOUT_PERMISSIONS,
+                            })
+                          ).token,
+                      }
+                    : {}),
                 }),
                 // Actions are resolved and verified with the run's own GitHub credential: the poll
                 // token, else an App token read-only for that repo, else TURNTABLE_GITHUB_TOKEN.

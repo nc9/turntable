@@ -7,7 +7,7 @@ export interface GitHttpServer {
   url: string;
   /** A client that may reach the loopback test server (the guard refuses it otherwise). */
   fetch: SafeFetch;
-  requests: { method: string; path: string; body: Uint8Array }[];
+  requests: { method: string; path: string; body: Uint8Array; authorization: string | null }[];
   stop(): void;
 }
 
@@ -44,6 +44,8 @@ export interface GitHttpOptions {
   postRedirect?: boolean;
   /** A location `GET .../info/refs` redirects to instead (another origin, say). */
   redirectTo?: string;
+  /** Every request is answered with this status unless it carries the `Authorization` header. */
+  requireAuth?: { status: number; expect?: string };
 }
 
 export function serveGitRepo(repo: string, opts: GitHttpOptions = {}): GitHttpServer {
@@ -54,7 +56,14 @@ export function serveGitRepo(repo: string, opts: GitHttpOptions = {}): GitHttpSe
     async fetch(req) {
       const u = new URL(req.url);
       const body = new Uint8Array(await req.arrayBuffer());
-      requests.push({ method: req.method, path: u.pathname, body });
+      const authorization = req.headers.get("authorization");
+      requests.push({ method: req.method, path: u.pathname, body, authorization });
+      if (
+        opts.requireAuth &&
+        (authorization === null ||
+          (opts.requireAuth.expect !== undefined && authorization !== opts.requireAuth.expect))
+      )
+        return new Response("no", { status: opts.requireAuth.status });
       if (opts.redirectTo && req.method === "GET" && u.pathname.endsWith("/info/refs"))
         return new Response(null, { status: 302, headers: { location: opts.redirectTo } });
       if (opts.movedFrom && req.method === "GET" && u.pathname === `${opts.movedFrom}/info/refs`)

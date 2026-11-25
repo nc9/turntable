@@ -26,6 +26,15 @@ export const INFRA_KINDS = {
     beforeSteps: true,
     label: "an image pull was rate limited",
   },
+  /**
+   * The forge refused the checkout's installation token (401, 403, or 404 to a request with a
+   * token): the App installation cannot read the repository. Deterministic, so never retried.
+   */
+  checkout_auth_failed: {
+    transient: false,
+    beforeSteps: true,
+    label: "the checkout was refused by GitHub",
+  },
   /** Everything else: a deterministic or unknown cause. Never retried. */
   other: {
     transient: false,

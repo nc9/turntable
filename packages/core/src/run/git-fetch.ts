@@ -140,6 +140,24 @@ export interface FetchOptions {
   limits?: Partial<FetchLimits>;
   /** Called often (between requests, objects and files): it may throw to stop the work (parent gone, over memory). */
   checkpoint?: () => void;
+  /**
+   * An installation token for a private repository. Sent as HTTP Basic (`x-access-token`) only to
+   * the URL's own origin and repository path; a redirect while it is held is refused.
+   */
+  token?: string;
+}
+
+/** The checkout child's exit status when the forge refused the credential. */
+export const EXIT_AUTH_REFUSED = 77;
+
+/** The server refused the credential (or its absence): 401, 403, or a 404 when a token was sent. */
+export class GitAuthError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+    this.name = "GitAuthError";
+  }
 }
 
 /** The objects of one commit at depth 1, verified. */
@@ -167,6 +185,21 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   };
   let base = o.url.replace(/\/+$/, "");
   const common = { "git-protocol": "version=2", "user-agent": "git/2.39.0 (turntable)" };
+  // The credential goes only to the configured repository: same origin, same path prefix.
+  const repoUrl = new URL(base);
+  const authFor = (target: string): Record<string, string> => {
+    if (!o.token) return {};
+    const t = new URL(target);
+    const ok =
+      t.origin === repoUrl.origin &&
+      (t.pathname === repoUrl.pathname || t.pathname.startsWith(`${repoUrl.pathname}/`));
+    if (!ok) throw new GitFetchError("refusing to send the credential outside the repository");
+    return {
+      authorization: `Basic ${Buffer.from(`x-access-token:${o.token}`).toString("base64")}`,
+    };
+  };
+  const refused = (status: number): boolean =>
+    status === 401 || status === 403 || (status === 404 && o.token !== undefined);
 
   // 1. Capabilities: the server must speak protocol v2 and offer `fetch`. A redirect is followed
   // only within the same origin (a repository that moved); never to another host, and the fetch
@@ -175,7 +208,11 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   let adv: Response | undefined;
   for (let hop = 0; hop <= 3; hop += 1) {
     adv = await f(advUrl, {
-      headers: { ...common, accept: "application/x-git-upload-pack-advertisement" },
+      headers: {
+        ...common,
+        ...authFor(advUrl),
+        accept: "application/x-git-upload-pack-advertisement",
+      },
       timeoutMs: left(),
       maxBytes: 1024 * 1024,
       redirect: "manual",
@@ -183,6 +220,10 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
     const location = adv.headers.get("location");
     if (adv.status >= 300 && adv.status < 400 && location !== null) {
       const next = new URL(location, advUrl);
+      if (o.token !== undefined)
+        throw new GitFetchError(
+          "the server redirected while a credential was held; refusing to follow it",
+        );
       if (next.origin !== new URL(advUrl).origin)
         throw new GitFetchError("the server redirected to another host; refusing to follow it");
       if (!next.pathname.endsWith("/info/refs"))
@@ -196,6 +237,11 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   }
   if (!adv) throw new GitFetchError("too many redirects");
   left();
+  if (refused(adv.status))
+    throw new GitAuthError(
+      adv.status,
+      `the server answered HTTP ${adv.status} for ${hostPath(base)}`,
+    );
   if (!adv.ok)
     throw new GitFetchError(`the server answered HTTP ${adv.status} for ${hostPath(base)}`);
   const caps: string[] = [];
@@ -226,6 +272,7 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
     method: "POST",
     headers: {
       ...common,
+      ...authFor(`${base}/git-upload-pack`),
       "content-type": "application/x-git-upload-pack-request",
       accept: "application/x-git-upload-pack-result",
     },
@@ -234,6 +281,8 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
     maxBytes: limits.maxPackBytes + 1024 * 1024,
     redirect: "error",
   });
+  if (refused(res.status))
+    throw new GitAuthError(res.status, `the server answered HTTP ${res.status} to the fetch`);
   if (!res.ok) throw new GitFetchError(`the server answered HTTP ${res.status} to the fetch`);
   const pack: Uint8Array[] = [];
   let section = "";

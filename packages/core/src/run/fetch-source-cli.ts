@@ -15,7 +15,8 @@ import { readTarGz } from "@turntable/act-runner";
 import { gitRepoSource } from "../scheduler/act-runner";
 import { isRepoPart, performCheckout } from "./checkout";
 import { checkoutConfigFromEnv } from "./checkout-child";
-import { clean, type FetchLimits } from "./git-fetch";
+import { clean, EXIT_AUTH_REFUSED, GitAuthError, type FetchLimits } from "./git-fetch";
+import { parseTokenMessage, scrubToken } from "./scrub-token";
 
 export const FETCH_SOURCE_USAGE = `Usage: turntable fetch-source <owner/name> <sha> [--file <path>]
 
@@ -97,6 +98,7 @@ export async function fetchSourceCommand(
       limits: { type: "string" },
       "allow-host": { type: "string", multiple: true },
       "max-memory-mib": { type: "string" },
+      "token-stdin": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -120,7 +122,10 @@ export async function fetchSourceCommand(
   const owner = m[1] as string;
   const name = m[2] as string;
   const allowHosts = values["allow-host"] ?? [];
+  let token: string | undefined;
   try {
+    // The credential, when there is one, arrives on stdin and nowhere else (never argv, never env).
+    if (values["token-stdin"]) token = parseTokenMessage(await Bun.stdin.text());
     if (values.out !== undefined) {
       // The checkout itself, as the worker's child process. It stops, without a word, when its
       // parent is gone (an orphan holding a directory and a socket for nobody), and when its own
@@ -147,6 +152,7 @@ export async function fetchSourceCommand(
         limits: parseLimits(values.limits),
         allowHosts,
         checkpoint: stop,
+        ...(token ? { token } : {}),
       });
       clearInterval(watchdog);
       out(`ok ${r.sha} files=${r.files} tarball=${r.tarballBytes}`);
@@ -170,7 +176,12 @@ export async function fetchSourceCommand(
       co.dispose?.();
     }
   } catch (e) {
-    console.error(`fetch-source failed: ${clean(e instanceof Error ? e.message : String(e), 300)}`);
+    if (e instanceof GitAuthError) {
+      console.error(`fetch-source failed: checkout_auth_failed HTTP ${e.status}`);
+      return EXIT_AUTH_REFUSED;
+    }
+    const text = scrubToken(e instanceof Error ? e.message : String(e), token);
+    console.error(`fetch-source failed: ${clean(text, 300)}`);
     return 1;
   }
 }
