@@ -1551,7 +1551,11 @@ export const outboundEndpoints = sqliteTable(
     description: text("description").notNull().default(""),
     /** JSON array of event types, or null for all. */
     eventTypes: text("event_types"),
-    /** The body shape: the signed event JSON, or a Slack message of fixed text (#611). */
+    /**
+     * The body shape: the signed event JSON, or a Slack message of fixed text (#611). No CHECK on
+     * sqlite (adding the column is a plain ALTER, not a table rebuild); the op schema and the repo
+     * validate it, and the pg mirror adds the CHECK (see gen-pg-schema.ts).
+     */
     format: text("format").notNull().default("json"),
     state: text("state").notNull().default("active"),
     /** Why it was disabled (`manual` or `auto: <n> consecutive failures`). */
@@ -1565,7 +1569,6 @@ export const outboundEndpoints = sqliteTable(
   (t) => [
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
     check("outbound_webhook_endpoints_state_check", inList("state", WEBHOOK_STATES)),
-    check("outbound_webhook_endpoints_format_check", inList("format", WEBHOOK_FORMATS)),
     index("outbound_webhook_endpoints_org_idx").on(t.orgId, t.state),
   ],
 );

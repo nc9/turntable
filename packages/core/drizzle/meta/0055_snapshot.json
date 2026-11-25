@@ -4301,10 +4301,6 @@
         "outbound_webhook_endpoints_state_check": {
           "name": "outbound_webhook_endpoints_state_check",
           "value": "state IN ('active', 'disabled')"
-        },
-        "outbound_webhook_endpoints_format_check": {
-          "name": "outbound_webhook_endpoints_format_check",
-          "value": "format IN ('json', 'slack')"
         }
       }
     },
