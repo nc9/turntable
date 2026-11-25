@@ -24,16 +24,37 @@ turntable github-app create --url https://ci.example.com [--org my-github-org] [
 
 This serves a local page on `127.0.0.1` and prints its address. Open it, press the button, and approve the App on GitHub (under your account, or under `--org`). GitHub redirects back to the loopback callback with a one-time code, which Turntable exchanges for the App's credentials. They go straight into the encrypted store and are not printed.
 
-The manifest asks for the least access that works:
+The manifest asks for the permissions below. Several are reserved for features that are not built yet; they are listed so an owner accepts them once. Not requested: workflows, administration write, secrets and webhooks.
 
 | Permission | Level | Why |
 | --- | --- | --- |
-| Checks | write | Reporting results (used later) |
-| Contents | read | Fetching the commit to run |
-| Metadata | read | Listing repositories |
-| Pull requests | read | Reading pull request facts |
+| Actions | read | Reserved for reading GitHub's own workflow runs and artifacts. |
+| Actions variables | read | Reserved for reading repository variables (`vars.*`) for workflows. |
+| Administration | read | Reserved for reading repository settings such as branch protection. |
+| Attestations | write | Reserved for publishing build provenance attestations. |
+| Checks | write | Reporting results as check runs. |
+| Contents | write | Fetching the commit to run (read, today's only use). Write is reserved for job tokens of workflows that push; a job token is capped to what the workflow declares, the trust class allows and the installation has accepted. |
+| Deployments | write | Reserved for deployment statuses. |
+| Emails (account) | read | Reserved for matching a sign-in to a verified email. |
+| Environments | read | Reserved for reading environment protection rules. |
+| Issues | write | Reserved for job tokens that comment on or label issues. |
+| Members (organization) | read | Reserved for checking organization membership for approvals. |
+| Merge queues | read | Reserved for merge queue awareness; `merge_group` events already wake the poller. |
+| Metadata | read | Listing the repositories an installation can access. |
+| Organization actions variables | read | Reserved for organization-level `vars.*`. |
+| Packages | write | Reserved for job tokens that publish packages. |
+| Pages | write | Reserved for job tokens that deploy to Pages. |
+| Pull requests | write | Reading pull request facts for polling. Write is reserved for job tokens that comment on pull requests. |
+| Security events | write | Reserved for job tokens that upload code scanning results. |
+| Statuses | write | Reserved for commit statuses from job tokens. |
 
-Subscribed events are `push`, `pull_request` and `check_run`. GitHub also sends `installation` and `installation_repositories` to every App without a subscription.
+Subscribed events are `check_run`, `check_suite`, `create`, `delete`, `issue_comment`, `membership`, `merge_group`, `organization`, `pull_request`, `pull_request_review`, `push`, `repository`, `repository_ruleset`, `workflow_dispatch` and `workflow_run`. Today `push`, `pull_request` and `merge_group` wake ingest, and an installation or repository rename re-syncs the installation; the others are recorded as `ignored` deliveries. GitHub also sends `installation` and `installation_repositories` to every App without a subscription.
+
+### Accepting new permissions on an existing installation
+
+An installation keeps the permissions its owner accepted until the owner accepts the App's new set on GitHub (the App's installation page shows a review request). Until then, Turntable still polls, fetches and reports checks with what was accepted. A token request that needs a permission the installation has not accepted fails with `the installation has not accepted <permission>: an owner must accept the App's new permissions on GitHub`, instead of an opaque HTTP 422. `instance_github_app_status` lists each installation as on the current set or pending acceptance, with the missing permissions. The `installation` event `new_permissions_accepted` re-syncs the installation, which refreshes the stored set.
+
+Webhook deliveries are kept for 14 days or 50,000 rows, whichever is smaller; deliveries still waiting for their handler are never dropped.
 
 The webhook URL is `<url>/api/v1/webhooks/github`. The `--turntable-org` flag chooses which Turntable org owns the App and its installations (default `local`).
 

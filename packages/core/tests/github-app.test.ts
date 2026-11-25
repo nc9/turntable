@@ -49,6 +49,8 @@ describe("installation tokens (the single mint function)", () => {
     let n = 0;
     let expiresIn = 3_600_000;
     const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      // The accepted-permissions read (GET installation): no grant listed, so nothing is checked.
+      if (init?.method !== "POST") return Response.json({});
       calls.push({
         url: String(url),
         body: init?.body ? JSON.parse(String(init.body)) : undefined,
@@ -169,12 +171,43 @@ describe("manifest", () => {
     };
     expect(m.hook_attributes.url).toBe(`https://ci.example.com${WEBHOOK_PATH}`);
     expect(m.default_permissions).toEqual({
+      actions: "read",
+      actions_variables: "read",
+      administration: "read",
+      attestations: "write",
       checks: "write",
-      contents: "read",
+      contents: "write",
+      deployments: "write",
+      emails: "read",
+      environments: "read",
+      issues: "write",
+      members: "read",
+      merge_queues: "read",
       metadata: "read",
-      pull_requests: "read",
+      organization_actions_variables: "read",
+      packages: "write",
+      pages: "write",
+      pull_requests: "write",
+      security_events: "write",
+      statuses: "write",
     });
-    expect(m.default_events).toEqual(["push", "pull_request", "check_run"]);
+    expect(m.default_events).toEqual([
+      "check_run",
+      "check_suite",
+      "create",
+      "delete",
+      "issue_comment",
+      "membership",
+      "merge_group",
+      "organization",
+      "pull_request",
+      "pull_request_review",
+      "push",
+      "repository",
+      "repository_ruleset",
+      "workflow_dispatch",
+      "workflow_run",
+    ]);
     expect(m.public).toBe(false);
   });
 

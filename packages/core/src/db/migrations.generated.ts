@@ -567,5 +567,12 @@ export const migrations: Migration[] = [
     "statements": [
       "CREATE TABLE `github_installation_installers` (\n\t`installation_id` text PRIMARY KEY NOT NULL,\n\t`installer_github_id` text NOT NULL,\n\t`installer_login` text NOT NULL,\n\t`recorded_at` integer NOT NULL\n);"
     ]
+  },
+  {
+    "tag": "0051_installation_permissions",
+    "when": 1795603696280,
+    "statements": [
+      "ALTER TABLE `github_installations` ADD `permissions` text;"
+    ]
   }
 ];

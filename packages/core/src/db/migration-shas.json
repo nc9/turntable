@@ -204,6 +204,10 @@
     {
       "tag": "0050_installation_installer",
       "sha256": "8099738932b5529359567d4f37cc7f89ef9152f83b4a8ce7c281cfff085876f7"
+    },
+    {
+      "tag": "0051_installation_permissions",
+      "sha256": "8a489b058e5b57bc34f22a46e32d11d4d22155926ba0258a7373ff2809972962"
     }
   ],
   "pg": [
@@ -294,6 +298,10 @@
     {
       "tag": "0021_installation_installer",
       "sha256": "ace2209310e9e936215e8f6a27806a8280f8995d9aa1af9a0eb5482da6032eff"
+    },
+    {
+      "tag": "0022_installation_permissions",
+      "sha256": "f77da1f1077b9d619f956ee17df234a81230a84c6f9daaa83ccca0a20c63a12d"
     }
   ]
 }

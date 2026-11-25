@@ -848,6 +848,8 @@ export const githubInstallations = sqliteTable(
     avatarUrl: text("avatar_url"),
     avatarSyncedAt: integer("avatar_synced_at", { mode: "number" }),
     repositorySelection: text("repository_selection").notNull(),
+    /** JSON object of the permissions the installation has accepted, as GitHub reported them; null until read. */
+    permissions: text("permissions"),
     status: text("status").notNull().default("active"),
     createdAt: createdAt(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),

@@ -1,0 +1,1 @@
+ALTER TABLE `github_installations` ADD `permissions` text;

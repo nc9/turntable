@@ -26,6 +26,7 @@ import type { SettingsRuntime } from "../settings/resolve";
 import type { Claim } from "../db/repos";
 import type { AttemptOutcome } from "../scheduler/types";
 import { type CheckRunBody, type CheckRunsApi, CheckRunsError } from "./client";
+import { PermissionNotAcceptedError } from "../github/app-auth";
 import {
   type AttemptResult,
   checkName,
@@ -206,7 +207,12 @@ export class CheckReporter {
       } catch (err) {
         // A refusal (4xx) is final; an outage, a rate limit or an unknown failure (a mint that
         // could not reach GitHub) is retried.
-        const retryable = err instanceof CheckRunsError ? err.retryable : true;
+        const retryable =
+          err instanceof PermissionNotAcceptedError
+            ? false
+            : err instanceof CheckRunsError
+              ? err.retryable
+              : true;
         if (!retryable || attempt >= max) throw err;
         this.#log(`${what} failed (${msg(err)}); retry ${attempt} of ${max - 1}`);
         await sleep((this.#o.baseDelayMs ?? 1000) * 2 ** (attempt - 1));
