@@ -42,6 +42,42 @@ function dispatchConfig(yaml: string): { inputs: Obj } | undefined {
   return { inputs: isObj(cfg) && isObj(cfg.inputs) ? cfg.inputs : {} };
 }
 
+export type DispatchInputDecl = {
+  name: string;
+  type: "string" | "boolean" | "number" | "choice" | "environment";
+  required: boolean;
+  default: string | null;
+  options: string[];
+  description: string | null;
+};
+
+/**
+ * The inputs a workflow declares under `on.workflow_dispatch.inputs`, for a form; undefined when
+ * the workflow does not trigger on workflow_dispatch. Validation stays in validateDispatchInputs.
+ */
+export function describeDispatchInputs(yaml: string): DispatchInputDecl[] | undefined {
+  const cfg = dispatchConfig(yaml);
+  if (!cfg) return undefined;
+  const clip = (v: string, n: number): string => v.replaceAll(/[\r\n]+/g, " ").slice(0, n);
+  return Object.entries(cfg.inputs)
+    .slice(0, MAX_DISPATCH_INPUTS)
+    .map(([name, raw]) => {
+      const d = isObj(raw) ? raw : {};
+      const t = d.type === undefined ? "string" : show(d.type);
+      const type = (["boolean", "number", "choice", "environment"] as const).find((x) => x === t);
+      return {
+        name: clip(name, 100),
+        type: type ?? "string",
+        required: d.required === true,
+        default: d.default === undefined || d.default === null ? null : clip(show(d.default), 500),
+        options: Array.isArray(d.options)
+          ? d.options.slice(0, 100).map((o) => clip(show(o), 200))
+          : [],
+        description: typeof d.description === "string" ? clip(d.description, 300) : null,
+      };
+    });
+}
+
 const show = (v: unknown): string => (typeof v === "string" ? v : String(v));
 
 export function validateDispatchInputs(

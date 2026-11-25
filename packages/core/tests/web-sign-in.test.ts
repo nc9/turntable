@@ -826,6 +826,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       "bind_installation",
       "onboard_repos", // owner or admin onboarding of repos; the op's own `admin` role gates it
       "run_default_branch", // owner or admin starts a default-branch run; same `admin` gate
+      "run_dispatch", // owner or admin starts a workflow_dispatch run; the op's release_operator role gates it (#617)
       "set_setting", // each setting's own role; loosening a trust setting also needs a step-up
       "cancel", // operator role, as for a token; no step-up
       "rerun", // same

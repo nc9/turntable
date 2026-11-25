@@ -62,15 +62,37 @@ export type PreviewJob = {
   reason?: string;
   fix?: string;
 };
+export type DispatchInput = {
+  name: string;
+  type: "string" | "boolean" | "number" | "choice" | "environment";
+  required: boolean;
+  default: string | null;
+  options: string[];
+  description: string | null;
+};
 export type PreviewWorkflow = {
   path: string;
   name: string | null;
   triggers: string[];
   ingested: boolean;
   too_large: boolean;
+  /** The `on.workflow_dispatch` inputs; null when the workflow has no workflow_dispatch trigger. */
+  dispatch_inputs?: DispatchInput[] | null;
   jobs: PreviewJob[];
 };
-export type WorkflowPreview = { sha: string; truncated: boolean; workflows: PreviewWorkflow[] };
+export type WorkflowPreview = {
+  sha: string;
+  truncated: boolean;
+  default_branch?: string;
+  workflows: PreviewWorkflow[];
+};
+export type DispatchedRun = {
+  run_id: string;
+  ref: string;
+  sha: string;
+  trust_class: string;
+  state: "queued" | "awaiting_approval";
+};
 export type DefaultBranchRun = {
   run_id: string;
   sha: string;
@@ -100,6 +122,14 @@ export interface OnboardingApi {
     project: string;
     onboardingId?: string;
   }): Promise<DefaultBranchRun>;
+  /** `run_dispatch`: start a workflow_dispatch run (owner and admin sessions, #617). */
+  runDispatch(args: {
+    org: string;
+    project: string;
+    workflow: string;
+    ref: string;
+    inputs: Record<string, string>;
+  }): Promise<DispatchedRun>;
   getRun(args: { org: string; runId: string }): Promise<WireRunDetail>;
   /**
    * Whether this server publishes the operation (by operationId in its OpenAPI document). A
@@ -238,6 +268,14 @@ export function createOnboardingApi(options: OnboardingApiOptions = {}): Onboard
         "/run-default-branch",
         {},
         { org, project, ...(onboardingId ? { onboarding_id: onboardingId } : {}) },
+      );
+    },
+    runDispatch({ org, project, workflow, ref, inputs }) {
+      return call<DispatchedRun>(
+        "POST",
+        "/dispatches",
+        {},
+        { org, project, workflow, ref, inputs },
       );
     },
     getRun({ org, runId }) {
