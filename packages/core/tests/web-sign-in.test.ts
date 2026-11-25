@@ -760,6 +760,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       "bind_installation",
       "onboard_repos", // owner or admin onboarding of repos; the op's own `admin` role gates it
       "run_default_branch", // owner or admin starts a default-branch run; same `admin` gate
+      "create_onboarding_agent_token", // owner or admin, session only: a reader agent token, 30 days at most, 5 active per org
     ]);
   });
 

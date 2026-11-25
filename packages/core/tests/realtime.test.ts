@@ -278,7 +278,13 @@ test("replay then live has no gap and no duplicate, even with events committing 
   const all = await listEvents(db, a.scope, { after: 0, limit: 1000 });
   expect(all.length).toBe(produced);
   await c.until((m) => m.type === "event" && m.event.cursor === all.at(-1)!.id);
-  expect(events(c).map((e) => e.event.cursor)).toEqual(all.map((e) => e.id));
+  // Connecting is the reader token's first use, so its own `token.first_used` is in the org feed
+  // too (it is org-level, which the project-scoped `all` above does not list): not under test.
+  expect(
+    events(c)
+      .filter((e) => e.event.type !== "token.first_used")
+      .map((e) => e.event.cursor),
+  ).toEqual(all.map((e) => e.id));
   c.close();
 });
 

@@ -550,5 +550,12 @@ export const migrations: Migration[] = [
       "CREATE TABLE `onboardings` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`installation_id` text,\n\t`first_run_id` text,\n\t`agent_token_id` text,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
       "CREATE INDEX `onboardings_org_idx` ON `onboardings` (`org_id`,`created_at`);"
     ]
+  },
+  {
+    "tag": "0049_api_token_first_used",
+    "when": 1795582531669,
+    "statements": [
+      "ALTER TABLE `api_tokens` ADD `first_used_at` integer;"
+    ]
   }
 ];

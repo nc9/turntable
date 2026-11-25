@@ -42,13 +42,20 @@ test("events: ordered feed, cursor continuation, type filter, limit", async () =
     "run.queued",
     "job.state_changed",
     "run.started",
+    "token.first_used",
   ]);
+  // the token's first call stamps it: exactly one token.first_used, after the events already there
+  expect(all.events[3]).toMatchObject({
+    run_id: null,
+    payload: { principal_kind: "agent" },
+  });
+  expect(typeof all.events[3].payload.token_id).toBe("string");
   expect(all.events[0]).toMatchObject({ project: "app", run_id: a.runId, job_id: null });
   expect(all.events[1]).toMatchObject({
     job_id: a.jobId,
     payload: { from: "queued", to: "running" },
   });
-  expect(all.next_after).toBe(all.events[2].cursor);
+  expect(all.next_after).toBe(all.events[3].cursor);
   const cursors = all.events.map((e: { cursor: number }) => e.cursor);
   expect(cursors).toEqual(cursors.toSorted((x: number, y: number) => x - y));
 
@@ -66,17 +73,21 @@ test("events: ordered feed, cursor continuation, type filter, limit", async () =
   expect(replay.events.map((e: { type: string }) => e.type)).toEqual([
     "job.state_changed",
     "run.started",
+    "token.first_used",
     "job.state_changed",
   ]);
+  // later calls by the same token never repeat it
+  expect((await run("events", { types: ["token.first_used"] })).events).toHaveLength(1);
 
   expect((await run("events", { types: ["run.started"] })).events).toHaveLength(1);
   expect((await run("events", { types: ["run.started", "run.queued"] })).events).toHaveLength(2);
   const page = await run("events", { limit: 2 });
   expect(page.events).toHaveLength(2);
-  expect((await run("events", { after: page.next_after, limit: 10 })).events).toHaveLength(2);
+  expect((await run("events", { after: page.next_after, limit: 10 })).events).toHaveLength(3);
 });
 
 test("events: tenant and project scoping", async () => {
+  const pinned = (await mintToken(db, a.scope, "reader")).secret;
   const other = await createProject(db, { orgId: a.orgId }, { slug: "other", name: "other" });
   const otherRun = await createRun(
     db,
@@ -86,12 +97,16 @@ test("events: tenant and project scoping", async () => {
   await transitionJob(db, b.scope, b.jobId, "running");
 
   const orgWide = await run("events");
-  expect(orgWide.events.map((e: { run_id: string }) => e.run_id).toSorted()).toEqual(
+  // the org-wide token's own first_used is org-level (no run), and appears once
+  const firstUsed = orgWide.events.filter((e: { type: string }) => e.type === "token.first_used");
+  expect(firstUsed).toHaveLength(1);
+  expect(firstUsed[0]).toMatchObject({ run_id: null, project: null });
+  const runEvents = orgWide.events.filter((e: { type: string }) => e.type !== "token.first_used");
+  expect(runEvents.map((e: { run_id: string }) => e.run_id).toSorted()).toEqual(
     [a.runId, otherRun.id].toSorted(),
   );
   expect(orgWide.events.every((e: { run_id: string }) => e.run_id !== b.runId)).toBe(true);
 
-  const pinned = (await mintToken(db, a.scope, "reader")).secret;
   const mine = await run("events", {}, pinned);
   expect(mine.events.map((e: { run_id: string }) => e.run_id)).toEqual([a.runId]);
   const narrowed = await run("events", { project: "other" });
@@ -267,6 +282,8 @@ test("REST: events query string carries types as a comma list and long-polls", a
   const api = createRestApi(env);
   const get = (path: string) =>
     api(new Request(`http://x/api/v1${path}`, { headers: { authorization: `Bearer ${token}` } }))!;
+  // warm-up call: the token's first_used event lands before the events asserted on
+  expect((await get("/events?limit=1"))!.status).toBe(200);
   await transitionJob(db, a.scope, a.jobId, "running");
   const res = (await get("/events?types=run.queued,job.state_changed&limit=10"))!;
   expect(res.status).toBe(200);

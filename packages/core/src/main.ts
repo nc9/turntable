@@ -1063,6 +1063,7 @@ async function serve(args: string[]): Promise<void> {
         ...(webAuth ? { webAuth } : {}),
         ...(appFacts ? { githubFacts: appFacts } : {}),
         ...(appUsers ? { githubUsers: appUsers } : {}),
+        publicUrl: values["public-url"] ?? process.env.TURNTABLE_PUBLIC_URL?.trim(),
         runDispatcher: (scope, repo, req) =>
           dispatchRun
             ? dispatchRun(scope, repo, req)

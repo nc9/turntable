@@ -62,3 +62,33 @@ export function setOnboardingFirstRun(
     return rows.length > 0;
   });
 }
+
+/** Records the onboarding agent token on its onboarding. False when the org has no such row. */
+export function setOnboardingAgentToken(
+  db: Db,
+  scope: Scope,
+  id: string,
+  tokenId: string,
+  now: number,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.onboardings)
+      .set({ agentTokenId: tokenId, updatedAt: now })
+      .where(and(eq(s.onboardings.id, id), eq(s.onboardings.orgId, scope.orgId)))
+      .returning({ id: s.onboardings.id });
+    return rows.length > 0;
+  });
+}
+
+/** Whether the run is the first run of SOME onboarding of the org (several may share one). */
+export function isOnboardingFirstRun(db: Db, scope: Scope, runId: string): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({ id: s.onboardings.id })
+      .from(s.onboardings)
+      .where(and(eq(s.onboardings.orgId, scope.orgId), eq(s.onboardings.firstRunId, runId)))
+      .limit(1);
+    return rows.length > 0;
+  });
+}

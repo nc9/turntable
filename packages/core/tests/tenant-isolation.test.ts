@@ -608,12 +608,14 @@ async function fingerprint(w: World, orgId: string): Promise<Record<string, stri
     const mine = rows
       .filter(
         (r) =>
+          // A token's first use by its own owner emits this (and sets first_used_at below).
+          r.type !== "token.first_used" &&
           Object.values(r).includes(orgId) &&
           r[Object.keys(r).find((k) => (t as never)[k] === col) ?? ""] === orgId,
       )
       .map((r) => {
         // A token's last_used_at moves when its owner uses it, not when someone else does.
-        const { lastUsedAt: _l, ...rest } = r as Record<string, unknown>;
+        const { lastUsedAt: _l, firstUsedAt: _f, ...rest } = r as Record<string, unknown>;
         return JSON.stringify(rest, (_k, v) =>
           v instanceof Uint8Array ? Buffer.from(v).toString("hex") : v,
         );
@@ -667,6 +669,10 @@ const UNREACHABLE: Record<string, string> = {
     "needs a configured GitHub App and a repo reader; org B is probed and finds no such project of its own, and the preview itself is in onboarding-repos.test.ts",
   run_default_branch:
     "needs an admin (no token holds that role) and the poller; org B is probed and finds no such project or onboarding of its own, and the run, the onboarding row's org check and the refusals are in onboarding-repos.test.ts",
+  create_onboarding_agent_token:
+    "a web session of an owner or admin only: no token of any role can call it, so every token principal of A and B is refused alike; the org scoping (another org's project and onboarding look like none) and the cap are in onboarding-agent.test.ts",
+  onboarding_ack:
+    "needs the first run of an onboarding row, which the seeded world has none of, so no run of A is reachable; org B's token is probed and gets not_found, and the scope, another org's run and the rate limit are in onboarding-agent.test.ts",
   doctor:
     "instance operators only: no token holds the owner role it needs, so every token principal of A and B is refused alike; it reports instance facts, never an org's rows (doctor.test.ts covers who may call it)",
   get_setting:

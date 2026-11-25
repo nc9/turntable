@@ -119,6 +119,8 @@ export type ServeOptions = {
   defaultBranchRunner?: DefaultBranchRunner;
   /** Resolves a GitHub login to its numeric id, for invites. */
   githubUsers?: GithubUserLookup;
+  /** The instance's public base URL (TURNTABLE_PUBLIC_URL), for the onboarding token's MCP URL. */
+  publicUrl?: string | undefined;
   /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
   appManifest?: HostedManifestHandler;
   /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
@@ -155,6 +157,7 @@ export function startServer(options: ServeOptions) {
     userGithub: options.webAuth?.userGithub,
     githubFacts: options.githubFacts,
     githubUsers: options.githubUsers,
+    publicUrl: options.publicUrl,
     runDispatcher: options.runDispatcher,
     repoReader: options.repoReader,
     defaultBranchRunner: options.defaultBranchRunner,

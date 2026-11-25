@@ -38,6 +38,8 @@ const MCP_OFF: Record<string, string> = {
   accept_action_move: "a trust decision: it blesses a moved action tag for protected runs",
   incident_unfreeze: "reversing the safety stop is human-only (freezing stays on MCP)",
   create_api_token: "token minting: never into an agent's context, and no agent role can call it",
+  create_onboarding_agent_token:
+    "mints a credential from a signed-in web session: an agent must not mint its own token",
   sign_release: "signature op: a human-signed assertion, never a token",
   approve_environment: "signature op: a human-signed statement, never a token",
   approve_release:

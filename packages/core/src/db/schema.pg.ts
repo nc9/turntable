@@ -72,6 +72,8 @@ export const EVENT_TYPES = [
   "org.member_invited",
   "org.member_joined",
   "installation_claim.updated",
+  "token.first_used",
+  "onboarding.agent_ack",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -510,6 +512,8 @@ export const apiTokens = pgTable(
     createdBy: text("created_by").notNull(),
     createdAt: createdAt(),
     lastUsedAt: bigint("last_used_at", { mode: "number" }),
+    /** Set once, by the first authenticated call (a conditional update), never cleared. */
+    firstUsedAt: bigint("first_used_at", { mode: "number" }),
     expiresAt: bigint("expires_at", { mode: "number" }),
     revokedAt: bigint("revoked_at", { mode: "number" }),
   },
