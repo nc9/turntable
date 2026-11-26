@@ -583,6 +583,13 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Build input for the web UI bundle: the commit baked into the UI by `packages/ui/scripts/build-bundle.ts`, compared with the server's `build_sha`. Set by `scripts/build.ts`; never set by hand.",
   },
   {
+    name: "TURNTABLE_NOTIFICATIONS",
+    area: "Server",
+    default: "on",
+    description:
+      "`0` (or `off`) stops the notification rule engine (an operator kill switch). Notifications already written stay readable; when it is turned back on, the engine resumes from its cursor in the event feed.",
+  },
+  {
     name: "TURNTABLE_EGRESS_PROBE_SECONDS",
     area: "Server",
     default: "off",

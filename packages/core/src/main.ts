@@ -908,7 +908,14 @@ async function serve(args: string[]): Promise<void> {
   let jobOidc: JobOidc | undefined;
   // The notification rule engine (#611): reads the event feed, writes per-person rows. Needs no
   // key, so it runs with or without a master key, in the process that serves the API.
-  if (roles.has("web")) {
+  // TURNTABLE_NOTIFICATIONS=0 (or off) stops the engine (an operator kill switch, 2026-11-26): rows
+  // already written stay readable; events are read again from the engine's cursor when it is on.
+  const notificationsOff = ["0", "off", "false"].includes(
+    process.env.TURNTABLE_NOTIFICATIONS?.trim().toLowerCase() ?? "",
+  );
+  if (notificationsOff)
+    console.warn("[turntable] notification engine disabled (TURNTABLE_NOTIFICATIONS)");
+  if (roles.has("web") && !notificationsOff) {
     auditStops.push(
       new NotificationEngine({
         db,
