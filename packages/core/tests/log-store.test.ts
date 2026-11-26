@@ -350,6 +350,8 @@ describe("store outage", () => {
     // It recovers when the store comes back: what was queued is delivered.
     await Bun.sleep(80);
     fake.hang = false;
+    // A request already in flight when the store came back may still time out: flush joins it.
+    await store.flush().catch(() => {});
     await store.flush();
     expect(fake.rows.length).toBe(2000 - drops.length);
     expect(store.queued.failing).toBe(false);
