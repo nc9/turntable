@@ -15,3 +15,7 @@
 - The config version is recorded when the lane approves a release (when it signs), not when the human's approval statement was given in the main database. Carrying the version into the approval request itself would also cover a change between the human approval and the lane's signing.
 - The config channel needs the release proxy and channel to be on (`TURNTABLE_RELEASE_PROXY_PORT` and `TURNTABLE_RELEASE_CHANNEL_KEY_FILE`); a lane that publishes only in strict mode with no proxy cannot be configured this way yet.
 - A refused lane call (lane down, bad key) happens after the step-up is spent. A preflight that checks the lane is reachable before the dispatcher spends it would save the approver a second tap.
+
+## Read-acknowledged output cap (#690)
+
+- Replace the sandbox's drop-the-middle output cap with a read-acknowledged one. Today a sandbox keeps the first 1 MiB and the last 64 MiB of a step's raw output (`OUTPUT_TAIL_BYTES` in `packages/provider-sdk/src/cap-output.ts`) and drops the middle when the controller has not read it in time. The root fix is a provider contract where the sandbox only discards output the controller has acknowledged reading, plus provider-conformance cases for it. Acceptance: the contract is in `docs/providers.mdx`; a conformance test shows an unread range is never dropped (the exec blocks or is bounded by disk, not by a cut); a slow reader produces no `job_cuts` entry; the 64 MiB tail cap then only applies to acknowledged output. Priority P1.
