@@ -45,13 +45,36 @@ export function resolveBuildSha(root: string): string {
   return /^[0-9a-f]{40}$/.test(shaRaw) ? shaRaw : "unknown";
 }
 
-/** SOURCE_DATE_EPOCH, else HEAD's committer date, else "unknown". Never the wall clock. */
+/** A BUILD_TIME value: ISO 8601 with a date and time, or epoch seconds. Undefined when malformed. */
+export function parseBuildTime(raw: string): string | undefined {
+  const v = raw.trim();
+  if (/^\d{1,12}$/.test(v)) return new Date(Number(v) * 1000).toISOString();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/.test(v)) {
+    return undefined;
+  }
+  const t = new Date(v);
+  return Number.isNaN(t.getTime()) ? undefined : t.toISOString();
+}
+
+/**
+ * SOURCE_DATE_EPOCH, else the first line of a BUILD_TIME file at `root` (the commit's committer
+ * date, ISO 8601 or epoch seconds), else HEAD's committer date, else "unknown". A malformed file
+ * is ignored, like BUILD_SHA. Never the wall clock.
+ */
 export function resolveBuildTime(
   env: Record<string, string | undefined>,
   gitDate: () => string | undefined,
+  root?: string,
 ): string {
   const epoch = env.SOURCE_DATE_EPOCH?.trim();
   if (epoch && /^\d+$/.test(epoch)) return new Date(Number(epoch) * 1000).toISOString();
+  if (root !== undefined) {
+    const file = join(root, "BUILD_TIME");
+    if (existsSync(file)) {
+      const fromFile = parseBuildTime(readFileSync(file, "utf8").split("\n")[0] ?? "");
+      if (fromFile !== undefined) return fromFile;
+    }
+  }
   const d = gitDate();
   if (d) {
     const t = new Date(d);
