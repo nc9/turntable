@@ -2,6 +2,7 @@
 // cookie (the account operations accept nothing else). Unlike the org client it takes the org as
 // an argument on every call, because the wizard lives at /onboarding, where the URL names no org.
 // Every refusal is thrown with the server's own text so the wizard can show it plainly.
+import { versionAwareFetch } from "@/lib/build-version";
 import { ApiError } from "./http-adapter";
 import { refusalMessage } from "./refusal";
 import type { WireError, WireRunDetail } from "./wire";
@@ -202,7 +203,7 @@ export type OnboardingApiOptions = {
 };
 
 export function createOnboardingApi(options: OnboardingApiOptions = {}): OnboardingApi {
-  const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+  const doFetch = options.fetch ?? versionAwareFetch;
   const base = `${options.baseUrl ?? ""}/api/v1`;
 
   async function call<T>(

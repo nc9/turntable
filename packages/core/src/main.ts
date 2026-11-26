@@ -116,7 +116,7 @@ import { staticPollKey } from "./ops/project-setup";
 import { startServer } from "./server";
 import { enableDevUi, hasUi } from "./ui-assets";
 import { transportOptionsFromEnv } from "./transport";
-import { VERSION } from "./version";
+import { VERSION, assertValidVersion } from "./version";
 
 const USAGE = `turntable ${VERSION}
 
@@ -554,6 +554,7 @@ function readProxyTls(): { key: string; cert: string } {
 }
 
 async function serve(args: string[]): Promise<void> {
+  assertValidVersion();
   // Every option has an environment variable (serve-config.ts), so a platform with no shell
   // configures the whole server from variables. A flag wins over its variable.
   const d = serveDefaults(process.env);

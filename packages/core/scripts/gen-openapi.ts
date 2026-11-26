@@ -8,11 +8,11 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { registry } from "../src/ops";
-import { buildOpenApi } from "../src/ops/openapi";
+import { OPENAPI_DOC_VERSION, buildOpenApi } from "../src/ops/openapi";
 
 const out = join(import.meta.dir, "../../../docs/openapi.json");
 // A fixed version: the committed document must not change with each build.
-const next = `${JSON.stringify(buildOpenApi(registry, "0.0.0-dev"), null, 2)}\n`;
+const next = `${JSON.stringify(buildOpenApi(registry, OPENAPI_DOC_VERSION), null, 2)}\n`;
 if (process.argv.includes("--check")) {
   let cur = "null";
   try {

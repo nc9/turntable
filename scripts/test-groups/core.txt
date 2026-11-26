@@ -3,3 +3,5 @@ packages/core/tests/server.test.ts
 packages/core/tests/job-state.test.ts
 packages/core/tests/missing-tool-watch.test.ts
 packages/core/tests/project-setup.test.ts
+packages/core/tests/version.test.ts
+packages/core/tests/version-header.test.ts

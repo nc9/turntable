@@ -1,6 +1,7 @@
 import type { ApiCapabilities, TurntableApi } from "./client";
 import { refusalMessage } from "./refusal";
 import { stepEvents } from "./step-events";
+import { observeServerVersion } from "@/lib/build-version";
 import type {
   ActivityRun,
   ApprovalChallenge,
@@ -101,6 +102,8 @@ export class ApiError extends Error {
 }
 
 export type HttpApiOptions = {
+  /** Receives the `Turntable-Version` header of every response (default: the update prompt). */
+  observeVersion?: (version: string | null) => void;
   /** Where `/api/v1` lives; empty for same-origin. */
   baseUrl?: string;
   /** The org slug requests are made for. */
@@ -284,6 +287,7 @@ const LANE_PATHS: Record<LaneAction, string> = {
 
 export function createHttpApi(options: HttpApiOptions): TurntableApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+  const observe = options.observeVersion ?? observeServerVersion;
   const base = `${options.baseUrl ?? ""}/api/v1`;
   /** attemptId -> where to read its log, learned from get_run. */
   const attempts = new Map<string, { jobId: string; attempt: number; state: JobState }>();
@@ -318,6 +322,8 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       credentials: viaSession ? "same-origin" : "omit",
       referrerPolicy: "no-referrer",
     });
+    // Errors and 401s carry the header too, so look before the status check.
+    observe(res.headers.get("turntable-version"));
     if (!res.ok) {
       let code = "internal";
       let message = `Request failed (${res.status})`;

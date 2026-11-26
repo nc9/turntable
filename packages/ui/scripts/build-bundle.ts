@@ -17,7 +17,7 @@ function walk(dir: string): string[] {
 }
 
 /** Builds the UI and returns the absolute paths of every emitted file. */
-export async function buildUi(): Promise<string[]> {
+export async function buildUi(opts?: { version: string; sha: string }): Promise<string[]> {
   rmSync(uiDist, { recursive: true, force: true });
   mkdirSync(uiDist, { recursive: true });
   const result = await Bun.build({
@@ -37,6 +37,8 @@ export async function buildUi(): Promise<string[]> {
     define: {
       "process.env.NODE_ENV": JSON.stringify("production"),
       "process.env.TURNTABLE_UI_BACKEND": JSON.stringify(process.env.TURNTABLE_UI_BACKEND ?? ""),
+      "process.env.TURNTABLE_UI_VERSION": JSON.stringify(opts?.version ?? ""),
+      "process.env.TURNTABLE_UI_SHA": JSON.stringify(opts?.sha ?? ""),
     },
   });
   if (!result.success) {
