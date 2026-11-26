@@ -15619,6 +15619,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
