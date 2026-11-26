@@ -8,6 +8,8 @@ import {
   applyEnvironmentApproval,
   applyReleaseApproval,
   applyKeyPolicyApproval,
+  applyApprovalPolicySignature,
+  buildApprovalPolicyStatement,
   buildKeyPolicyStatement,
   enrolmentQuorum,
   liveEnvironmentRecords,
@@ -22,6 +24,7 @@ import {
   releaseStatementSchema,
   enrolStatementSchema,
   policyStatementSchema,
+  approvalPolicyStatementSchema,
   policyDigest,
   envStatementSchema,
   keyFingerprint,
@@ -55,6 +58,7 @@ import {
   insertChallenge,
   insertEnrolment,
   listApprovers,
+  listAuditByOp,
   listEnrolmentRecords,
   listEnvironmentRecords,
   listEnvPolicies,
@@ -94,7 +98,7 @@ const rp = (ctx: OpContext) => {
  */
 async function itemChanged(
   ctx: OpContext,
-  kind: "enrolment_approval" | "key_policy_approval",
+  kind: "enrolment_approval" | "key_policy_approval" | "approval_policy_approval",
   itemId: string,
   change: "pending" | "approved" | "resolved",
 ): Promise<void> {
@@ -273,6 +277,18 @@ export const approversOverview = defineOp({
     warnings: z
       .array(z.string())
       .describe("Ways the approval setup is weaker than it looks, such as too few approvers."),
+    instance_loosenings: z
+      .array(
+        z.object({
+          at: z.string(),
+          by: z.string().describe("The instance administrator's principal id."),
+          reason: z.string().describe("The reason the administrator gave. Untrusted text."),
+          loosened: z.array(z.string()),
+        }),
+      )
+      .describe(
+        "The newest loosenings of this org's approval policy made by the instance administrator (`approval_policy.loosened_by_instance` in the org's audit chain), newest first.",
+      ),
   }),
   effect: "read",
   auth: { type: "token", minRole: "reader" },
@@ -330,6 +346,26 @@ export const approversOverview = defineOp({
       pending_enrolments: pending,
       policies,
       warnings: await approvalWarnings(ctx.db, orgId, [...names]),
+      instance_loosenings: (
+        await listAuditByOp(
+          ctx.db,
+          { orgId },
+          { op: "approval_policy.loosened_by_instance", outcome: "ok", limit: 5 },
+        )
+      ).map((r) => {
+        let input: { reason?: string; loosened?: string[] } = {};
+        try {
+          input = JSON.parse(r.input) as typeof input;
+        } catch {
+          // an entry truncated at the audit size limit still shows who and when
+        }
+        return {
+          at: iso(r.createdAt)!,
+          by: r.principalId,
+          reason: input.reason ?? "",
+          loosened: input.loosened ?? [],
+        };
+      }),
     };
   },
 });
@@ -733,6 +769,84 @@ export const approveKeyPolicy = defineOp({
       policyDigest(input.statement),
       r.applied ? "resolved" : "approved",
     );
+    return r;
+  },
+});
+
+// ---- approval policy loosening (#664) ----
+
+export const approvalPolicyChallenge = defineOp({
+  name: "approval_policy_challenge",
+  summary: "Issue the statement an approver signs to let an environment's approval policy loosen.",
+  description:
+    "Builds the statement (the org, the environment, the effective policy being replaced, the one " +
+    "that replaces it, an expiry and a nonce) and the single-use challenge for one approver to " +
+    "sign. Loosening means fewer approvers, the author allowed, or an environment no longer " +
+    "waiting for approval. In an org with two or more counted approvers the org's owner can " +
+    "loosen only after a quorum of them signed this statement with approve_approval_policy. " +
+    "Refused for a change that does not loosen. Needs release_operator. Not available over MCP.",
+  input: z.object({
+    environment: z.string().min(1).max(100),
+    required: z.int().min(1).max(10),
+    allow_author_approval: z.boolean().default(false),
+    key_policy: z.enum(["any", "hardware"]).optional(),
+    approver: z.string().min(1).max(64),
+  }),
+  output: challengeOutput,
+  effect: "write",
+  auth: { type: "token", minRole: "release_operator" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/approvers/approval-policy/challenge" },
+  mcp: false,
+  async handler(ctx, input) {
+    const now = ctx.now();
+    const org = await getOrgById(ctx.db, ctx.scope.orgId);
+    const statement = approvalPolicyStatementSchema.parse(
+      await buildApprovalPolicyStatement(ctx.db, ctx.scope.orgId, org!.slug, input, {
+        approver: input.approver,
+        expiresAt: now + DEFAULT_APPROVAL_TTL_MS,
+        nonce: nonce(),
+        rt: ctx.settings,
+      }),
+    );
+    const hash = statementHash(statement);
+    const approver = await openChallenge(ctx, "policy", statement, hash, input.approver);
+    return {
+      statement,
+      canonical: canonicalStatement(statement),
+      statement_hash: hash,
+      challenge: challengeOf(statement),
+      rp_id: ctx.webauthn?.rpId ?? null,
+      passkey_id: approver.credentialId,
+      challenge_expires_at: iso(now + CHALLENGE_TTL_MS)!,
+    };
+  },
+});
+
+export const approveApprovalPolicy = defineOp({
+  name: "approve_approval_policy",
+  summary: "Sign an approval policy loosening. Human only.",
+  description:
+    "Records one approver's signed statement for loosening one environment's approval policy. " +
+    "It changes nothing by itself: the org's owner then makes the change with " +
+    "set_approval_policy (and a passkey step-up), which needs signatures from the same quorum " +
+    "an approver-key policy change needs. Takes no bearer token: the signature is the credential.",
+  input: z.object({ statement: approvalPolicyStatementSchema, signature: signatureSchema }),
+  output: z.object({ approvals: z.int(), required: z.int(), digest: z.string() }),
+  effect: "write",
+  auth: { type: "signature", minRole: "viewer" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/approvers/approval-policy" },
+  async handler(ctx, input) {
+    const r = await applyApprovalPolicySignature(
+      { db: ctx.db, scope: ctx.scope, now: ctx.now(), rp: ctx.webauthn },
+      input.statement,
+      input.signature,
+      ctx.settings,
+    );
+    await itemChanged(ctx, "approval_policy_approval", r.digest, "approved");
     return r;
   },
 });

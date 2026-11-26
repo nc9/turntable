@@ -12,9 +12,12 @@ import {
   enrolFirstApprover,
   keyPolicyChallenge,
   approveKeyPolicy,
+  approvalPolicyChallenge,
+  approveApprovalPolicy,
   requestEnrolment,
   submitApproval,
 } from "./definitions/approvals";
+import { getApprovalPolicyOp, setApprovalPolicyOp } from "./definitions/approval-policy";
 import { dbBackupOp } from "./definitions/db-backup";
 import { approveRunChallengeOp, approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
@@ -254,6 +257,10 @@ export const registry = createRegistry([
   enrolFirstApprover,
   keyPolicyChallenge,
   approveKeyPolicy,
+  approvalPolicyChallenge,
+  approveApprovalPolicy,
+  getApprovalPolicyOp,
+  setApprovalPolicyOp,
   requestEnrolment,
   submitApproval,
   approveEnvironment,

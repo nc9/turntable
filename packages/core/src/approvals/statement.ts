@@ -145,12 +145,59 @@ export const policyDigest = (s: PolicyStatement): string =>
     )
     .digest("hex");
 
+export const APPROVAL_POLICY_STATEMENT_TYPE = "turntable.approve_approval_policy.v1";
+
+/** One environment's effective approval policy, as a statement binds it. */
+const approvalPolicyShape = z.strictObject({
+  /** False for an environment with no entry that is ungated by default. */
+  gated: z.boolean(),
+  required: z.int().min(1).max(10),
+  allow_author_approval: z.boolean(),
+  key_policy: z.enum(["any", "hardware"]),
+});
+export type ApprovalPolicyShape = z.infer<typeof approvalPolicyShape>;
+
+/**
+ * A loosening of one environment's `approval_policy` (#664). It names the org, the environment,
+ * the effective policy being replaced and the one that replaces it, and the stored setting's
+ * write time when it was issued (`generation`), so it cannot be replayed once the setting moved.
+ */
+export const approvalPolicyStatementSchema = z.strictObject({
+  type: z.literal(APPROVAL_POLICY_STATEMENT_TYPE),
+  org: slug,
+  environment: z.string().min(1).max(100),
+  generation: z.int().min(0),
+  old: approvalPolicyShape,
+  new: approvalPolicyShape,
+  approver: z.string().min(1).max(64),
+  expires_at: z.int().positive(),
+  nonce,
+});
+export type ApprovalPolicyStatement = z.infer<typeof approvalPolicyStatementSchema>;
+
+/** The same change, whoever signs it. */
+export const approvalPolicyDigest = (s: ApprovalPolicyStatement): string =>
+  createHash("sha256")
+    .update(
+      canonicalJson({
+        type: s.type,
+        org: s.org,
+        environment: s.environment,
+        generation: s.generation,
+        old: s.old,
+        new: s.new,
+      }),
+      "utf8",
+    )
+    .digest("hex");
+
 export const statementSchema = z.discriminatedUnion("type", [
   envStatementSchema,
   releaseStatementSchema,
   runStatementSchema,
   enrolStatementSchema,
   policyStatementSchema,
+  approvalPolicyStatementSchema,
 ]);
 export type Statement = z.infer<typeof statementSchema>;
 
