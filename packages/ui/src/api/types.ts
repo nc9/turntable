@@ -443,6 +443,8 @@ export type ApproversOverview = {
   }[];
   /** Ways the approval setup is weaker than it looks, such as too few approvers. */
   warnings: string[];
+  /** The instance administrator's recent loosenings of this org's approval policy, newest first. */
+  instanceLoosenings: { at: number; by: string; reason: string; loosened: string[] }[];
 };
 
 export type EnvironmentApprovalResult = {
@@ -567,6 +569,27 @@ export type Setting = {
   warning: string | null;
   /** A trust setting: only tightened without a passkey confirmation. */
   trust?: "tighten_only";
+};
+
+/** One environment's effective approval policy, defaults filled in (`get_approval_policy`). */
+export type ApprovalPolicyEnv = {
+  environment: string;
+  required: number;
+  allowAuthorApproval: boolean;
+  keyPolicy: "any" | "hardware";
+  /** Whether a job in this environment waits for approval at all. */
+  gated: boolean;
+  source: "configured" | "default";
+};
+
+/** The org's approval policy: the effective map, where it comes from, and whether it is locked. */
+export type ApprovalPolicy = {
+  environments: ApprovalPolicyEnv[];
+  source: SettingSource;
+  locked: boolean;
+  lockedBy: string | null;
+  /** Counted approvers: with two or more, a loosening also needs their signed quorum. */
+  approvers: number;
 };
 
 /** The passkey confirmation a session attaches to a sensitive write (`step_up`). */

@@ -287,6 +287,25 @@ test("signature ops are refused for every principal and token, and absent from t
   // Token ops refuse a signed credential.
   const wrongWay = await dispatch(testEnv, { kind: "signed" }, "list_runs", {});
   expect(!wrongWay.ok && wrongWay.error.code).toBe("forbidden");
+  // #664: the shipped approve_approval_policy (a signed approver statement) is refused for tokens,
+  // owners and sessions alike; only a signed credential reaches it, and the token adapters omit it.
+  const apTok = await mintToken(db, a.scope, "release_operator");
+  const apViaToken = await dispatch(
+    env,
+    { kind: "bearer", token: apTok.secret },
+    "approve_approval_policy",
+    { statement: {}, signature: {} },
+  );
+  expect(!apViaToken.ok && apViaToken.error.code).toBe("signature_required");
+  const apViaOwner = await dispatch(
+    env,
+    { kind: "principal", principal: { kind: "member", id: "o", orgId: a.orgId, role: "owner" } },
+    "approve_approval_policy",
+    { statement: {}, signature: {} },
+  );
+  expect(!apViaOwner.ok && apViaOwner.error.code).toBe("signature_required");
+  expect(registry.tokenOps().map((o) => o.name)).not.toContain("approve_approval_policy");
+  expect(mcpTools(registry).map((t) => t.name)).not.toContain("approve_approval_policy");
   // The shipped registry's signature ops: the human approvals, and sign_release (a refusal).
   expect(
     registry.ops
@@ -294,6 +313,7 @@ test("signature ops are refused for every principal and token, and absent from t
       .map((o) => o.name)
       .toSorted(),
   ).toEqual([
+    "approve_approval_policy",
     "approve_enrolment",
     "approve_environment",
     "approve_key_policy",

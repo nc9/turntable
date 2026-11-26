@@ -501,6 +501,8 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       reason: res.reason,
       ...(res.outputs ? { outputs: res.outputs } : {}),
       ...(res.infraKind ? { infraKind: res.infraKind } : {}),
+      ...(res.errorName ? { errorName: res.errorName } : {}),
+      ...(res.errorCode ? { errorCode: res.errorCode } : {}),
     };
   };
 

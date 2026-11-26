@@ -314,6 +314,7 @@ export type WireApprovers = {
     source: "configured" | "default";
   }[];
   warnings: string[];
+  instance_loosenings: { at: string; by: string; reason: string; loosened: string[] }[];
 };
 
 export type WireChallenge = {

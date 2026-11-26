@@ -18,6 +18,7 @@ import {
 } from "drizzle-orm";
 import { retryableAfterSteps } from "@turntable/act-runner";
 import type { Db } from "..";
+import { sanitizeInfraError } from "../../infra-error-text";
 import { announceCancelled } from "../abort-bus";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
@@ -30,6 +31,7 @@ import {
   type Job,
   type JobAttempt,
   listJobs,
+  readLog,
   type Run,
   setRunStatus,
   transitionJob,
@@ -689,6 +691,8 @@ export type FinishInput = {
   errorClass?: string | null;
   /** For infra_error: the named kind (`INFRA_KINDS`). */
   infraKind?: string | null;
+  /** For infra_error: the underlying error's name and code, kept on the `infra.error` event. */
+  errorDetail?: { name?: string; code?: string };
   /** Reconciler only: finish only if the lease has expired by this time. */
   expiredBefore?: number;
   /** How dependents of this job are resolved. Default: plain `needs`. */
@@ -728,6 +732,9 @@ export function finishAttempt(db: Db, scope: Scope, input: FinishInput): Promise
       exitCode: input.exitCode ?? null,
       errorClass: input.errorClass ?? null,
       ...(input.state === "infra_error" && input.infraKind ? { infraKind: input.infraKind } : {}),
+      ...(input.state === "infra_error" && input.errorDetail
+        ? { errorDetail: input.errorDetail }
+        : {}),
     });
     await tx.orm
       .update(s.jobAttempts)
@@ -981,7 +988,14 @@ export function requeueLostAttemptOnce(
 export function requeueInfraFailureOnce(
   db: Db,
   scope: Scope,
-  input: { attemptId: string; owner: string; kind: string; reason: string; now: number },
+  input: {
+    attemptId: string;
+    owner: string;
+    kind: string;
+    reason: string;
+    errorDetail?: { name?: string; code?: string };
+    now: number;
+  },
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     const [cur] = await tx.orm
@@ -1001,11 +1015,27 @@ export function requeueInfraFailureOnce(
       state: "infra_error",
       errorClass: input.reason.slice(0, 200),
       infraKind: input.kind,
+      ...(input.errorDetail ? { errorDetail: input.errorDetail } : {}),
     });
     await tx.orm
       .update(s.jobAttempts)
       .set({ leaseOwner: null, leaseExpiresAt: null })
       .where(eq(s.jobAttempts.id, cur.id));
+    // One line at the end of the failed attempt's job log: it was retried once, and why.
+    const tail = (await readLog(tx, scope, cur.id)).reduce(
+      (end, c) => Math.max(end, c.offset + c.bytes.length),
+      0,
+    );
+    const why = sanitizeInfraError(input.reason).slice(0, 200);
+    await appendLog(
+      tx,
+      scope,
+      cur.id,
+      tail,
+      new TextEncoder().encode(
+        `infra error (${input.kind}), retrying once on a fresh sandbox: ${why}\n`,
+      ),
+    );
     await transitionJob(tx, scope, cur.jobId, "infra_error", {
       reason: `infra_retry:${input.kind}`,
     });
