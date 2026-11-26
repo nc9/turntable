@@ -1,4 +1,6 @@
 import "./legacy-env-boot";
+import { egressProbeConfigFromEnv, startEgressProbe } from "./egress-probe";
+import { startLoopLag } from "./loop-lag";
 import { readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -54,6 +56,7 @@ import { rewrapMasterKey } from "./secrets/rewrap";
 import { RETIRE_FILE_ENV, retireMasterKeyFile } from "./secrets/retire-key-file";
 import { autoInitMasterKey, autoInitRequested } from "./secrets/autoinit";
 import { appendAudit } from "./db/repos";
+import { backfillApprovalDefaultStrict } from "./db/repos/approval-default";
 import { systemOrgId } from "./audit/failures";
 import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
@@ -479,6 +482,15 @@ async function startBackground(
     log("worker started");
   }
 
+  // Interim egress diagnostics (#693, #698): off unless TURNTABLE_EGRESS_PROBE_SECONDS is set.
+  const egressProbe = egressProbeConfigFromEnv();
+  if (egressProbe) {
+    startEgressProbe(egressProbe, log);
+    // The same switch starts the event-loop stall monitor (#693): stalls over 1 s, with fds.
+    startLoopLag(log);
+    log(`egress probe on: ${egressProbe.hosts.join(", ")} every ${egressProbe.periodSeconds} s`);
+  }
+
   if (pollConfig) {
     if (v.worker && pollConfig.provider !== (v.provider ?? "docker")) {
       throw new Error(
@@ -703,6 +715,9 @@ async function serve(args: string[]): Promise<void> {
   }
   const db = openDatabase(join(dataDir, "turntable.db"));
   await ensureInstance(db);
+  // Before anything serves: orgs that already had two owners or admins keep the strict approval
+  // default after one leaves (#663). Idempotent.
+  await backfillApprovalDefaultStrict(db);
   // A rotation: the previous key is given, so every sealed row moves to the new key before anything
   // reads one. All or nothing; a failure stops the boot.
   if (masterKeys && (masterKeys.previous || releaseKeys?.previous)) {

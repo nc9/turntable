@@ -1115,6 +1115,7 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
           source: p.source,
         })),
         warnings: w.warnings,
+        defaultMode: w.default_mode,
         instanceLoosenings: w.instance_loosenings.map((l) => ({
           at: ms(l.at) ?? 0,
           by: l.by,

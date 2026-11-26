@@ -48,6 +48,7 @@ import {
   getApprover,
   getIdentityByUserId,
   getEnrolment,
+  approvalDefaultMode,
   getEnvPolicy,
   getKeyPolicy,
   getOrgById,
@@ -277,6 +278,11 @@ export const approversOverview = defineOp({
     warnings: z
       .array(z.string())
       .describe("Ways the approval setup is weaker than it looks, such as too few approvers."),
+    default_mode: z
+      .enum(["solo", "strict"])
+      .describe(
+        "The built-in default for `production` and `release` where no policy entry is set: `solo` (one approver, the author may approve) while the org has at most one owner or admin, `strict` (two people, author excluded) once it has had two. It never goes back to solo.",
+      ),
     instance_loosenings: z
       .array(
         z.object({
@@ -317,6 +323,7 @@ export const approversOverview = defineOp({
       });
     }
     const configured = await listEnvPolicies(ctx.db, orgId, ctx.settings);
+    const defaultMode = await approvalDefaultMode(ctx.db, orgId);
     const names = new Set([...PROTECTED_ENVIRONMENTS, ...configured.map((p) => p.environment)]);
     const policies = [];
     for (const environment of [...names].toSorted()) {
@@ -345,6 +352,7 @@ export const approversOverview = defineOp({
       key_policy: keyPolicy,
       pending_enrolments: pending,
       policies,
+      default_mode: defaultMode,
       warnings: await approvalWarnings(ctx.db, orgId, [...names]),
       instance_loosenings: (
         await listAuditByOp(

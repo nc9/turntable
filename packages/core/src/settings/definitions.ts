@@ -282,7 +282,7 @@ export const approvalPolicySetting = defineSetting({
   instanceAdminOnly: true,
   mcpEditable: false,
   mcpReason: "it decides how many people must approve a release, so only a person changes it",
-  description: `Approval policy per environment, a map from environment name to \`required\` (distinct approvers, 1 to ${MAX_REQUIRED_APPROVALS}), \`allow_author_approval\` (default false) and \`key_policy\` (\`any\` or \`hardware\`, default \`any\`). An environment with no entry is \`production\` and \`release\` at two approvers and every other one ungated.`,
+  description: `Approval policy per environment, a map from environment name to \`required\` (distinct approvers, 1 to ${MAX_REQUIRED_APPROVALS}), \`allow_author_approval\` (default false) and \`key_policy\` (\`any\` or \`hardware\`, default \`any\`). An environment with no entry is \`production\` and \`release\` at two approvers (the author excluded) and every other one ungated; while an org has exactly one owner or admin, those two default to one approver who may be the author, and the org moves to two for good when a second joins.`,
   warning:
     "Lowering this weakens human approval: one approver, the author approving their own run, or any key instead of a hardware key. A solo setup needs it; a team does not.",
   loosens: approvalPolicyLoosening,

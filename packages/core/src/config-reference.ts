@@ -582,6 +582,27 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     description:
       "Build input for the web UI bundle: the commit baked into the UI by `packages/ui/scripts/build-bundle.ts`, compared with the server's `build_sha`. Set by `scripts/build.ts`; never set by hand.",
   },
+  {
+    name: "TURNTABLE_SLOW_SQL_MS",
+    area: "Server",
+    default: "off",
+    description:
+      "Interim diagnostics (10 to 600000 ms): log every SQLite statement that takes at least this long, with its parameterized SQL text (never the bound values). SQLite calls are synchronous, so a slow one stalls the whole server. Unset turns it off.",
+  },
+  {
+    name: "TURNTABLE_EGRESS_PROBE_SECONDS",
+    area: "Server",
+    default: "off",
+    description:
+      "Interim egress diagnostics (10 to 3600 seconds): every period the server resolves each probe host and sends it one unauthenticated HEAD, logging failures and slow calls with DNS and HTTP timings and the error code, and an OK line every ten minutes. The same switch starts an event-loop stall monitor that logs any stall over 1 s with the open file-descriptor count. Unset turns both off.",
+  },
+  {
+    name: "TURNTABLE_EGRESS_PROBE_HOSTS",
+    area: "Server",
+    default: "github.com,app.daytona.io",
+    description:
+      "Comma-separated host names (1 to 5) the egress probe resolves and sends one HEAD. Host names only; the probe never sends a credential. `api.github.com` is refused here (its anonymous requests share the poller's REST budget); it is always probed by DNS lookup only.",
+  },
   // ---- the checkout child (control plane fetches a run's commit without git) ----
   {
     name: "TURNTABLE_CHECKOUT_TIMEOUT_SECONDS",

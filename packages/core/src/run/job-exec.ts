@@ -478,6 +478,19 @@ export class MissingToolWatch {
   }
 }
 
+const clock = (ms: number): string => new Date(ms).toISOString().slice(11, 19);
+
+/** The line that stands in the stored log for output that could not be retrieved. UTC times. */
+export function cutMarker(
+  bytes: number,
+  fromMs: number,
+  toMs: number,
+  reason: string,
+  atLineStart: boolean,
+): string {
+  return `${atLineStart ? "" : "\n"}[turntable] ${bytes} bytes of output from ${clock(fromMs)} to ${clock(toMs)} could not be retrieved: ${reason}\n`;
+}
+
 /** Redacts text, shows it, and stores it in order with byte offsets (offsets of what is stored). */
 export class LogPipe {
   stored = 0;
@@ -485,6 +498,7 @@ export class LogPipe {
   readonly #env: JobEnv;
   readonly #attemptId: string;
   #lastPush = Date.now();
+  #atLineStart = true;
   #writes: Promise<void> = Promise.resolve();
 
   constructor(env: JobEnv, attemptId: string) {
@@ -508,11 +522,14 @@ export class LogPipe {
 
   /**
    * Records, as metadata at the current position of the stored log, that `omittedBytes` of output
-   * were dropped. Nothing is written into the log text. What was held for redaction is flushed
-   * first and redaction starts afresh after the cut, so text from either side of the gap is
-   * never joined.
+   * were dropped, and writes a marker line after it so a reader of the text sees the gap too
+   * (the log is never silently short). The metadata (`log_cuts`, `log_incomplete`) is the
+   * authoritative record: a job can print the same words, which only makes a false alarm. What
+   * was held for redaction is flushed first and redaction starts afresh after the cut, so text
+   * from either side of the gap is never joined.
    */
-  cut(omittedBytes: number): void {
+  cut(omittedBytes: number, reason = "output cap"): void {
+    const from = this.#lastPush;
     this.#emit(this.#redactor.end());
     this.#redactor = new Redactor({ registry: this.#env.registry });
     const atOffset = this.stored;
@@ -521,9 +538,14 @@ export class LogPipe {
         this.#env.store.addCut?.(this.#attemptId, {
           atOffset,
           omittedBytes,
-          reason: "output cap",
+          reason,
         }) ?? Promise.resolve(),
     );
+    const why =
+      reason === "output cap"
+        ? "the sandbox kept only the first and last part of the output (output cap)"
+        : reason;
+    this.#emit(cutMarker(omittedBytes, from, Date.now(), why, this.#atLineStart));
   }
 
   /** Flushes the held tail and waits for every pending write. */
@@ -535,6 +557,7 @@ export class LogPipe {
   #emit(text: string): void {
     if (text === "") return;
     this.#env.out(text);
+    this.#atLineStart = text.endsWith("\n");
     const bytes = enc.encode(text);
     const at = this.stored;
     this.stored += bytes.length;

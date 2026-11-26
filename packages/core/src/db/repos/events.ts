@@ -402,3 +402,19 @@ export function listCuts(db: Db, scope: Scope, attemptId: string): Promise<LogCu
       .orderBy(asc(s.logCuts.atOffset)),
   );
 }
+
+/** Which of these attempts have a stored log with bytes missing (a row in `log_cuts`). */
+export async function attemptsWithCuts(
+  db: Db,
+  scope: Scope,
+  attemptIds: readonly string[],
+): Promise<Set<string>> {
+  if (attemptIds.length === 0) return new Set();
+  const rows = await db.run((h) =>
+    h.orm
+      .selectDistinct({ id: s.logCuts.attemptId })
+      .from(s.logCuts)
+      .where(scoped(scope, CUT_COLS, inArray(s.logCuts.attemptId, [...attemptIds]))),
+  );
+  return new Set(rows.map((r) => r.id));
+}

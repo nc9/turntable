@@ -1,6 +1,6 @@
-/** Output retention: first 1 MiB, last 4 MiB, plus slack before a cut is applied. */
+/** Output retention: first 1 MiB, last 64 MiB, plus slack before a cut is applied. */
 export const OUTPUT_HEAD_BYTES = 1024 * 1024;
-export const OUTPUT_TAIL_BYTES = 4 * 1024 * 1024;
+export const OUTPUT_TAIL_BYTES = 64 * 1024 * 1024;
 export const OUTPUT_SLACK_BYTES = 64 * 1024;
 
 export interface CapOptions {

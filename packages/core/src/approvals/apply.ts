@@ -1001,7 +1001,7 @@ export async function approvalPolicySnapshot(
   rt?: SettingsRuntime,
 ): Promise<{ generation: number; old: ApprovalPolicyShape; map: ApprovalPolicyMap }> {
   const cur = await resolveApprovalPolicies(db, orgId, rt);
-  const e = effective(cur.value, environment);
+  const e = effective(cur.value, environment, cur.defaultMode);
   return {
     generation: await approvalPolicyGeneration(db, orgId),
     old: shapeOf(e.entry, e.gated),

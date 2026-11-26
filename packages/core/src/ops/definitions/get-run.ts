@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getRunRow, listJobs, listRunAttempts, PREEMPTED } from "../../db/repos";
+import { attemptsWithCuts, getRunRow, listJobs, listRunAttempts, PREEMPTED } from "../../db/repos";
 import { APPROVAL_KINDS } from "../../db/schema";
 import { durationMs, iso, jobStateSchema, runSummarySchema, toRunSummary } from "../common";
 import { defineOp } from "../define";
@@ -23,6 +23,11 @@ const attemptSchema = z.object({
     .string()
     .nullable()
     .describe("When the provider confirmed the destroy; null if never confirmed."),
+  log_incomplete: z
+    .boolean()
+    .describe(
+      "True when the stored log of this attempt is missing output that could not be retrieved (see job_cuts for where). The text also carries a `[turntable] ... could not be retrieved` line at each gap.",
+    ),
   sandbox_seconds: z
     .number()
     .nullable()
@@ -149,6 +154,11 @@ export const getRun = defineOp({
       listJobs(ctx.db, ctx.scope, run.id),
       listRunAttempts(ctx.db, ctx.scope, run.id),
     ]);
+    const incomplete = await attemptsWithCuts(
+      ctx.db,
+      ctx.scope,
+      attempts.map((a) => a.id),
+    );
     const decision = run.trust ? (JSON.parse(run.trust) as Record<string, unknown>) : undefined;
     const approval = run.approval
       ? (JSON.parse(run.approval) as {
@@ -200,6 +210,7 @@ export const getRun = defineOp({
             started_at: iso(a.startedAt),
             finished_at: iso(a.finishedAt),
             duration_ms: durationMs(a.startedAt, a.finishedAt),
+            log_incomplete: incomplete.has(a.id),
             sandbox_created_at: iso(a.sandboxCreatedAt),
             sandbox_destroyed_at: iso(a.sandboxDestroyedAt),
             sandbox_seconds:

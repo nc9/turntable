@@ -3,3 +3,4 @@ packages/core/tests/repo-archive.test.ts
 packages/core/tests/run-workflow.test.ts
 packages/core/tests/safe-read.test.ts
 packages/core/tests/log-cut.test.ts
+packages/core/tests/log-incomplete.test.ts

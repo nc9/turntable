@@ -26,18 +26,21 @@ function pipe() {
 }
 
 describe("LogPipe.cut (#56)", () => {
-  test("a cut is metadata at the stored offset and adds nothing to the log text", async () => {
+  test("a cut is metadata at the stored offset, followed by one marker line in the log text", async () => {
     const { log, stored, cuts } = pipe();
     log.push("before\n");
     log.cut(4096);
     log.push("after\n");
     await log.close();
-    expect(stored.map((s) => s.text).join("")).toBe("before\nafter\n");
+    expect(stored.map((s) => s.text).join("")).toMatch(
+      /^before\n\[turntable\] 4096 bytes of output from \d\d:\d\d:\d\d to \d\d:\d\d:\d\d could not be retrieved: .+\nafter\n$/,
+    );
     expect(cuts).toEqual([
       { attemptId: "att1", atOffset: "before\n".length, omittedBytes: 4096, reason: "output cap" },
     ]);
-    // The text after the cut starts where the text before it ended: no gap is invented.
-    expect(stored.at(-1)!.at).toBe("before\n".length);
+    // The text after the marker follows it directly: no offset gap is invented.
+    const all = stored.map((s) => s.text).join("");
+    expect(stored.at(-1)!.at).toBe(all.length - "after\n".length);
   });
 
   test("text that looks like the old marker, or like a cut record, is only text", async () => {

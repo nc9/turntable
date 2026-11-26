@@ -692,6 +692,33 @@ export async function checkQuotas(i: DoctorInputs): Promise<DoctorCheck> {
     : pass("quotas", area, "no quotas are set: every org is unlimited (fine for one operator)");
 }
 
+/** How many attempts of the last week stored a log with bytes missing. Warn, never fail. */
+export async function checkIncompleteLogs(i: DoctorInputs): Promise<DoctorCheck> {
+  const area = "logs";
+  if (!i.db)
+    return fail(
+      "incomplete_logs",
+      area,
+      "not checked: the database is not open",
+      "Fix the database first.",
+    );
+  if (!(await i.db.hasTable("log_cuts")))
+    return pass("incomplete_logs", area, "this build records no log cuts");
+  const since = Date.now() - 7 * 86_400_000;
+  const rows = await i.db.all(
+    sql`SELECT count(DISTINCT c.attempt_id) AS n FROM log_cuts c JOIN job_attempts a ON a.id = c.attempt_id WHERE a.started_at >= ${since}`,
+  );
+  const n = Number(rows[0]?.n ?? 0);
+  if (n === 0)
+    return pass("incomplete_logs", area, "no job log of the last 7 days is missing output");
+  return warn(
+    "incomplete_logs",
+    area,
+    `${n} job attempt(s) of the last 7 days stored a log with output missing`,
+    "Each has a `[turntable] ... could not be retrieved` line and `log_incomplete` on get_run. The sandbox keeps the first 1 MiB and last 64 MiB of output and drops the middle if the controller could not read it in time (a slow provider). Check the provider's health and the server log for log-poll retries.",
+  );
+}
+
 export async function checkHumanApprovalApprovers(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "approvals";
   const id = "human_approval_approvers";
@@ -874,6 +901,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("release_config_channel", "release", () => checkConfigChannel(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
     ...(await safe("limit_locks", "limits", () => checkLimitLocks(i))),
+    ...(await safe("incomplete_logs", "logs", () => checkIncompleteLogs(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
     ...(await safe("draining", "scheduler", () => checkDraining())),
     ...(await safe("human_approval_approvers", "approvals", () => checkHumanApprovalApprovers(i))),

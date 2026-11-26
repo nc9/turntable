@@ -443,6 +443,8 @@ export type ApproversOverview = {
   }[];
   /** Ways the approval setup is weaker than it looks, such as too few approvers. */
   warnings: string[];
+  /** The built-in default for `production` and `release` where no entry is set (#663). */
+  defaultMode: "solo" | "strict";
   /** The instance administrator's recent loosenings of this org's approval policy, newest first. */
   instanceLoosenings: { at: number; by: string; reason: string; loosened: string[] }[];
 };
