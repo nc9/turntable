@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { connect } from "node:net";
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import {
   existsSync,
@@ -28,6 +29,8 @@ import {
   type LaneSpawner,
 } from "../src/release/supervisor";
 import { cosignKeyId } from "../src/release/cosign";
+import { ReleaseProxy } from "../src/release/proxy";
+import { SecretVault } from "../src/secrets/vault";
 import { releaseEnvPresent, resolveRoles } from "../src/roles";
 import { mintToken, seedTenant, type Tenant } from "./ops-helpers";
 
@@ -513,4 +516,68 @@ describe("through a real child process (fakes for the forge and the signer)", ()
       expect(existsSync(dir)).toBe(false);
     },
   );
+});
+
+describe("the loopback release proxy", () => {
+  test("a request without a registered credential is refused, plain or tunnelled, even from loopback", async () => {
+    const db = openDatabase(":memory:");
+    const attest = new AttestationStore(":memory:");
+    let upstreamCalls = 0;
+    const proxy = await ReleaseProxy.start({
+      db,
+      vault: new SecretVault({ db, masterKey: randomBytes(32), lane: "release" }),
+      attest,
+      bytes: { read: async () => undefined },
+      forge: { tagCommit: async () => ({ found: false }) },
+      githubToken: async () => undefined,
+      bindHost: "127.0.0.1",
+      port: 0,
+      upstream: async () => {
+        upstreamCalls++;
+        return new Response("{}", { status: 201 });
+      },
+      tunnel: async () => {
+        upstreamCalls++;
+        throw new Error("no tunnel");
+      },
+    });
+    try {
+      expect(proxy.host).toBe("127.0.0.1");
+      expect(proxy.port).toBeGreaterThan(0);
+      // a plain proxied request with no credential, and one with a made-up credential
+      for (const headers of [
+        {},
+        { "proxy-authorization": `Basic ${Buffer.from("attempt:guess").toString("base64")}` },
+      ]) {
+        const res = await fetch(`http://127.0.0.1:${proxy.port}/`, {
+          headers: { host: "registry.npmjs.org", ...headers },
+        });
+        expect(res.status).toBe(407);
+      }
+      // a CONNECT with no credential gets the same refusal and no tunnel
+      const reply = await new Promise<string>((resolve, reject) => {
+        const sock = connect(proxy.port, "127.0.0.1", () =>
+          sock.write(
+            "CONNECT registry.npmjs.org:443 HTTP/1.1\r\nHost: registry.npmjs.org:443\r\n\r\n",
+          ),
+        );
+        let buf = "";
+        sock.on("data", (d) => {
+          buf += d.toString();
+          if (buf.includes("\r\n")) {
+            sock.destroy();
+            resolve(buf);
+          }
+        });
+        sock.on("error", reject);
+        sock.on("close", () => resolve(buf));
+      });
+      expect(reply.split("\r\n")[0]).toContain("407");
+      expect(upstreamCalls).toBe(0);
+    } finally {
+      await proxy.stop();
+      attest.close();
+      db.close();
+    }
+  });
 });
