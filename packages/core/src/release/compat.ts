@@ -4,6 +4,7 @@
 // each names one host, one package or repository, and the digests the lane attested, so a job can
 // publish the approved bytes under the approved name and nothing else.
 import { npmPath, type Rule } from "@turntable/proxy";
+import { resolveDistTag } from "./publish/dist-tag";
 import type { GithubReleaseTarget, NpmTarget, OciTarget, PublishTarget } from "./publish/types";
 
 /** The rule `secret` that means the lane's own GitHub write credential (not a vault secret). */
@@ -46,6 +47,9 @@ function npmRules(key: string, t: NpmTarget, r: CompatRelease): Rule[] {
   const digest = r.digests[t.artifact];
   const manifest = r.npmManifests?.[t.artifact];
   if (!digest || !manifest || typeof manifest.version !== "string") return [];
+  const dist = resolveDistTag(t.tag, manifest.version);
+  // No rule for a tag that cannot be derived: the job gets no credential for this publish.
+  if (!dist.ok) return [];
   return [
     {
       id: `${key}:npm`,
@@ -64,7 +68,7 @@ function npmRules(key: string, t: NpmTarget, r: CompatRelease): Rule[] {
         expect: {
           name: t.package,
           version: manifest.version,
-          tag: t.tag,
+          tag: dist.tag,
           access: t.access,
           manifest,
           readmes: r.npmReadmes?.[t.artifact] ?? {},
