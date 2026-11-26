@@ -47,7 +47,8 @@ export const QUOTA_ROWS: {
   },
 ];
 
-export function formatQuotaValue(n: number, unit: "count" | "minutes" | "bytes"): string {
+export function formatQuotaValue(n: number | null, unit: "count" | "minutes" | "bytes"): string {
+  if (n === null) return "—";
   if (unit === "bytes") return formatSize(n);
   if (unit === "minutes") return `${n.toLocaleString("en-US")} min`;
   return n.toLocaleString("en-US");

@@ -537,7 +537,8 @@ export type QuotaMetric =
 
 export type QuotaUsage = {
   metric: QuotaMetric;
-  used: number;
+  /** Null when not measured (log bytes without a limit). */
+  used: number | null;
   limit: number | null;
   /** Percent of the limit, rounded down; null with no limit. */
   percent: number | null;

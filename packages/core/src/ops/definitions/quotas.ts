@@ -24,7 +24,7 @@ export const quotaViewSchema = z.object({
         "log_bytes",
         "stored_bytes",
       ]),
-      used: z.int(),
+      used: z.int().nullable().describe("Null when not measured (log bytes without a limit)."),
       limit: z.int().nullable(),
       percent: z.int().nullable().describe("Percent of the limit, rounded down; null with none."),
       held: z.string().nullable().describe("Why new work is held because of this limit."),
@@ -42,7 +42,7 @@ export async function quotaView(
   orgId: string,
 ) {
   const q = await getOrgQuotas(ctx.db, orgId);
-  const u = await quotaUsage(ctx.db, orgId, ctx.now());
+  const u = await quotaUsage(ctx.db, orgId, ctx.now(), q);
   return {
     limits: {
       max_concurrent: q.maxConcurrent,
