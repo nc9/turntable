@@ -2,6 +2,7 @@
 // for a batch, preview what the workflows would do, and run the default branch once. Built against
 // the shared schemas in ../onboarding-schemas.ts. Every write goes through the same setters as the
 // project-settings and settings ops, so a registry lock or a role refusal applies here too.
+import { instanceOrgCapOf } from "../org-cap";
 import { z } from "zod";
 import {
   appendAudit,
@@ -258,7 +259,7 @@ export const onboardRepos = defineOp({
         ? (await getIdentityByUserId(ctx.db, ctx.principal.id))?.login
         : undefined;
     const by = { id: ctx.principal.id, now: ctx.now() };
-    const cap = ctx.instanceOrgCap;
+    const cap = await instanceOrgCapOf(ctx);
 
     return ctx.db.transaction(
       async (tx) => {

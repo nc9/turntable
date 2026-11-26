@@ -3,6 +3,13 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { sql } from "drizzle-orm";
 import { ingestStatus, POLL_RESERVE } from "../poll/status";
 import { processDrain } from "../scheduler/drain";
+import {
+  providerDaytonaCpuLimitSetting,
+  providerDaytonaMaxLiveSetting,
+  schedulerGlobalCapSetting,
+  schedulerOrgCapSetting,
+} from "../settings/definitions";
+import { envValue } from "../settings/resolve";
 import { open, secretAad } from "../secrets/crypto";
 import { RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV } from "../roles";
 import { anchorKeyMessage } from "../secrets/master-key";
@@ -798,6 +805,37 @@ export function checkDraining(): DoctorCheck {
   return pass("draining", area, "the scheduler is claiming work normally");
 }
 
+/**
+ * A sandbox limit that an environment variable sets is locked: the web UI shows it read-only and
+ * `instance_set_setting` refuses it (#661). Say which variable, so an operator knows why.
+ */
+export function checkLimitLocks(i: DoctorInputs): DoctorCheck {
+  const area = "limits";
+  const locked: string[] = [];
+  for (const def of [
+    schedulerGlobalCapSetting,
+    schedulerOrgCapSetting,
+    providerDaytonaMaxLiveSetting,
+    providerDaytonaCpuLimitSetting,
+  ]) {
+    try {
+      const e = envValue(def, i.env);
+      if (e) locked.push(`${def.key} is locked by ${e.name}`);
+    } catch {
+      // A bad value stops the server at boot with its own message.
+    }
+  }
+  if (locked.length === 0) {
+    return pass("limit_locks", area, "no sandbox limit is locked by an environment variable");
+  }
+  return warn(
+    "limit_locks",
+    area,
+    locked.join("; "),
+    "The web UI shows a locked limit read-only and `instance_set_setting` refuses it. Unset the variable (and restart once) to change the limit live.",
+  );
+}
+
 /** Every check, in a fixed order. A check that throws is reported as a fail, never as a crash. */
 export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
   const safe = async (
@@ -835,6 +873,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("release_channel", "release", () => checkChannel(i))),
     ...(await safe("release_config_channel", "release", () => checkConfigChannel(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
+    ...(await safe("limit_locks", "limits", () => checkLimitLocks(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
     ...(await safe("draining", "scheduler", () => checkDraining())),
     ...(await safe("human_approval_approvers", "approvals", () => checkHumanApprovalApprovers(i))),

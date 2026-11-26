@@ -71,7 +71,15 @@ export type SettingSpec<T> = {
   loosens?: (before: T, after: T) => string[];
   /** Environment variables that set it. The first is the canonical name. */
   env?: readonly string[];
-  /** Turns the raw text of an environment variable into a value for `type`; text by default. */
+  /**
+   * The variables hold a whole document (a provider config) that other settings also read, each
+   * picking its own value out with `envParse`: the shared names are allowed when both say so.
+   */
+  envDocument?: boolean;
+  /**
+   * Turns the raw text of an environment variable into a value for `type`; text by default.
+   * Returning undefined means this variable does not set the setting (the next one is tried).
+   */
   envParse?: (raw: string) => unknown;
   /**
    * Dotted path inside its `turntable.toml` section: `backup.keep` is `keep` in `[backup]`.
@@ -193,7 +201,12 @@ export function createSettingsRegistry(settings: readonly SettingDef[]): Setting
     }
     paths.set(`${d.scope}:${d.key}`, d.toml);
     for (const e of d.env) {
-      if (envNames.has(e)) throw new Error(`${d.key}: ${e} already sets ${envNames.get(e)}`);
+      // A variable that holds a whole document (the provider config) may feed several settings,
+      // each picking its own value out with `envParse`.
+      const prior = envNames.get(e);
+      if (prior !== undefined && !(d.envDocument && byKey.get(prior)?.envDocument)) {
+        throw new Error(`${d.key}: ${e} already sets ${prior}`);
+      }
       envNames.set(e, d.key);
     }
   }

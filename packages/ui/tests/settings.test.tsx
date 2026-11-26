@@ -465,3 +465,52 @@ describe("app secrets rotation notice", () => {
     expect(html).not.toContain("Copy this now");
   });
 });
+
+describe("sandbox limits on the instance settings page (#661)", () => {
+  const limit = (over: Partial<Setting> = {}): Setting =>
+    setting({
+      key: "scheduler_global_cap",
+      scope: "instance",
+      description: "Most jobs running at once across the instance (1 to 10000).",
+      value: 4,
+      default: 4,
+      ...over,
+    });
+
+  test("an unlocked limit shows its source and value, and offers Save for an edit", () => {
+    const html = panel({
+      settings: [limit({ source: "db", value: 8 })],
+      drafts: { scheduler_global_cap: "9" },
+    });
+    expect(html).toContain("scheduler_global_cap");
+    expect(html).toContain(">Save</button>");
+    expect(html).not.toMatch(/<input[^>]*disabled=""/);
+  });
+
+  test("a limit locked by its environment variable is read-only and names the variable", () => {
+    const html = panel({
+      settings: [limit({ source: "env", locked: true, lockedBy: "TURNTABLE_GLOBAL_CAP" })],
+      drafts: { scheduler_global_cap: "9" },
+    });
+    expect(html).toContain("Set by TURNTABLE_GLOBAL_CAP");
+    expect(html).toMatch(/<input[^>]*disabled=""/);
+    expect(html).not.toContain("Reset to default");
+  });
+
+  test("the adapter carries the lock of a limit from the wire", () => {
+    const s = mapSetting(
+      wire({
+        key: "provider_daytona_max_live",
+        scope: "instance",
+        source: "env",
+        locked: true,
+        locked_by: "TURNTABLE_DAYTONA_MAX_LIVE",
+      }),
+    );
+    expect(s).toMatchObject({
+      scope: "instance",
+      locked: true,
+      lockedBy: "TURNTABLE_DAYTONA_MAX_LIVE",
+    });
+  });
+});

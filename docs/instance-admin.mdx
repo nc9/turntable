@@ -84,6 +84,17 @@ curl -fsS -X POST -H "Authorization: Bearer $(cat instance-token.txt)" "$URL/api
 
 Instance tokens are always the operator's: they hold no org role and can't approve runs, so there is no `kind` field.
 
+## Sandbox limits
+
+The scheduler's caps and the Daytona provider's limits are instance settings, so you change them with no restart: `scheduler_global_cap`, `scheduler_org_cap`, `provider_daytona_max_live` and `provider_daytona_cpu_limit`. Set them in the web UI's instance settings page, or with `instance_set_setting` over REST (instance administrator only; no MCP tool sets them). The old variables (`TURNTABLE_GLOBAL_CAP`, `TURNTABLE_ORG_CAP`, `--global-cap`, `--org-cap`) and the provider config's `maxLive` and `ownerCiPreflight.cpuLimit` still work, as locks: a value set there shows as read-only with its source, and `set_setting` is refused with the variable named. `doctor` warns about each limit locked by an environment variable.
+
+The settings page also shows the effective concurrency: the lower of the global cap and the Daytona `max_live` (which applies when Daytona runs the jobs), with the org cap and the vCPU limit beside it. Agents can read the same over MCP with `sandbox_limits` (read-only: the four limits with source and lock). `provider_daytona_max_live` accepts 1 to 500 in the setting and in the provider config, and a value written to the database is validated then, so it can never fail a boot. The vCPU preflight (`provider_daytona_cpu_limit`) is the real capacity guard.
+
+- The claim loop and the provider read the value at claim and create time, cached for a few seconds. Raising a limit takes effect on the next claim. A change made on another server process shows within that time.
+- Lowering a limit never stops a running job or sandbox. New claims and creates wait until usage is under it.
+- `set_quotas` and project `max_concurrent` are refused above the live `scheduler_org_cap`.
+- Every change is audited in the system org's chain with the old and new value.
+
 ## Backups
 
 The image is distroless, so there is no shell to copy the database with. `db_backup` (or `turntable db backup [--keep <n>] [--data-dir ./data]` on the host) writes a consistent copy of the SQLite database with `VACUUM INTO` to a new file, `<data-dir>/backups/turntable-<time>-<version>.db`, and returns its path, size and sha256. Writes in flight do not matter: the copy holds every committed row and none of the uncommitted ones, and it is integrity-checked before it is kept.
