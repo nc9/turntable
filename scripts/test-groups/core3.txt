@@ -13,3 +13,4 @@ packages/core/tests/deploy-gate.test.ts
 packages/core/tests/webhook-format-migration.test.ts
 packages/core/tests/egress-probe.test.ts
 packages/core/tests/loop-lag.test.ts
+packages/core/tests/sqlite-synchronous.test.ts
