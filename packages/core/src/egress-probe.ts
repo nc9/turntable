@@ -6,6 +6,7 @@
 // GitHub web host and the Daytona API host: never api.github.com for the HEAD, whose anonymous
 // requests count against the same per-IP REST budget the anonymous poller uses. api.github.com
 // gets a DNS lookup only.
+import { readFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import { safeFetch } from "@turntable/net";
 
@@ -128,6 +129,29 @@ export function describe(r: ProbeResult): { line: string; bad: boolean } {
   return { line: parts.join(", "), bad };
 }
 
+/**
+ * The resolver configuration lines of /etc/resolv.conf (nameserver, search, options), joined, or
+ * undefined where there is none. Logged once when the probe starts (#693): which resolver the
+ * container uses and with which timeout and attempts. Addresses only; no secrets live there.
+ */
+export function resolverConfig(text?: string): string | undefined {
+  let t = text;
+  if (t === undefined) {
+    try {
+      t = readFileSync("/etc/resolv.conf", "utf8");
+    } catch {
+      return undefined;
+    }
+  }
+  const keep = t
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => /^(nameserver|search|domain|options)\s/.test(l))
+    .map((l) => l.replace(/[^\x20-\x7e]/g, "").slice(0, 200))
+    .slice(0, 12);
+  return keep.length > 0 ? keep.join("; ") : undefined;
+}
+
 /** Starts the probe loop. Returns a stop function. Overlapping probes are skipped, not stacked. */
 export function startEgressProbe(
   cfg: EgressProbeConfig,
@@ -135,6 +159,7 @@ export function startEgressProbe(
   d: ProbeDeps = {},
 ): () => void {
   const now = d.now ?? Date.now;
+  log(`egress probe resolver: ${resolverConfig() ?? "no /etc/resolv.conf"}`);
   let busy = false;
   let lastOk = 0;
   const tick = async (): Promise<void> => {

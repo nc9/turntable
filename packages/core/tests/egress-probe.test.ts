@@ -4,6 +4,7 @@ import {
   egressProbeConfigFromEnv,
   errorCode,
   probeHost,
+  resolverConfig,
   startEgressProbe,
 } from "../src/egress-probe";
 
@@ -119,5 +120,16 @@ group("egress probe", () => {
     await new Promise((r) => setTimeout(r, 20));
     stop();
     expect(lines.some((l) => l.includes("dns failed ENOTFOUND"))).toBe(true);
+  });
+});
+
+group("resolver config", () => {
+  test("keeps nameserver, search and options lines only", () => {
+    expect(
+      resolverConfig(
+        "# generated\nnameserver 10.0.0.2\noptions timeout:5 attempts:2\nsearch railway.internal\nfoo bar\n",
+      ),
+    ).toBe("nameserver 10.0.0.2; options timeout:5 attempts:2; search railway.internal");
+    expect(resolverConfig("# nothing\n")).toBeUndefined();
   });
 });
