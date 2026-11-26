@@ -12340,6 +12340,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -17553,6 +17558,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {

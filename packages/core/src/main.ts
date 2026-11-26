@@ -601,15 +601,20 @@ async function serve(args: string[]): Promise<void> {
   // The operator's size classes first: the org and project label maps may name only those.
   setOperatorSizes(resolveSandboxSizes());
   // `--global-cap` and `--org-cap` on the command line lock their settings like the variables do.
-  const settingsEnv: Record<string, string | undefined> = { ...process.env };
+  // The overrides layer over the live environment through a view, so the environment is never copied.
+  const cliOverrides: Record<string, string | undefined> = {};
   for (const [flag, name] of [
     ["global-cap", "TURNTABLE_GLOBAL_CAP"],
     ["org-cap", "TURNTABLE_ORG_CAP"],
   ] as const) {
     if (process.argv.some((a) => a === `--${flag}` || a.startsWith(`--${flag}=`))) {
-      settingsEnv[name] = values[flag];
+      cliOverrides[name] = values[flag];
     }
   }
+  const settingsEnv = new Proxy(process.env, {
+    get: (target, key) =>
+      typeof key === "string" && key in cliOverrides ? cliOverrides[key] : target[key as string],
+  });
   const settings = loadSettingsRuntime({ config: values.config, env: settingsEnv });
   // The approval engine and the release lane read the approval policy from the same runtime.
   setAmbientSettings(settings);
