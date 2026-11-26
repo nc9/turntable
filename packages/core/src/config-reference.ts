@@ -587,7 +587,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Server",
     default: "off",
     description:
-      "Interim egress diagnostics (10 to 3600 seconds): every period the server resolves each probe host and sends it one unauthenticated HEAD, logging failures and slow calls with DNS and HTTP timings and the error code, and an OK line every ten minutes. Unset turns it off.",
+      "Interim egress diagnostics (10 to 3600 seconds): every period the server resolves each probe host and sends it one unauthenticated HEAD, logging failures and slow calls with DNS and HTTP timings and the error code, and an OK line every ten minutes. The same switch starts an event-loop stall monitor that logs any stall over 1 s with the open file-descriptor count. Unset turns both off.",
   },
   {
     name: "TURNTABLE_EGRESS_PROBE_HOSTS",

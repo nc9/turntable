@@ -1,5 +1,6 @@
 import "./legacy-env-boot";
 import { egressProbeConfigFromEnv, startEgressProbe } from "./egress-probe";
+import { startLoopLag } from "./loop-lag";
 import { readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -485,6 +486,8 @@ async function startBackground(
   const egressProbe = egressProbeConfigFromEnv();
   if (egressProbe) {
     startEgressProbe(egressProbe, log);
+    // The same switch starts the event-loop stall monitor (#693): stalls over 1 s, with fds.
+    startLoopLag(log);
     log(`egress probe on: ${egressProbe.hosts.join(", ")} every ${egressProbe.periodSeconds} s`);
   }
 
