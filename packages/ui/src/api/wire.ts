@@ -407,7 +407,7 @@ export type WireQuotas = {
   };
   usage: {
     metric: "concurrent" | "runs_per_hour" | "sandbox_minutes" | "log_bytes" | "stored_bytes";
-    used: number;
+    used: number | null;
     limit: number | null;
     percent: number | null;
     held: string | null;

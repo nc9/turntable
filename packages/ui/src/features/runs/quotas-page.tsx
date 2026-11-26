@@ -29,7 +29,11 @@ function Row({ u, row }: { u: QuotaUsage; row: (typeof QUOTA_ROWS)[number] }) {
         <span className="font-medium">{row.label}</span>
         <span className="tabular ml-auto text-dim">
           {formatQuotaValue(u.used, row.unit)}
-          {u.limit === null ? " used, no limit" : ` of ${formatQuotaValue(u.limit, row.unit)}`}
+          {u.limit === null
+            ? u.used === null
+              ? ", no limit"
+              : " used, no limit"
+            : ` of ${formatQuotaValue(u.limit, row.unit)}`}
           {u.percent === null ? "" : ` (${u.percent}%)`}
         </span>
       </div>
