@@ -11,11 +11,34 @@ group("egress probe config", () => {
   test("off unless the period is set", () => {
     expect(egressProbeConfigFromEnv({})).toBeUndefined();
   });
-  test("defaults to api.github.com", () => {
+  test("defaults to the GitHub web host and the Daytona API, api.github.com by DNS only", () => {
     expect(egressProbeConfigFromEnv({ TURNTABLE_EGRESS_PROBE_SECONDS: "60" })).toEqual({
       periodSeconds: 60,
-      hosts: ["api.github.com"],
+      hosts: ["github.com", "app.daytona.io"],
+      dnsOnly: ["api.github.com"],
     });
+  });
+  test("never sends a HEAD to api.github.com (the anonymous REST budget)", async () => {
+    expect(() =>
+      egressProbeConfigFromEnv({
+        TURNTABLE_EGRESS_PROBE_SECONDS: "60",
+        TURNTABLE_EGRESS_PROBE_HOSTS: "api.github.com",
+      }),
+    ).toThrow();
+    let heads = 0;
+    const r = await probeHost(
+      "api.github.com",
+      {
+        resolve: async () => ({}),
+        head: async () => {
+          heads++;
+          return { status: 200 };
+        },
+      },
+      true,
+    );
+    expect(heads).toBe(0);
+    expect(r.headMs).toBeUndefined();
   });
   test("refuses a bad period or a host that is not a plain host name", () => {
     expect(() => egressProbeConfigFromEnv({ TURNTABLE_EGRESS_PROBE_SECONDS: "5" })).toThrow();
@@ -82,7 +105,7 @@ group("egress probe", () => {
     const fail = true;
     const t = 0;
     const stop = startEgressProbe(
-      { periodSeconds: 3600, hosts: ["api.github.com"] },
+      { periodSeconds: 3600, hosts: ["github.com"], dnsOnly: [] },
       (m) => lines.push(m),
       {
         now: () => t,

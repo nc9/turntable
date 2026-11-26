@@ -592,9 +592,9 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
   {
     name: "TURNTABLE_EGRESS_PROBE_HOSTS",
     area: "Server",
-    default: "api.github.com",
+    default: "github.com,app.daytona.io",
     description:
-      "Comma-separated host names (1 to 5) the egress probe checks. Host names only; the probe never sends a credential.",
+      "Comma-separated host names (1 to 5) the egress probe resolves and sends one HEAD. Host names only; the probe never sends a credential. `api.github.com` is refused here (its anonymous requests share the poller's REST budget); it is always probed by DNS lookup only.",
   },
   // ---- the checkout child (control plane fetches a run's commit without git) ----
   {

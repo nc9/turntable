@@ -2,7 +2,10 @@
 // server loses outbound network. Off unless TURNTABLE_EGRESS_PROBE_SECONDS is set. Every period it
 // resolves each host and sends one unauthenticated HEAD to it, then logs the failures and slow
 // calls (with the error code and timings), plus one OK line every ten minutes. It never sends a
-// credential, and it logs host names only, never a path or a query.
+// credential, and it logs host names only, never a path or a query. The default hosts are the
+// GitHub web host and the Daytona API host: never api.github.com for the HEAD, whose anonymous
+// requests count against the same per-IP REST budget the anonymous poller uses. api.github.com
+// gets a DNS lookup only.
 import { lookup } from "node:dns/promises";
 
 const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
@@ -12,8 +15,14 @@ const OK_EVERY_MS = 600_000;
 
 export interface EgressProbeConfig {
   periodSeconds: number;
+  /** DNS lookup plus one HEAD each. */
   hosts: string[];
+  /** DNS lookup only. */
+  dnsOnly: string[];
 }
+
+export const DEFAULT_PROBE_HOSTS = ["github.com", "app.daytona.io"];
+export const DNS_ONLY_HOSTS = ["api.github.com"];
 
 /** The probe's settings from the environment, or undefined when it is off. Bad values throw. */
 export function egressProbeConfigFromEnv(
@@ -24,13 +33,17 @@ export function egressProbeConfigFromEnv(
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 10 || n > 3600)
     throw new Error("TURNTABLE_EGRESS_PROBE_SECONDS must be a whole number from 10 to 3600");
-  const hosts = (env.TURNTABLE_EGRESS_PROBE_HOSTS?.trim() || "api.github.com")
+  const hosts = (env.TURNTABLE_EGRESS_PROBE_HOSTS?.trim() || DEFAULT_PROBE_HOSTS.join(","))
     .split(",")
     .map((h) => h.trim().toLowerCase())
     .filter((h) => h !== "");
   if (hosts.length === 0 || hosts.length > 5 || !hosts.every((h) => HOST.test(h)))
     throw new Error("TURNTABLE_EGRESS_PROBE_HOSTS must be 1 to 5 comma-separated host names");
-  return { periodSeconds: n, hosts };
+  if (hosts.includes("api.github.com"))
+    throw new Error(
+      "TURNTABLE_EGRESS_PROBE_HOSTS may not include api.github.com: its anonymous requests use the poller's REST budget",
+    );
+  return { periodSeconds: n, hosts, dnsOnly: DNS_ONLY_HOSTS };
 }
 
 /** The error code of a failed call: the error's own, or its cause's (fetch wraps the system error). */
@@ -62,7 +75,11 @@ export interface ProbeDeps {
 }
 
 /** One probe of one host: DNS, then (when it resolved) an unauthenticated HEAD over https. */
-export async function probeHost(host: string, d: ProbeDeps = {}): Promise<ProbeResult> {
+export async function probeHost(
+  host: string,
+  d: ProbeDeps = {},
+  dnsOnly = false,
+): Promise<ProbeResult> {
   const now = d.now ?? Date.now;
   const resolve = d.resolve ?? ((h: string) => lookup(h));
   const head =
@@ -84,6 +101,7 @@ export async function probeHost(host: string, d: ProbeDeps = {}): Promise<ProbeR
     return { host, dnsMs: now() - t0, dnsError: errorCode(e) };
   }
   const dnsMs = now() - t0;
+  if (dnsOnly) return { host, dnsMs };
   const t1 = now();
   try {
     const r = await head(`https://${host}/`, AbortSignal.timeout(TIMEOUT_MS));
@@ -124,7 +142,10 @@ export function startEgressProbe(
     }
     busy = true;
     try {
-      const results = await Promise.all(cfg.hosts.map((h) => probeHost(h, d)));
+      const results = await Promise.all([
+        ...cfg.hosts.map((h) => probeHost(h, d)),
+        ...cfg.dnsOnly.map((h) => probeHost(h, d, true)),
+      ]);
       const okTime = now() - lastOk >= OK_EVERY_MS;
       for (const r of results) {
         const { line, bad } = describe(r);
