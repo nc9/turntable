@@ -3,6 +3,7 @@
 // path), and every raw run or query, is timed, and one taking at least that long is logged with
 // its SQL text. The text is the parameterized statement only: bound values never appear.
 import type { Database } from "bun:sqlite";
+import { statSync } from "node:fs";
 
 const METHODS = ["all", "get", "run", "values", "iterate"] as const;
 
@@ -72,4 +73,27 @@ export function instrumentSlowSql(
     }
   };
   return sqlite;
+}
+
+/**
+ * One boot line about the database file (#693): journal mode, synchronous level, the database's
+ * size and its write-ahead log's size. A large WAL that never checkpoints slows every read.
+ */
+export function describeSqlite(sqlite: Database, path: string): string {
+  const one = (q: string): unknown => {
+    try {
+      const row = sqlite.query(q).get() as Record<string, unknown> | null;
+      return row ? Object.values(row)[0] : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const size = (p: string): string => {
+    try {
+      return `${Math.round(statSync(p).size / 1048576)} MiB`;
+    } catch {
+      return "none";
+    }
+  };
+  return `[turntable] sqlite: journal_mode ${String(one("PRAGMA journal_mode"))}, synchronous ${String(one("PRAGMA synchronous"))}, db ${size(path)}, wal ${size(`${path}-wal`)}`;
 }

@@ -1,6 +1,11 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { instrumentSlowSql, slowSqlLine, slowSqlMsFromEnv } from "../src/db/slow-sql";
+import {
+  describeSqlite,
+  instrumentSlowSql,
+  slowSqlLine,
+  slowSqlMsFromEnv,
+} from "../src/db/slow-sql";
 
 test("off unless set; refuses a bad threshold", () => {
   expect(slowSqlMsFromEnv({})).toBeUndefined();
@@ -26,4 +31,10 @@ test("a line is one line and capped", () => {
     "[turntable] slow sql 1235 ms: SELECT a FROM b",
   );
   expect(slowSqlLine(1, "x".repeat(500)).length).toBeLessThan(260);
+});
+
+test("the boot line names the journal mode and the file sizes", () => {
+  const line = describeSqlite(new Database(":memory:"), "/nonexistent/turntable.db");
+  expect(line).toContain("journal_mode memory");
+  expect(line).toContain("db none, wal none");
 });

@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { instrumentSlowSql, slowSqlMsFromEnv } from "./slow-sql";
+import { describeSqlite, instrumentSlowSql, slowSqlMsFromEnv } from "./slow-sql";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -138,7 +138,10 @@ export function openDatabase(path: string): Db {
   const sqlite = new Database(path, { create: true, strict: true });
   // Diagnostics (#693): log any synchronous statement slower than TURNTABLE_SLOW_SQL_MS.
   const slowMs = slowSqlMsFromEnv();
-  if (slowMs !== undefined) instrumentSlowSql(sqlite, slowMs);
+  if (slowMs !== undefined) {
+    instrumentSlowSql(sqlite, slowMs);
+    if (path !== ":memory:") console.error(describeSqlite(sqlite, path));
+  }
   // First, before anything that takes a lock, so every later statement waits for another
   // connection's lock instead of failing at once (the CLI runs next to a server, or next to a
   // test's own handle).
