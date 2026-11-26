@@ -114,7 +114,7 @@ Each missing required variable stops the lane at boot with `the release role nee
 
 **Four ways to run the lane on hosted.** D is built and is the one hosted instances use; A is the state without it; B and C are not built.
 
-| | A. Not on single-service hosted (today) | B. One process | C. Two services and shared object storage | D. Two processes in one container |
+| | A. Not on single-service hosted | B. One process | C. Two services and shared object storage | D. Two processes in one container (opt-in with `TURNTABLE_LANE_SUPERVISED`) |
 | --- | --- | --- | --- | --- |
 | Shape | Release is not available | `web,worker,release` in one process, in-process channel | Lane service plus main service, artifact bytes in an object store | `serve` starts the release role as a child of the same binary, unix socket in the container |
 | Process boundary | n/a | None: one address space | Strong: separate hosts | Kept: separate processes and memory; same container and volume |

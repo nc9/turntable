@@ -22,6 +22,7 @@ import {
   releaseConfigFromEnv,
   takeReleaseEnv,
 } from "../roles";
+import { approvalPolicySetting } from "../settings/definitions";
 import { channelMac } from "./channel";
 import { createChannelClient, createLaneConfigClient } from "./channel-client";
 import type { ChannelClient, LaneConfigClient } from "./channel-client";
@@ -42,6 +43,13 @@ export const CHILD_PASSTHROUGH_ENV = [
   "TURNTABLE_DROP_PRIVILEGES",
   "TURNTABLE_ALLOW_ROOT",
 ] as const;
+
+/**
+ * The settings inputs the lane's signing check needs to apply the operator's approval policy, not
+ * a weaker default: the environment names of that one setting and the path of turntable.toml. No
+ * other setting, and no value of one, is handed over.
+ */
+export const CHILD_SETTINGS_ENV: readonly string[] = [...approvalPolicySetting.env];
 
 /** Variables the supervisor sets itself: the operator must not. */
 const DERIVED = [
@@ -117,6 +125,8 @@ export function prepareSupervisedLane(o: {
   postgres?: boolean;
   /** Directory for the socket directory; the system temporary directory by default. */
   runDir?: string;
+  /** The turntable.toml the parent was given (`--config` or TURNTABLE_CONFIG); the child reads it too. */
+  config?: string | undefined;
 }): PreparedLane {
   const mainSet = MAIN_CHANNEL_VARS.filter((k) => o.env[k]?.trim());
   const passthrough: Record<string, string> = {};
@@ -124,6 +134,12 @@ export function prepareSupervisedLane(o: {
     const v = o.env[k];
     if (v !== undefined) passthrough[k] = v;
   }
+  for (const k of CHILD_SETTINGS_ENV) {
+    const v = o.env[k];
+    if (v !== undefined && v.trim()) passthrough[k] = v;
+  }
+  const config = o.config?.trim() || o.env.TURNTABLE_CONFIG?.trim();
+  if (config) passthrough.TURNTABLE_CONFIG = config;
   // First: the release variables leave this process's environment, whatever happens next.
   const taken = takeReleaseEnv(o.env);
   if (mainSet.length > 0) {
@@ -216,7 +232,15 @@ export function selfCommand(): string[] {
 
 /** Spawns with an explicit environment: Bun.spawn's `env` replaces, never extends, the parent's. */
 export const spawnLane: LaneSpawner = (argv, env) => {
-  const p = Bun.spawn(argv, { env: env, stdin: "ignore", stdout: "inherit", stderr: "inherit" });
+  // Its own process group: a group signal (Ctrl-C in a terminal) reaches the server alone, which
+  // drains its jobs and then stops the child, instead of killing the lane under running jobs.
+  const p = Bun.spawn(argv, {
+    env: env,
+    stdin: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
+    detached: true,
+  });
   return {
     pid: p.pid,
     exited: p.exited.then((code) => ({ code, signal: (p.signalCode as string | null) ?? null })),
@@ -236,6 +260,9 @@ export interface SupervisorOptions {
   now?: () => number;
   backoff?: { baseMs: number; maxMs: number; stableMs: number };
   readyPollMs?: number;
+  /** How often a ready child is probed again, and how many misses in a row end it. */
+  healthPollMs?: number;
+  healthMisses?: number;
   stopGraceMs?: number;
 }
 
@@ -358,15 +385,32 @@ export class LaneSupervisor {
       const exit = proc.exited.finally(() => (alive = false));
       this.log(`release lane started (pid ${proc.pid ?? "?"})`);
       void (async () => {
+        // Until the first answer: the readiness poll. After it: a slower health poll, so a child
+        // that is alive but no longer answering stops being "ready" and is killed to restart.
+        let misses = 0;
+        const maxMisses = this.o.healthMisses ?? 3;
         while (alive && !this.stopping) {
-          if (await this.probe()) {
-            if (alive && !this.stopping) {
+          const ok = await this.probe();
+          if (!alive || this.stopping) return;
+          if (ok) {
+            misses = 0;
+            if (readyAt === undefined) {
               readyAt = this.now();
               this.set("ready");
+            } else if (this.state !== "ready") this.set("ready");
+          } else if (readyAt !== undefined) {
+            misses++;
+            if (this.state === "ready") this.set("starting");
+            if (misses >= maxMisses) {
+              this.log("release lane stopped answering; restarting it");
+              proc.kill("SIGKILL");
+              return;
             }
-            return;
           }
-          await this.sleep(this.o.readyPollMs ?? 200, "wakeReady");
+          await this.sleep(
+            readyAt === undefined ? (this.o.readyPollMs ?? 200) : (this.o.healthPollMs ?? 5000),
+            "wakeReady",
+          );
         }
       })();
       const code = await exit.catch(() => ({ code: null, signal: null }));

@@ -19,6 +19,9 @@
 ## Read-acknowledged output cap (#690)
 
 - Replace the sandbox's drop-the-middle output cap with a read-acknowledged one. Today a sandbox keeps the first 1 MiB and the last 64 MiB of a step's raw output (`OUTPUT_TAIL_BYTES` in `packages/provider-sdk/src/cap-output.ts`) and drops the middle when the controller has not read it in time. The root fix is a provider contract where the sandbox only discards output the controller has acknowledged reading, plus provider-conformance cases for it. Acceptance: the contract is in `docs/providers.mdx`; a conformance test shows an unread range is never dropped (the exec blocks or is bounded by disk, not by a cut); a slow reader produces no `job_cuts` entry; the 64 MiB tail cap then only applies to acknowledged output. Priority P1.
+
+## Separate-uid release lane (#678)
+
 - Run the supervised release lane as a separate uid with a non-dumpable launcher. The supervised child (#678) separates the lane from the server by process, not by uid. The server keeps the release values in a closure and in its boot-time `/proc/self/environ`, and the child runs as the same user, so code execution in the server can read them.
   Acceptance:
   - A small launcher starts first (as root, before the server drops privileges), holds the release values, marks itself non-dumpable (`PR_SET_DUMPABLE=0`), and starts the lane child as a different uid.

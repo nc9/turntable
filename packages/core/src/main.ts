@@ -703,7 +703,11 @@ async function serve(args: string[]): Promise<void> {
   // handed to the child alone (supervisor.ts). Made after the drop so the socket directory is ours.
   let preparedLane: PreparedLane | undefined;
   if (laneChild) {
-    preparedLane = prepareSupervisedLane({ env: process.env, postgres: DIALECT === "pg" });
+    preparedLane = prepareSupervisedLane({
+      env: process.env,
+      postgres: DIALECT === "pg",
+      config: values.config ? resolve(values.config) : undefined,
+    });
     console.log(
       "[turntable] release lane: supervised child process (no release variable stays here)",
     );

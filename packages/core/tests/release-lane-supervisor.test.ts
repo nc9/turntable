@@ -15,8 +15,11 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { getReleaseRequest, openDatabase, type Db } from "../src/db";
 import * as s from "../src/db/schema";
+import { loadSettingsRuntime } from "../src/settings/boot";
+import { approvalPolicySetting } from "../src/settings/definitions";
+import { envValue } from "../src/settings/resolve";
 import { onPostgres } from "./pg-mode";
-import { checkReleaseLane } from "../src/doctor/checks";
+import { checkChannel, checkConfigChannel, checkReleaseLane } from "../src/doctor/checks";
 import type { DoctorInputs } from "../src/doctor/types";
 import { dispatch, registry } from "../src/ops";
 import { AttestationStore } from "../src/release/attest";
@@ -196,6 +199,53 @@ describe("the child's environment is exactly the allowlist", () => {
       await proc.exited;
       const seen = JSON.parse(readFileSync(out, "utf8")) as string[];
       expect(seen.toSorted()).toEqual(Object.keys(p.childEnv).toSorted());
+    } finally {
+      p.cleanup();
+    }
+  });
+});
+
+describe("the operator's approval policy reaches the child", () => {
+  test("TURNTABLE_APPROVAL_POLICY and the config path are passed, no other setting is", () => {
+    const policy = JSON.stringify({ release: { required: 3, key_policy: "hardware" } });
+    const env = {
+      ...parentEnv(),
+      TURNTABLE_APPROVAL_POLICY: policy,
+      TURNTABLE_CONFIG: "/etc/turntable.toml",
+      TURNTABLE_GLOBAL_CAP: "9",
+    };
+    const p = prepareSupervisedLane({ env, runDir: tmp });
+    try {
+      expect(p.childEnv.TURNTABLE_APPROVAL_POLICY).toBe(policy);
+      expect(p.childEnv.TURNTABLE_CONFIG).toBe("/etc/turntable.toml");
+      expect(p.childEnv.TURNTABLE_GLOBAL_CAP).toBeUndefined();
+    } finally {
+      p.cleanup();
+    }
+    const q = prepareSupervisedLane({ env: parentEnv(), config: "/x/c.toml", runDir: tmp });
+    try {
+      expect(q.childEnv.TURNTABLE_CONFIG).toBe("/x/c.toml");
+      expect(q.childEnv.TURNTABLE_APPROVAL_POLICY).toBeUndefined();
+    } finally {
+      q.cleanup();
+    }
+  });
+
+  test("a child that loads those inputs resolves the operator's policy, not the default", () => {
+    const policy = { release: { required: 3, key_policy: "hardware" } };
+    const toml = join(tmp, "t.toml");
+    writeFileSync(toml, "[orgs.acme.approval_policy.release]\nrequired = 2\n");
+    const p = prepareSupervisedLane({
+      env: { ...parentEnv(), TURNTABLE_APPROVAL_POLICY: JSON.stringify(policy) },
+      config: toml,
+      runDir: tmp,
+    });
+    try {
+      const rt = loadSettingsRuntime({ env: p.childEnv, config: p.childEnv.TURNTABLE_CONFIG });
+      expect(JSON.stringify(envValue(approvalPolicySetting, rt.env)?.value)).toContain(
+        '"required":3',
+      );
+      expect(rt.toml.orgs.get("acme")?.has("approval_policy")).toBe(true);
     } finally {
       p.cleanup();
     }
@@ -440,6 +490,31 @@ describe("supervision (fake child)", () => {
     expect(Date.now() - t).toBeLessThan(2000);
   });
 
+  test("a ready child that stops answering is marked unavailable and restarted", async () => {
+    const f = fakeSpawner();
+    let answering = true;
+    const sup = new LaneSupervisor({
+      prepared: prepared(),
+      args: [],
+      command: ["x"],
+      spawn: f.spawn,
+      probe: async () => answering,
+      log: () => {},
+      backoff: { baseMs: 10, maxMs: 10, stableMs: 1e9 },
+      readyPollMs: 10,
+      healthPollMs: 10,
+      healthMisses: 3,
+    });
+    sup.start();
+    await until(() => sup.status().state === "ready");
+    answering = false;
+    await until(() => sup.status().state !== "ready");
+    expect(sup.availability().ok).toBe(false);
+    await until(() => f.procs[0]!.killed.includes("SIGKILL"));
+    f.procs[0]!.exit(null);
+    await sup.stop();
+  });
+
   test("selfCommand does not pass a bunfs path; stale socket directories of dead owners are removed", () => {
     expect(selfCommand().some((a) => a.startsWith("/$bunfs/"))).toBe(false);
     const dead = join(tmp, "tt-lane-dead");
@@ -453,6 +528,14 @@ describe("supervision (fake child)", () => {
     expect(existsSync(live)).toBe(true);
     expect(existsSync(foreign)).toBe(true);
     removeStaleLaneDirs(join(tmp, "absent")); // never throws
+  });
+
+  test("doctor: the channel checks name the supervised lane instead of saying nothing is configured", async () => {
+    const i = { releaseLane: () => ({}), env: {} } as unknown as DoctorInputs;
+    for (const r of [await checkChannel(i), await checkConfigChannel(i)]) {
+      expect(r.status).toBe("pass");
+      expect(r.summary).toContain("supervised child");
+    }
   });
 
   test("doctor: not supervised here passes", () => {

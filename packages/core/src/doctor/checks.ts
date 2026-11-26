@@ -610,6 +610,12 @@ export function checkHttpsRedirect(i: DoctorInputs): DoctorCheck {
 
 export async function checkChannel(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "release";
+  if (i.releaseLane)
+    return pass(
+      "release_channel",
+      area,
+      "the release lane is this process's supervised child: its channel is made at boot and checked by release_lane_process",
+    );
   const configured = set(i.env.TURNTABLE_PUBLISH_CHANNEL_KEY_FILE);
   if (!configured || !i.channel)
     return pass(
@@ -656,6 +662,12 @@ export async function checkChannel(i: DoctorInputs): Promise<DoctorCheck> {
  */
 export async function checkConfigChannel(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "release";
+  if (i.releaseLane)
+    return pass(
+      "release_config_channel",
+      area,
+      "the release lane is this process's supervised child: its config channel is made at boot and checked by release_lane_process",
+    );
   if (!i.configChannel)
     return pass(
       "release_config_channel",
