@@ -17424,6 +17424,197 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/instance/db-copy": {
+      "post": {
+        "operationId": "instance_db_copy",
+        "summary": "Copy the SQLite database into Postgres (instance administrator only).",
+        "description": "Moves an instance off SQLite. The Postgres URL is read from the environment variable named by `target_url_env` (a `TURNTABLE_*_URL` variable other than `TURNTABLE_DATABASE_URL`, which a server on SQLite must not set); it is never an input and never in the output. `dry_run` applies the migrations to the target, checks it is empty or already identical to the source, and reports per-table row counts; it needs no drain. A real run needs the instance drained (`instance_drain`, no running attempts). It copies every table except `exclude_tables` (for example the log tables once logs live in the log store) in foreign-key order and in batches, yielding between them so the server keeps answering; resets identity sequences so the next id is above every copied one; then verifies per-table counts and a checksum over primary keys, and walks every org's audit chain on the target (links, hashes, checkpoint positions, head equal to the source). A target that holds different rows is refused; one that is already identical is only verified. A failed copy empties the target again. The SQLite file is never modified. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_url_env": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "pattern": "^TURNTABLE_[A-Z0-9_]*_URL$",
+                    "description": "Name of the environment variable that holds the Postgres URL."
+                  },
+                  "dry_run": {
+                    "type": "boolean",
+                    "description": "true checks and counts only; false copies (needs a drain)."
+                  },
+                  "exclude_tables": {
+                    "default": [],
+                    "description": "Tables not copied, e.g. log_chunks, log_cuts, log_notices.",
+                    "maxItems": 100,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    }
+                  }
+                },
+                "required": ["target_url_env", "dry_run"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "dry_run": {
+                      "type": "boolean"
+                    },
+                    "target_state": {
+                      "type": "string",
+                      "enum": ["empty", "identical"]
+                    },
+                    "migrations_applied": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "excluded": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "tables": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "table": {
+                            "type": "string"
+                          },
+                          "source_rows": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "target_rows": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "copied": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "checksum": {
+                            "type": ["string", "null"]
+                          }
+                        },
+                        "required": ["table", "source_rows", "target_rows", "copied", "checksum"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "sequences": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "table": {
+                            "type": "string"
+                          },
+                          "column": {
+                            "type": "string"
+                          },
+                          "next": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": ["table", "column", "next"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "audit": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "orgs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "entries": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": ["orgs", "entries"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "verified": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "dry_run",
+                    "target_state",
+                    "migrations_applied",
+                    "excluded",
+                    "tables",
+                    "sequences",
+                    "audit",
+                    "verified"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/instance/member-bindings": {
       "post": {
         "operationId": "instance_bind_github_login",
