@@ -48,6 +48,7 @@ import {
 import { clean, DEFAULT_FETCH_LIMITS } from "../run/git-fetch";
 import { scrubToken } from "../run/scrub-token";
 import { tarballReader } from "../run/tarball-reader";
+import { treeScanOutcome } from "./tree-scan-outcome";
 import { resolvePlanActions } from "../pins";
 import { normalizeForgeToken, type ForgeToken } from "../pins/forge-token";
 import {
@@ -599,6 +600,12 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       // A refused credential is not transient: its own kind, so it is never retried.
       if (e instanceof CheckoutAuthError)
         return { state: "infra_error", infraKind: "checkout_auth_failed", reason: e.message };
+      const scan = treeScanOutcome(e);
+      if (scan) {
+        await ctx.store.appendLog(0, new TextEncoder().encode(scan.logLine));
+        o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${scan.logLine}`);
+        return scan.outcome;
+      }
       throw e;
     }
     try {
@@ -632,6 +639,12 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           } catch (e) {
             if (e instanceof CheckoutAuthError)
               return { state: "infra_error", infraKind: "checkout_auth_failed", reason: e.message };
+            const scan = treeScanOutcome(e);
+            if (scan) {
+              await ctx.store.appendLog(0, new TextEncoder().encode(scan.logLine));
+              o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${scan.logLine}`);
+              return scan.outcome;
+            }
             return {
               state: "infra_error",
               reason: `checkout: ${clean(e instanceof Error ? e.message : String(e), 400)}`,
