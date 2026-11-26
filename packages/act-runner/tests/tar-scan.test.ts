@@ -225,16 +225,47 @@ describe("size caps: names, pax bodies and the total of all names", () => {
     );
   });
 
-  test("pax bytes count against what the scan may keep", async () => {
+  test("positive control: small files that use up captureTotal, then a long-path entry, scan (#671)", async () => {
     const long = "p".repeat(150);
-    let err: unknown;
-    await scanTarGz(
-      arc(ROOT, pax(rec("path", long)), file("x", "1", { name: Buffer.from(long.slice(0, 100)) })),
-      {
-        ...OPTS,
-        captureTotal: 10,
-      },
-    ).catch((e) => (err = e));
+    const m = await scanTarGz(
+      arc(
+        ROOT,
+        file("a", "x".repeat(40)),
+        file("b", "y".repeat(40)),
+        pax(rec("path", long)),
+        file("x", "1", { name: Buffer.from(long.slice(0, 100)) }),
+      ),
+      { ...OPTS, captureTotal: 10 },
+    );
+    expect([...m.keys()]).toEqual([".", "a", "b", long]);
+    expect(m.get("a")!.data).toBeUndefined();
+  });
+
+  test("running out of captureTotal only stops capturing: the listing stays complete (#671)", async () => {
+    const m = await scanTarGz(arc(ROOT, file("a", "1234"), file("b", "5678"), file("c", "9")), {
+      ...OPTS,
+      captureTotal: 5,
+    });
+    expect([...m.keys()]).toEqual([".", "a", "b", "c"]);
+    expect(new TextDecoder().decode(m.get("a")!.data)).toBe("1234");
+    expect(m.get("b")).toMatchObject({ type: "file", size: 4 });
+    expect(m.get("b")!.data).toBeUndefined();
+    expect(m.get("c")).toMatchObject({ type: "file", size: 1 });
+  });
+
+  test("pax headers past their own total bound are refused (#671)", async () => {
+    const long = "p".repeat(150);
+    const parts: Buffer[][] = [ROOT];
+    for (let i = 0; i < 3; i += 1)
+      parts.push(
+        pax(rec("path", `${long}${i}`)),
+        file("x", "", { name: Buffer.from(long.slice(0, 100)) }),
+      );
+    const oneBytes = Buffer.byteLength(rec("path", `${long}0`));
+    const err = await scanTarGz(arc(...parts), { ...OPTS, maxPaxBytes: oneBytes * 2 }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TarFormatError);
     expect((err as Error).message).toMatch(/pax headers are larger/);
   });
 

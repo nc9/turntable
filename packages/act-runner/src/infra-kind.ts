@@ -44,6 +44,15 @@ export const INFRA_KINDS = {
     beforeSteps: true,
     label: "GitHub rate limited the action lookups",
   },
+  /**
+   * The strict tree scan refused the checkout's tarball (a malformed or over-limit archive). It is
+   * deterministic for that sha, so never retried; the reason names the rule that refused it.
+   */
+  tree_scan: {
+    transient: false,
+    beforeSteps: true,
+    label: "the checkout's tree scan refused the repository",
+  },
   /** Everything else: a deterministic or unknown cause. Never retried. */
   other: {
     transient: false,
