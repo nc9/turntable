@@ -148,6 +148,8 @@ export interface OnboardingApi {
     installationId: string;
     repo: string;
     project?: string;
+    /** The new project's cap on attempts at once; omitted, the org's default (2). */
+    maxConcurrent?: number;
   }): Promise<AddedProject>;
   /**
    * Unbinds a project's repo and keeps its history (`remove_project`). `deleteHistory` deletes
@@ -305,12 +307,18 @@ export function createOnboardingApi(options: OnboardingApiOptions = {}): Onboard
         )
       ).projects;
     },
-    addProject({ org, installationId, repo, project }) {
+    addProject({ org, installationId, repo, project, maxConcurrent }) {
       return call<AddedProject>(
         "POST",
         "/projects",
         {},
-        { org, installation_id: installationId, repo, ...(project ? { project } : {}) },
+        {
+          org,
+          installation_id: installationId,
+          repo,
+          ...(project ? { project } : {}),
+          ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
+        },
       );
     },
     removeProject({ org, project, deleteHistory, stepUp }) {

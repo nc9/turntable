@@ -21,7 +21,7 @@ import { DispatchError, WORKFLOW_PATH } from "../../poll/dispatch";
 import { ingestSettingsSchema, type IngestSettings } from "../../poll/config";
 import { GithubError, RateLimited } from "../../poll/github";
 import { previewWorkflow } from "../../poll/workflow-preview";
-import { checksModeSetting } from "../../settings/definitions";
+import { checksModeSetting, DEFAULT_PROJECT_MAX_CONCURRENT } from "../../settings/definitions";
 import { defineOp, type OpContext } from "../define";
 import { OpError } from "../errors";
 import {
@@ -44,7 +44,7 @@ import { addProjectFor } from "./projects";
 import { setSetting } from "./settings";
 
 /** Defaults an enabled repo gets. The size class is the instance default: nothing to set. */
-export const ONBOARD_DEFAULT_MAX_CONCURRENT = 2;
+export const ONBOARD_DEFAULT_MAX_CONCURRENT = DEFAULT_PROJECT_MAX_CONCURRENT;
 const ONBOARD_VAR = { TURNTABLE_CI: "true" } as const;
 const DEFAULT_WORKFLOW_PATH = ".github/workflows/ci.yml";
 const BRANCH = /^[A-Za-z0-9._/-]{1,255}$/;
@@ -193,7 +193,7 @@ export const onboardRepos = defineOp({
   summary: "Turn CI on or off for a batch of an installation's repos, in one transaction.",
   description:
     "For each repo (by GitHub repo id, at most 100): `enable: false` pauses it (max_concurrent 0). " +
-    "`enable: true` on a NEW project (still at its creation defaults: no cap, no ingest settings, no " +
+    "`enable: true` on a NEW project (still at its creation defaults: no cap or the default cap, no ingest settings, no " +
     "snapshot, checks mode off) applies the defaults: max_concurrent 2 (clamped by the instance's " +
     "per-org cap), the instance default size class (nothing to set), ingest with PR mode `allowlist` " +
     "listing the caller's GitHub login (a session has one; a person token has none, so the list is " +
@@ -298,7 +298,8 @@ export const onboardRepos = defineOp({
           // checks mode `off`. Nothing there can be lost, so it gets the onboarding defaults. Any
           // other project was set up on purpose and gets only what the caller passed.
           const fresh =
-            project.maxConcurrent === null &&
+            (project.maxConcurrent === null ||
+              project.maxConcurrent === DEFAULT_PROJECT_MAX_CONCURRENT) &&
             project.ingestConfig === null &&
             project.sandboxSnapshot === null &&
             project.checksMode === "off";

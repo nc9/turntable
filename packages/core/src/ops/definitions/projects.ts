@@ -4,6 +4,9 @@
 // through `remove_project`. Losing access never deletes a project: its binding goes, its history
 // stays, and it reads as having no access.
 import { z } from "zod";
+import { getOrgById, setProjectSandboxSettings } from "../../db/repos";
+import { createSettingsRuntime, resolveSetting } from "../../settings/resolve";
+import { DEFAULT_PROJECT_MAX_CONCURRENT, settingsRegistry } from "../../settings/definitions";
 import type { Db } from "../../db";
 import {
   appendAudit,
@@ -178,6 +181,19 @@ export async function addProjectFor(
   );
 }
 
+/** The org's effective `default_project_max_concurrent` (environment, file, stored value, 2). */
+async function defaultProjectCap(ctx: OpContext): Promise<number> {
+  const org = await getOrgById(ctx.db, ctx.scope.orgId);
+  const rt = ctx.settings ?? createSettingsRuntime(settingsRegistry);
+  const v = (
+    await resolveSetting(rt, ctx.db, "default_project_max_concurrent", {
+      orgId: ctx.scope.orgId,
+      orgSlug: org?.slug ?? "",
+    })
+  ).value;
+  return typeof v === "number" ? v : DEFAULT_PROJECT_MAX_CONCURRENT;
+}
+
 export const addProject = defineOp({
   name: "add_project",
   summary: "Add a repository an installation can reach as a project.",
@@ -187,7 +203,9 @@ export const addProject = defineOp({
     "a project until this runs (or `onboard_repos` does). It asks GitHub, through the " +
     "installation, whether the repo is reachable and refuses one that is not. `repo` is " +
     "`owner/name`; `project` (optional) is the new project's slug, default derived from the repo " +
-    "name. The project starts with every setting at its default: no ingest, no checks, so no run " +
+    "name. `max_concurrent` (optional) is the new project's cap on attempts at once, default the " +
+    "org's `default_project_max_concurrent` setting (2), clamped by the instance's per-org cap; " +
+    "an existing project's cap is never changed. The project otherwise starts with every setting at its default: no ingest, no checks, so no run " +
     "starts until it is set up (see `onboard_repos`). A repo that is already this org's project " +
     "is returned unchanged with `created: false`; one that is another project's is refused. A " +
     "project that lost access and gets it back is re-attached with its history. Needs owner " +
@@ -198,6 +216,14 @@ export const addProject = defineOp({
       .regex(/^\d{1,20}$/)
       .describe("GitHub installation id, from `list_installation_repos`' installation."),
     repo: z.string().regex(REPO_NAME_RE).describe("Repository full name, owner/name."),
+    max_concurrent: z
+      .int()
+      .min(0)
+      .max(1000)
+      .optional()
+      .describe(
+        "The new project's cap on attempts running at once; default the org's `default_project_max_concurrent` setting (2). Ignored for a repo that is already a project.",
+      ),
   }),
   output: z.object({
     project: z.string().describe("The project's slug."),
@@ -224,8 +250,29 @@ export const addProject = defineOp({
     }
     const orgId = ctx.scope.orgId;
     const granted = await reachableRepo(ctx, i.installation_id, i.repo);
+    const requested = i.max_concurrent ?? (await defaultProjectCap(ctx));
+    const cap = ctx.instanceOrgCap;
+    if (i.max_concurrent !== undefined && cap !== undefined && i.max_concurrent > cap) {
+      throw new OpError(
+        "invalid_input",
+        `max_concurrent ${i.max_concurrent} is above the instance's per-org cap of ${cap}`,
+      );
+    }
+    const target = cap !== undefined ? Math.min(requested, cap) : requested;
     const added = await ctx.db.transaction(
-      (tx) => addProjectFor(tx, orgId, i.installation_id, granted, slug, ctx.now()),
+      async (tx) => {
+        const a = await addProjectFor(tx, orgId, i.installation_id, granted, slug, ctx.now());
+        // Only a project made now gets the cap: an existing or re-attached one keeps its own.
+        if (a.created) {
+          await setProjectSandboxSettings(
+            tx,
+            { orgId, projectId: a.projectId },
+            { maxConcurrent: target },
+            { id: ctx.principal.id, now: ctx.now() },
+          );
+        }
+        return a;
+      },
       { lock: `audit:${orgId}` },
     );
     return {

@@ -465,12 +465,31 @@ export const projectRunnerLabelsSetting = defineSetting({
   toml: "runner_labels",
 });
 
+/** The cap a newly added project starts with (#659). Existing projects keep what they have. */
+export const DEFAULT_PROJECT_MAX_CONCURRENT = 2;
+
+export const defaultProjectMaxConcurrentSetting = defineSetting({
+  key: "default_project_max_concurrent",
+  scope: "org",
+  type: z.int().min(0).max(1000),
+  default: DEFAULT_PROJECT_MAX_CONCURRENT,
+  role: "admin",
+  mcpEditable: false,
+  mcpReason: "it sets how many attempts a new project may run at once, so only a person changes it",
+  description:
+    "How many attempts at once a project gets when it is added (`add_project`, the Add repositories page), so a new project cannot starve the org's others. The caller may pass another value when adding. 0 adds projects paused. Existing projects keep the value they have; changing this never touches them. The instance's per-org cap still clamps it.",
+  env: ["TURNTABLE_DEFAULT_PROJECT_MAX_CONCURRENT"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "default_project_max_concurrent",
+});
+
 /** The shipped registry. */
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
   jobLogGrepScanBytesSetting,
   jobLogGrepDeadlineSetting,
   approverRebootstrapDelaySetting,
+  defaultProjectMaxConcurrentSetting,
   orgTokenRemintDelaySetting,
   auditAnchorSinkUrlSetting,
   auditAnchorExportIntervalSetting,
