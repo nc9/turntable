@@ -700,6 +700,13 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Hours (at least 1) after an org's last approver was revoked before `bootstrap_approver` may enrol a new first approver. The environment name of the `approver_rebootstrap_delay_hours` setting; set here, it applies to every org and locks the setting. See [Instance administration](/instance-admin).",
   },
   {
+    name: "TURNTABLE_DEFAULT_PROJECT_MAX_CONCURRENT",
+    area: "Server",
+    default: "2",
+    description:
+      "How many attempts at once a project gets when it is added (0 to 1000; 0 adds projects paused). The instance's per-org cap still clamps it. Existing projects keep their value. The environment name of the `default_project_max_concurrent` setting, which `turntable.toml` and the settings page also set.",
+  },
+  {
     name: "TURNTABLE_ORG_REMINT_DELAY_HOURS",
     area: "Server",
     default: "24",
