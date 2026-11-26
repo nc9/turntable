@@ -7,6 +7,7 @@
 // requests count against the same per-IP REST budget the anonymous poller uses. api.github.com
 // gets a DNS lookup only.
 import { lookup } from "node:dns/promises";
+import { safeFetch } from "@turntable/net";
 
 const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const SLOW_MS = 2_000;
@@ -82,10 +83,11 @@ export async function probeHost(
 ): Promise<ProbeResult> {
   const now = d.now ?? Date.now;
   const resolve = d.resolve ?? ((h: string) => lookup(h));
+  // Through the one outbound client (address validation, pinned resolution, caps), never fetch.
   const head =
     d.head ??
     ((url: string, signal: AbortSignal) =>
-      fetch(url, { method: "HEAD", signal, redirect: "manual" }));
+      safeFetch(url, { method: "HEAD", signal, redirect: "manual", timeoutMs: TIMEOUT_MS }));
   const t0 = now();
   try {
     await Promise.race([
