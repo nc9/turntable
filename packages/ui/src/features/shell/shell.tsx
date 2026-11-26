@@ -39,6 +39,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { BuildVersionLabel } from "@/components/update-banner";
+import { UI_VERSION } from "@/lib/build-version";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useTheme } from "@/components/theme";
@@ -265,6 +267,11 @@ function AccountMenu() {
         ) : (
           <DropdownMenuItem onSelect={() => disconnect()}>Disconnect</DropdownMenuItem>
         )}
+        {UI_VERSION !== "" ? (
+          <DropdownMenuLabel className="text-xs font-normal text-dim">
+            <BuildVersionLabel className="block" />
+          </DropdownMenuLabel>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -531,6 +538,7 @@ function ShellInner() {
         {scope.orgSlug ? (
           <aside className="sticky top-12 hidden h-[calc(100dvh-3rem)] w-56 shrink-0 overflow-y-auto border-r border-line md:block">
             <SidebarNav />
+            <BuildVersionLabel />
           </aside>
         ) : null}
         <main id="main" className="min-w-0 flex-1">

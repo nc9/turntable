@@ -11,6 +11,7 @@ import { readTokenFile, runMcpStdio } from "../src/mcp/stdio";
 import { registry, roleSatisfies } from "../src/ops";
 import { compileSafeRegex, SafeRegexError } from "../src/ops/safe-regex";
 import { startServer } from "../src/server";
+import { VERSION } from "../src/version";
 import { addLog, mintToken, seedWorld, type Tenant } from "./ops-helpers";
 
 let db: Db;
@@ -94,6 +95,23 @@ describe("transports", () => {
     expect(names).toEqual(expectedTools());
     expect(names).toContain("failure_digest");
     await client.close();
+  });
+
+  test("initialize reports the build version, and the HTTP response carries the header", async () => {
+    const client = await httpClient();
+    expect(client.getServerVersion()?.version).toBe(VERSION);
+    await client.close();
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    expect(res.headers.get("turntable-version")).toBe(VERSION);
+    await res.body?.cancel();
   });
 
   test("stdio: tool list is the registry minus signature ops, and stdout carries only protocol", async () => {

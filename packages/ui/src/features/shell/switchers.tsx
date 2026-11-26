@@ -13,7 +13,14 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { lastOrg, lastProject, rememberOrg, rememberProject } from "@/lib/last-org";
-import { filterValue, orgTarget, projectTarget, withLastFirst, type Item } from "@/lib/switcher";
+import {
+  filterValue,
+  orgTarget,
+  projectDisplayName,
+  projectTarget,
+  withLastFirst,
+  type Item,
+} from "@/lib/switcher";
 import { useScope } from "./scope";
 
 /** The filterable list inside a switcher (also rendered on its own by the tests). */
@@ -25,6 +32,7 @@ export function SwitcherList({
   isSelected,
   icon,
   onPick,
+  display = (n) => n,
 }: {
   label: string;
   allLabel: string;
@@ -33,6 +41,7 @@ export function SwitcherList({
   isSelected: (i: Item) => boolean;
   icon: (i: Item) => React.ReactNode;
   onPick: (i: Item | null) => void;
+  display?: (name: string) => string;
 }) {
   return (
     <CommandRoot label={`Switch ${label.toLowerCase()}`}>
@@ -48,7 +57,9 @@ export function SwitcherList({
           {(items ?? []).map((i) => (
             <CommandItem key={i.slug} value={filterValue(i)} onSelect={() => onPick(i)}>
               {icon(i)}
-              <span className="flex-1 truncate">{i.name}</span>
+              <span className="flex-1 truncate" title={i.name}>
+                {display(i.name)}
+              </span>
               {isSelected(i) ? <Check className="text-accent" aria-hidden="true" /> : null}
             </CommandItem>
           ))}
@@ -75,7 +86,9 @@ function Switcher({
   disabledNote,
   testId,
   footer,
+  display,
 }: {
+  display?: (name: string) => string;
   footer?: (close: () => void) => React.ReactNode;
   label: string;
   current: React.ReactNode;
@@ -114,6 +127,7 @@ function Switcher({
           items={items}
           isSelected={isSelected}
           icon={icon}
+          {...(display ? { display } : {})}
           onPick={(i) => {
             setOpen(false);
             onPick(i);
@@ -190,6 +204,7 @@ export function ProjectSwitcher() {
   return (
     <Switcher
       testId="project"
+      display={projectDisplayName}
       label="Project"
       current={
         org && scope.projectSlug ? (
@@ -200,7 +215,9 @@ export function ProjectSwitcher() {
               name={name ?? scope.projectSlug}
               className="size-4"
             />
-            <span className="truncate">{name}</span>
+            <span className="truncate" title={name ?? ""}>
+              {projectDisplayName(name ?? "")}
+            </span>
           </>
         ) : (
           <span className="truncate text-dim">All projects</span>

@@ -2,6 +2,7 @@
 // (`/api/v1/instance/*`). It holds the `tti_` token and nothing else; the org client never sees it
 // and this one never sees an org token. Every refusal is thrown with the server's own message.
 import { getInstanceToken, disconnectInstance } from "@/lib/instance-auth";
+import { versionAwareFetch } from "@/lib/build-version";
 import { ApiError, mapSetting } from "./http-adapter";
 import type { OrgQuotas, Setting } from "./types";
 import type { WireError, WireQuotas, WireSetting } from "./wire";
@@ -61,7 +62,7 @@ const ms = (iso: string | null): number | null => {
 };
 
 export function createInstanceApi(options: InstanceApiOptions): InstanceApi {
-  const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+  const doFetch = options.fetch ?? versionAwareFetch;
   const base = `${options.baseUrl ?? ""}/api/v1/instance`;
 
   async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {

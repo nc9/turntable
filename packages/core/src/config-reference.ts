@@ -524,7 +524,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     name: "TURNTABLE_VERSION",
     area: "Build",
     description:
-      "Version for `scripts/build.ts` (a leading `v` is stripped); defaults to the root package.json version.",
+      "Version for `scripts/build.ts` (a leading `v` is stripped; semver 2.0.0, verbatim, so include your own `+sha8`). Empty falls through to a `BUILD_VERSION` file at the repo root, then to the default `<root package.json version>-dev0+<sha8>` (`+unknown` without a `BUILD_SHA` file). A malformed value fails the build. Reported as `/healthz` `version`, the `Turntable-Version` header, MCP `serverInfo.version`, `turntable version` and the web UI.",
   },
   {
     name: "TURNTABLE_SIGN_DARWIN",
@@ -548,6 +548,24 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Build",
     description:
       "The commit the binary was built from. Stamped into the binary by `scripts/build.ts` from the `BUILD_SHA` file that CD writes, and reported by `/healthz` as `build_sha`. Never set by hand; `unknown` when the build had no stamp.",
+  },
+  {
+    name: "TURNTABLE_BUILD_TIME",
+    area: "Build",
+    description:
+      "Build time, a compile-time define set by `scripts/build.ts` and reported by `/healthz` as `built_at`. It is `SOURCE_DATE_EPOCH` when set, else the committer date of HEAD, else `unknown`; never the wall clock, so builds stay reproducible. Never set by hand.",
+  },
+  {
+    name: "TURNTABLE_UI_VERSION",
+    area: "Build",
+    description:
+      "Build input for the web UI bundle: the version baked into the UI by `packages/ui/scripts/build-bundle.ts`, which the update banner compares with the server's `/healthz` version. Set by `scripts/build.ts`; never set by hand.",
+  },
+  {
+    name: "TURNTABLE_UI_SHA",
+    area: "Build",
+    description:
+      "Build input for the web UI bundle: the commit baked into the UI by `packages/ui/scripts/build-bundle.ts`, compared with the server's `build_sha`. Set by `scripts/build.ts`; never set by hand.",
   },
   // ---- the checkout child (control plane fetches a run's commit without git) ----
   {

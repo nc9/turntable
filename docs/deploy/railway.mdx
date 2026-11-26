@@ -41,6 +41,10 @@ Run the release lane only when you sign or publish releases. Without it, leave t
   **A Railway volume attaches to one service.** The release lane reads release requests from the main database, and today that database is a SQLite file in the main service's volume, so a second Railway service cannot open it. Until the Postgres backend lands, run the release lane where it can mount the main data directory (the same machine or pod), or do not run it on Railway. Do not work around this by giving the release service the main service's key or putting `TURNTABLE_RELEASE_*` in the main service: those separations are the point (see [Release lane](/release-lane)).
 </Warning>
 
+## Build version
+
+Give each deploy a version (see [Build version](/deploy/cd#build-version)) in one of two ways. Preferred: write the one-line `BUILD_VERSION` file into the archive root before `railway up`, which needs no platform state. Or set the `TURNTABLE_VERSION` service variable first; Railway passes service variables to Dockerfile builds as build args, and the Dockerfile declares the `ARG`. With neither, the build reports `<base>-dev0+<sha8>`.
+
 ## Volumes
 
 - **Main:** mount a volume at `/data` and set `TURNTABLE_DATA_DIR=/data`. It holds `turntable.db` (and its `-wal` and `-shm` files) and, if you keep it there, the master key and its `.audit-state` directory (`TURNTABLE_MASTER_KEY_FILE=/data/master.key`, created on first boot with `TURNTABLE_MASTER_KEY_AUTOINIT=1`, or with `turntable keys init` elsewhere and uploaded).
