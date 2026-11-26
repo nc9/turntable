@@ -38,7 +38,7 @@ Either way: if the request is not approved, there are no rules, the proxy refuse
 
 **Credential.** A granular access token for the one package (or scope), with publish permission only, an expiry, and, if the registry offers it, an allowed source address list set to the release proxy's or lane's egress address. Stored as `NPM_TOKEN` of class `release`, destination `registry.npmjs.org`. It is rotated on a schedule and on any incident (the vault's rotation flags and overlap window apply). It is never a user's login token.
 
-**Strict.** The lane reads the recorded tarball, recomputes its digest, and checks it against what it attested for the release. It builds the publish request itself (`PUT /<package>` with the version metadata, `dist.integrity` computed from the bytes, the dist-tag from the declared configuration) and sends it through the guarded outbound client with the token. A version that already exists is a success only if its published integrity equals the digest, otherwise a refusal (`republish_mismatch`).
+**Strict.** The lane reads the recorded tarball, recomputes its digest, and checks it against what it attested for the release. It builds the publish request itself (`PUT /<package>` with the version metadata, `dist.integrity` computed from the bytes, the dist-tag from the declared configuration, or from the version with `tag: "auto"`) and sends it through the guarded outbound client with the token. A version that already exists is a success only if its published integrity equals the digest, otherwise a refusal (`republish_mismatch`).
 
 **Compat.** A proxy rule: host `registry.npmjs.org`, methods `GET` and `PUT`, path exactly the package's path, header injection `Authorization: Bearer`. Two things are new:
 

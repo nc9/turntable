@@ -31,6 +31,7 @@ export interface NpmTarget {
    * the single `.tgz` file inside it. (The name of the tarball file itself still works.)
    */
   artifact: string;
+  /** The dist-tag, or `auto`: the prerelease channel of the version (`beta`), `latest` for a plain one. */
   tag: string;
   access: "public" | "restricted";
   /** The release-class vault secret holding the registry token. */

@@ -3,6 +3,7 @@
 // bytes, so nothing the workflow wrote decides what is published.
 import { createHash } from "node:crypto";
 import { safeFetch, type SafeFetch } from "@turntable/net";
+import { resolveDistTag } from "./dist-tag";
 import { tarEntries, tarEntry } from "./tar";
 import type { NpmTarget, PublishContext, TargetResult } from "./types";
 
@@ -142,6 +143,9 @@ export async function publishNpm(
   const insp = inspectNpmTarball(bytes, t.package, ctx.tag);
   if (!insp.ok) return refuse(insp.reason, insp.detail);
   const { version, manifest } = insp;
+  const dist = resolveDistTag(t.tag, version);
+  if (!dist.ok) return refuse("bad_dist_tag", dist.detail);
+  const distTag = dist.tag;
 
   const integrity = integrityOf(bytes);
   const shasum = createHash("sha1").update(bytes).digest("hex");
@@ -151,7 +155,7 @@ export async function publishNpm(
     accept: "application/json",
     "user-agent": "turntable",
   };
-  const facts = { package: t.package, version, integrity, registry, tag: t.tag };
+  const facts = { package: t.package, version, integrity, registry, tag: distTag };
 
   /** The published version's integrity, "none" when there is no such version. */
   const existing = async (): Promise<string | "none" | { error: number }> => {
@@ -183,7 +187,7 @@ export async function publishNpm(
     _id: t.package,
     name: t.package,
     ...(typeof manifest.description === "string" ? { description: manifest.description } : {}),
-    "dist-tags": { [t.tag]: version },
+    "dist-tags": { [distTag]: version },
     versions: {
       [version]: {
         ...manifest,

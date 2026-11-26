@@ -158,7 +158,13 @@ const targetFields = {
     .describe(
       "npm and oci-image: the NAME of the lane secret (see release_secret_set), never a value.",
     ),
-  tag: z.string().max(64).optional().describe("npm: the dist-tag (default latest)."),
+  tag: z
+    .string()
+    .max(64)
+    .optional()
+    .describe(
+      "npm: the dist-tag (default latest), or auto: the version's prerelease channel (1.2.3-beta.4 is beta), latest for a plain version.",
+    ),
   access: z.enum(["public", "restricted"]).optional().describe("npm: access."),
   assets: z
     .array(z.string().max(200))

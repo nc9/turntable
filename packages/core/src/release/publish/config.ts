@@ -47,7 +47,7 @@ export function parseTarget(raw: unknown): PublishTarget {
       ARTIFACT_NAME.test(t.artifact) && !t.artifact.split("/").includes(".."),
       "artifact must be a recorded artifact name",
     );
-    need(DIST_TAG.test(t.tag), "tag must be a plain dist-tag");
+    need(t.tag === "auto" || DIST_TAG.test(t.tag), "tag must be a plain dist-tag or auto");
     need(t.access === "public" || t.access === "restricted", "access must be public or restricted");
     need(SECRET_NAME.test(t.secret), "secret must name a release-class vault secret");
     return t;
