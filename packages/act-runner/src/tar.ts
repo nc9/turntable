@@ -460,6 +460,12 @@ export interface ScanOptions {
   /** Most bytes captured in all; past it files are listed but not captured. */
   captureTotal: number;
   /**
+   * Most bytes of pax extended headers in all (the long paths and link targets). Mandatory data,
+   * so it has its own bound and is never charged to `captureTotal`. Default
+   * `MAX_PAX_BYTES` (128 MiB). Each header is still capped at `PAX_VALUE_CAP`.
+   */
+  maxPaxBytes?: number;
+  /**
    * Refuse two names that fold together (case, normalisation, ignorable characters, trailing dots).
    * Off by default: a Linux sandbox extracts `Readme` and `README` as two files and the scanner keys
    * them exactly. Turn it on when the archive will be extracted onto a folding filesystem
@@ -513,6 +519,12 @@ const PAX_VALUE_CAP = 1024 * 1024;
 const MAX_NAME_BYTES = 4096;
 /** All names and link targets together: a listing of millions of entries cannot be used to exhaust memory. */
 const MAX_TOTAL_NAME_BYTES = 64 * 1024 * 1024;
+/**
+ * All pax header bodies together. Each record is a name or link target plus a few bytes of framing,
+ * so this sits above the names bound (which stays the one that stops a hostile listing) and only
+ * bounds the pax bytes themselves. Bodies are read one at a time and not kept.
+ */
+const MAX_PAX_BYTES = 2 * MAX_TOTAL_NAME_BYTES;
 
 /** A path as our writer writes it: no absolute path, no empty, `.` or `..` segment, no `./` prefix, no doubled slash. */
 function canonical(path: string, dir: boolean): string[] {
@@ -596,6 +608,8 @@ export async function scanTarGz(
   input.pipe(gz);
   let total = 0;
   let captured = 0;
+  let paxBytes = 0;
+  const maxPaxBytes = o.maxPaxBytes ?? MAX_PAX_BYTES;
   let pending: Buffer = Buffer.alloc(0);
   let zeroBlocks = 0;
   let nameBytes_ = 0;
@@ -661,8 +675,8 @@ export async function scanTarGz(
         bad("a pax header is not the one this archive writes");
       // Checked before a byte of the body is buffered, and counted against what the scan may keep.
       if (size === 0 || size > PAX_VALUE_CAP) bad("a pax header has a bad size");
-      if (captured + size > o.captureTotal) bad("the pax headers are larger than the scan keeps");
-      captured += size;
+      if (paxBytes + size > maxPaxBytes) bad("the pax headers are larger than the scan keeps");
+      paxBytes += size;
       cur = {
         kind: "pax",
         type: "file",

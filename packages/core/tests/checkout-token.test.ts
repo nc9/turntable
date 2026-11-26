@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { INFRA_KINDS, isRetryableInfra } from "@turntable/act-runner";
 import { performCheckout } from "../src/run/checkout";
 import { CheckoutAuthError, runCheckoutChild } from "../src/run/checkout-child";
@@ -353,6 +353,28 @@ describe("the infra kind", () => {
     for (const c of ["protected", "release", "trusted_pr", "untrusted_pr", null])
       expect(isRetryableInfra("checkout_auth_failed", c)).toBe(false);
     expect(isRetryableInfra("sandbox_create_failed", "protected")).toBe(true);
+  });
+});
+
+describe("a tree scan refusal (#671)", () => {
+  test("is the named kind tree_scan, never retried, with the reason and a job-log line", async () => {
+    const { scanTarGz, TarFormatError } = await import("@turntable/act-runner");
+    const { treeScanOutcome } = await import("../src/scheduler/tree-scan-outcome");
+    const err = await scanTarGz(gzipSync(Buffer.alloc(1024, 1)), {
+      maxUnpackedBytes: 1e6,
+      maxEntries: 10,
+      captureUpTo: 10,
+      captureTotal: 10,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TarFormatError);
+    const r = treeScanOutcome(err)!;
+    expect(r.outcome).toMatchObject({ state: "infra_error", infraKind: "tree_scan" });
+    expect(r.outcome.reason).toContain((err as Error).message);
+    expect(r.logLine).toContain("tree scan");
+    expect(treeScanOutcome(new Error("x"))).toBeUndefined();
+    expect(INFRA_KINDS.tree_scan.transient).toBe(false);
+    for (const c of ["protected", "trusted_pr", null])
+      expect(isRetryableInfra("tree_scan", c)).toBe(false);
   });
 });
 
