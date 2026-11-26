@@ -20,6 +20,8 @@ import {
   readLog,
   type Scope,
 } from "../src/db";
+import { systemOrgId } from "../src/audit/failures";
+import { listAuditByOp } from "../src/db/repos";
 import { checkEgress } from "../src/doctor/checks";
 import { NetworkHealth, type ProbeResult, egressProbe, processNetwork } from "../src/network";
 import { dispatch, registry } from "../src/ops";
@@ -90,6 +92,13 @@ describe("probe state machine", () => {
     const snap = h.net.snapshot();
     expect(snap.windows).toHaveLength(1);
     expect(snap.windows[0]!.end).not.toBeNull();
+  });
+
+  test("the state is unknown until a probe has run", async () => {
+    const h = fakeHealth();
+    expect(h.net.snapshot().state).toBe("unknown");
+    await h.probe(good);
+    expect(h.net.snapshot().state).toBe("healthy");
   });
 
   test("a single failure between successes never degrades", async () => {
@@ -304,6 +313,31 @@ describe("scheduler while the network is degraded", () => {
     expect(notices[2]).toEqual([]);
   });
 
+  test("a checkout fetch failure (full history or submodules) during degraded is requeued", async () => {
+    const t = await setup();
+    const { job } = await t.mk("build");
+    const runner: AttemptRunner = async (ctx) => {
+      await ctx.store.setTrustClass("trusted_pr").catch(() => undefined);
+      await t.h.probe(bad);
+      await t.h.probe(bad);
+      t.h.answer(bad);
+      return {
+        state: "infra_error",
+        infraKind: "checkout_fetch_failed",
+        reason: "checkout: fetch failed",
+      };
+    };
+    const s = t.sched(runner);
+    expect(await s.tick()).toBe(1);
+    await s.idle();
+    const all = await listAttempts(t.db, t.scope, job.id);
+    expect(all).toHaveLength(2);
+    expect(all[0]!.errorClass).toStartWith("network_degraded");
+    expect(all[0]!.infraKind).toBeNull();
+    expect(all[1]!.state).toBe("queued");
+    expect(t.finished).toEqual([]);
+  });
+
   test("a failure after a sandbox existed is not requeued for the network", async () => {
     const t = await setup();
     const { job } = await t.mk("deploy");
@@ -403,6 +437,13 @@ describe("doctor, admin read and MCP", () => {
       expect(io.state).toBe("degraded");
       expect(io.consecutive_failures).toBe(2);
       expect(io.targets[0]!.error).toBe("ENOTFOUND");
+      // The banner polls this read: it writes no audit row (state changes are audited elsewhere).
+      const sys = { orgId: await systemOrgId(db) };
+      const rows = () =>
+        listAuditByOp(db, sys, { op: "instance_network_status", outcome: "ok", limit: 10 });
+      for (let k = 0; k < 3; k++)
+        await dispatch(env, { kind: "bearer", token: inst.secret }, "instance_network_status", {});
+      expect(await rows()).toHaveLength(0);
       // An org token cannot read the instance variant.
       const denied = await dispatch(
         env,

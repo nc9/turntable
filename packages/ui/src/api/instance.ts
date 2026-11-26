@@ -36,7 +36,7 @@ export type ProjectPatch = {
 };
 /** The instance's outbound network state (#698). Times are epoch ms. */
 export type NetworkStatus = {
-  state: "healthy" | "degraded";
+  state: "healthy" | "degraded" | "unknown";
   since: number | null;
   windows: { start: number; end: number | null }[];
   consecutiveFailures: number;
@@ -145,7 +145,7 @@ export function createInstanceApi(options: InstanceApiOptions): InstanceApi {
     },
     async networkStatus() {
       const w = await call<{
-        state: "healthy" | "degraded";
+        state: "healthy" | "degraded" | "unknown";
         since: string | null;
         windows: { start: string; end: string | null }[];
         consecutive_failures: number;

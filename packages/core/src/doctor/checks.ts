@@ -839,6 +839,9 @@ export function checkEgress(net: NetworkHealth = processNetwork): DoctorCheck {
       "Check the host's outbound connectivity and DNS. The state clears after two successful probes (15 s apart).",
     );
   }
+  if (snap.state === "unknown") {
+    return pass("egress", "network", `outbound network not probed by this process${recent}`);
+  }
   return pass("egress", "network", `outbound network is healthy${recent}`);
 }
 

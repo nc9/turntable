@@ -18,7 +18,9 @@ export function NetworkView({ status }: { status: NetworkStatus }) {
       <p role="status">
         {degraded
           ? `Network degraded since ${status.since ? when(status.since) : "boot"} UTC: no new attempt starts and check posts wait.`
-          : "Network healthy."}
+          : status.state === "unknown"
+            ? "Network state unknown: this server has not run a probe."
+            : "Network healthy."}
       </p>
       {status.targets.length > 0 ? (
         <ul aria-label="Last probe" className="mt-1 flex flex-wrap gap-x-4 font-mono">

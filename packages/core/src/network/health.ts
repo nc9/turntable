@@ -30,7 +30,8 @@ export type NetworkWindow = {
 };
 
 export type NetworkSnapshot = {
-  state: "healthy" | "degraded";
+  /** `unknown` until a probe has run (a process that does not run the probe never says healthy). */
+  state: "healthy" | "degraded" | "unknown";
   /** When the current state began (epoch ms), or null if it never changed since boot. */
   since: number | null;
   /** Consecutive failed probes (0 when the last one passed). */
@@ -201,7 +202,7 @@ export class NetworkHealth {
 
   snapshot(): NetworkSnapshot {
     return {
-      state: this.#degraded ? "degraded" : "healthy",
+      state: this.#degraded ? "degraded" : this.#last ? "healthy" : "unknown",
       since: this.#since,
       consecutive_failures: this.#fails,
       last_probe_at: this.#last?.at ?? null,

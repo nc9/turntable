@@ -1,6 +1,4 @@
 import { z } from "zod";
-import { systemOrgId } from "../../audit/failures";
-import { appendAudit } from "../../db";
 import { processNetwork } from "../../network";
 import { iso } from "../common";
 import { defineOp } from "../define";
@@ -11,7 +9,7 @@ const windowShape = z.object({
 });
 
 const baseOutput = z.object({
-  state: z.enum(["healthy", "degraded"]),
+  state: z.enum(["healthy", "degraded", "unknown"]),
   since: z.string().nullable().describe("When the current state began, or null since boot."),
   windows: z
     .array(windowShape)
@@ -30,9 +28,9 @@ function view(): Base {
 }
 
 const DESCRIPTION =
-  "The instance's outbound network state (#698). A probe every 15 s resolves and HEADs the forge " +
-  "and the sandbox provider; two failures in a row mean `degraded`, two successes mean " +
-  "`healthy`. While degraded no new attempt is claimed, an attempt that failed before its " +
+  "The instance's outbound network state (#698). A probe every 15 s resolves and GETs the forge's `/rate_limit` " +
+  "and calls the sandbox provider; two failures in a row mean `degraded`, two successes mean " +
+  "`healthy` (`unknown` until a probe has run, and on a process that does not run it). While degraded no new attempt is claimed, an attempt that failed before its " +
   "sandbox existed is re-queued without using its retry, and check posts wait. The state and " +
   "the windows live in the server process and reset on a restart. ";
 
@@ -83,19 +81,7 @@ export const instanceNetworkStatusOp = defineOp({
   scope: "org",
   http: { method: "GET", path: "/instance/network" },
   mcp: false,
-  async handler(ctx) {
-    await appendAudit(
-      ctx.db,
-      { orgId: await systemOrgId(ctx.db) },
-      {
-        principalKind: "instance",
-        principalId: ctx.principal.id,
-        op: "instance_network_status",
-        effect: "read",
-        outcome: "ok",
-        input: {},
-      },
-    );
+  async handler() {
     const s = processNetwork.snapshot();
     return {
       ...view(),

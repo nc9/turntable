@@ -4,7 +4,7 @@ import type { NetworkProbe, ProbeResult, TargetResult } from "./health";
 export type ProbeTarget = {
   /** A fixed label that appears in doctor and the admin page. Never a URL. */
   label: string;
-  /** The URL to HEAD. Only its host is resolved; it is never reported. */
+  /** The URL to GET. Only its host is resolved; it is never reported. */
   url: string;
 };
 
@@ -28,7 +28,7 @@ const codeOf = (err: unknown): string => {
 };
 
 /**
- * A cheap egress probe: for each target, a DNS lookup then a HEAD. Any HTTP answer counts as
+ * A cheap egress probe: for each target, a DNS lookup then a GET (the forge target is `GET /rate_limit`, which GitHub does not count against the limit). Any HTTP answer counts as
  * reachable (a 401 from an API is still a working network). A target failing alone is that
  * service's outage, not ours, so the probe fails only when EVERY target failed: a lost network
  * takes all of them.
@@ -48,7 +48,7 @@ export function egressProbe(o: EgressProbeOptions): NetworkProbe {
         }
         const t1 = performance.now();
         try {
-          await doFetch(t.url, { method: "HEAD", signal: AbortSignal.timeout(timeoutMs) });
+          await doFetch(t.url, { method: "GET", signal: AbortSignal.timeout(timeoutMs) });
           return {
             target: t.label,
             ok: true,

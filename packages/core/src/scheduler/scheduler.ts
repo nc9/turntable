@@ -513,7 +513,9 @@ export class Scheduler {
       // sandbox is never requeued here (see `requeuePreSandbox`).
       if (
         outcome.state === "infra_error" &&
-        (outcome.infraKind === "sandbox_create_failed" || outcome.infraKind === "unknown") &&
+        (outcome.infraKind === "sandbox_create_failed" ||
+          outcome.infraKind === "checkout_fetch_failed" ||
+          outcome.infraKind === "unknown") &&
         !controller.signal.aborted &&
         !this.#cutting.has(attempt.id)
       ) {

@@ -57,7 +57,7 @@ import { RETIRE_FILE_ENV, retireMasterKeyFile } from "./secrets/retire-key-file"
 import { autoInitMasterKey, autoInitRequested } from "./secrets/autoinit";
 import { appendAudit } from "./db/repos";
 import { backfillApprovalDefaultStrict } from "./db/repos/approval-default";
-import { egressProbe, type ProbeCheck, processNetwork } from "./network";
+import { egressProbe as networkProbe, type ProbeCheck, processNetwork } from "./network";
 import { systemOrgId } from "./audit/failures";
 import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
@@ -267,8 +267,8 @@ async function startBackground(
   // Egress health (#698): a probe every 15 s of the forge API and, with a remote provider, its API.
   const probeChecks: ProbeCheck[] = [];
   processNetwork.configure({
-    probe: egressProbe({
-      targets: [{ label: "forge", url: "https://api.github.com" }],
+    probe: networkProbe({
+      targets: [{ label: "forge", url: "https://api.github.com/rate_limit" }],
       checks: () => probeChecks,
     }),
     onChange: (state, snap) => {

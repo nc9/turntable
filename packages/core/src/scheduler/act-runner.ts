@@ -739,6 +739,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
             }
             return {
               state: "infra_error",
+              infraKind: "checkout_fetch_failed",
               reason: `checkout: ${clean(e instanceof Error ? e.message : String(e), 400)}`,
             };
           }
