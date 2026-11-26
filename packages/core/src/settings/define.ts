@@ -51,6 +51,12 @@ export type SettingSpec<T> = {
   /** For a boolean trust setting: the strict value. */
   strictValue?: boolean;
   /**
+   * For a number: the key of the instance setting that is the most it may be set to. A set above
+   * it is refused (a limit-type override can never exceed what the operator allows), and the
+   * value in use is clamped to it, so a stored value from before a ceiling was lowered fails closed.
+   */
+  ceiling?: string;
+  /**
    * Whether `set_setting` may change it over MCP. False for anything that raises a limit or
    * widens what a run may do: a value in an agent's context is not a human decision (#188).
    */

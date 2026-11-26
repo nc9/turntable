@@ -140,7 +140,7 @@ process.exit(1);`,
           },
         }),
       ),
-    ).rejects.toThrow(/more than 100 MiB/);
+    ).rejects.toThrow(/memory limit of 100 MiB/);
     expect(seen.length).toBeGreaterThan(0);
     expect(Date.now() - t0).toBeLessThan(5000);
     // a ceiling of 0 turns the check off: the reader is never asked

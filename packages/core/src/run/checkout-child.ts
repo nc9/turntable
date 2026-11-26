@@ -13,7 +13,15 @@ import { lstat, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scrubbedEnv } from "@turntable/provider-sdk";
-import { clean, DEFAULT_FETCH_LIMITS, EXIT_AUTH_REFUSED, type FetchLimits } from "./git-fetch";
+import {
+  type BudgetLimit,
+  clean,
+  DEFAULT_FETCH_LIMITS,
+  EXIT_AUTH_REFUSED,
+  EXIT_FETCH_LIMIT,
+  type FetchLimits,
+  FULL_HISTORY_FACTOR,
+} from "./git-fetch";
 import { scrubToken, tokenMessage } from "./scrub-token";
 
 /** The forge answered 401 or 403 (or 404 to a request that carried a token). Never retried. */
@@ -25,6 +33,74 @@ export class CheckoutAuthError extends Error {
     );
     this.name = "CheckoutAuthError";
     this.status = status;
+  }
+}
+
+/**
+ * The limits one checkout runs under: the instance's (or the project's) budgets for a shallow tree,
+ * and for a full-history delivery each of the three size budgets times `FULL_HISTORY_FACTOR`. The
+ * per-object, tree, entry, delta and time limits are the same for both. A single place, so the
+ * child, the tarball read-back and the settings page agree.
+ */
+export function limitsFor(base: Partial<FetchLimits>, fullHistory: boolean): FetchLimits {
+  const l: FetchLimits = { ...DEFAULT_FETCH_LIMITS, ...base };
+  if (!fullHistory) return l;
+  return {
+    ...l,
+    maxPackBytes: l.maxPackBytes * FULL_HISTORY_FACTOR,
+    maxInflatedBytes: l.maxInflatedBytes * FULL_HISTORY_FACTOR,
+    maxTarballBytes: l.maxTarballBytes * FULL_HISTORY_FACTOR,
+  };
+}
+
+/** What names each budget to an operator: the words, the settings that raise it, the env variable. */
+export const BUDGET_NAMES: Record<
+  BudgetLimit | "memory",
+  { label: string; project?: string; instance?: string; env: string }
+> = {
+  maxPackBytes: {
+    label: "pack",
+    project: "project_checkout_max_pack_mib",
+    instance: "checkout_max_pack_mib",
+    env: "TURNTABLE_CHECKOUT_MAX_PACK_MIB",
+  },
+  maxInflatedBytes: {
+    label: "unpacked",
+    project: "project_checkout_max_unpacked_mib",
+    instance: "checkout_max_unpacked_mib",
+    env: "TURNTABLE_CHECKOUT_MAX_UNPACKED_MIB",
+  },
+  maxTarballBytes: {
+    label: "tarball",
+    project: "project_checkout_max_tarball_mib",
+    instance: "checkout_max_tarball_mib",
+    env: "TURNTABLE_CHECKOUT_MAX_TARBALL_MIB",
+  },
+  memory: { label: "memory", env: "TURNTABLE_CHECKOUT_MAX_MEMORY_MIB" },
+};
+
+/**
+ * A checkout ran over one of its budgets. Infra kind `fetch_limit`: never retried, because the same
+ * commit hits the same budget again. The message names the budget, its value in force and what
+ * raises it, and is what the job log shows.
+ */
+export class CheckoutLimitError extends Error {
+  readonly limit: BudgetLimit | "memory";
+  readonly mib: number;
+  readonly fullHistory: boolean;
+  constructor(limit: BudgetLimit | "memory", mib: number, fullHistory: boolean) {
+    const n = BUDGET_NAMES[limit];
+    const raise =
+      n.project && n.instance
+        ? `raise the setting ${n.project} for this project, or ${n.instance} (${n.env}) for every project`
+        : `raise ${n.env}`;
+    super(
+      `the checkout hit the ${n.label} limit of ${mib} MiB${fullHistory ? " (full history: the budget is " + FULL_HISTORY_FACTOR + " times the shallow one)" : ""}: ${raise}`,
+    );
+    this.name = "CheckoutLimitError";
+    this.limit = limit;
+    this.mib = mib;
+    this.fullHistory = fullHistory;
   }
 }
 
@@ -210,11 +286,12 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
   }
 }
 
+const MEMORY_KILL = "the checkout used more than its memory ceiling";
+
 async function runChild(r: ChildRequest): Promise<ChildResult> {
   const cfg = { ...DEFAULT_CHECKOUT_CONFIG, ...r.config };
-  const limits: Partial<FetchLimits> = {
-    ...DEFAULT_FETCH_LIMITS,
-    ...cfg.limits,
+  const limits: FetchLimits = {
+    ...limitsFor(cfg.limits, r.fullHistory === true),
     timeoutMs: cfg.timeoutMs,
   };
   // The commit is checked here, in the parent, whatever the caller did: it goes into an argument.
@@ -275,8 +352,7 @@ async function runChild(r: ChildRequest): Promise<ChildResult> {
     else if (cfg.memoryMb > 0) {
       const used = rss(child.pid);
       if (used === undefined) warnNoRssOnce(log);
-      else if (used > cfg.memoryMb * MIB)
-        kill(`the checkout used more than ${cfg.memoryMb} MiB of memory`);
+      else if (used > cfg.memoryMb * MIB) kill(MEMORY_KILL);
     }
   }, r.pollMs ?? 200);
   const onAbort = (): void => kill("the checkout was cancelled");
@@ -294,12 +370,22 @@ async function runChild(r: ChildRequest): Promise<ChildResult> {
       return "abandoned" as const;
     });
     const res = await Promise.race([finished, gone]);
-    if (killedFor) throw new Error(killedFor);
+    if (killedFor) {
+      if (killedFor === MEMORY_KILL) throw new CheckoutLimitError("memory", cfg.memoryMb, false);
+      throw new Error(killedFor);
+    }
     if (res === "abandoned") throw new Error("the checkout did not stop");
     const [out, err, code] = res;
     if (code === EXIT_AUTH_REFUSED) {
       const m = /checkout_auth_failed HTTP (\d{3})/.exec(err);
       throw new CheckoutAuthError(m ? Number(m[1]) : 401);
+    }
+    if (code === EXIT_FETCH_LIMIT) {
+      const m = /fetch_limit (maxPackBytes|maxInflatedBytes|maxTarballBytes)/.exec(err);
+      if (m) {
+        const key = m[1] as BudgetLimit;
+        throw new CheckoutLimitError(key, Math.round(limits[key] / MIB), r.fullHistory === true);
+      }
     }
     if (code !== 0) {
       const line = err.trim().split("\n").filter(Boolean).at(-1) ?? `exit ${code}`;

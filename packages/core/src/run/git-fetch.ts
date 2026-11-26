@@ -14,7 +14,7 @@ import { chmodSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "nod
 import { dirname, join } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
 import { foldKey, HFS_IGNORABLE } from "@turntable/act-runner";
-import { safeFetch, type SafeFetch } from "@turntable/net";
+import { ResponseTooLargeError, safeFetch, type SafeFetch } from "@turntable/net";
 
 export class GitFetchError extends Error {
   constructor(message: string) {
@@ -22,6 +22,38 @@ export class GitFetchError extends Error {
     this.name = "GitFetchError";
   }
 }
+
+/** The limits an operator can raise (a setting each); the child reports one of these by name. */
+export const BUDGET_LIMITS = ["maxPackBytes", "maxInflatedBytes", "maxTarballBytes"] as const;
+export type BudgetLimit = (typeof BUDGET_LIMITS)[number];
+
+/**
+ * A size budget the fetch ran over: the pack, the unpacked data or the tarball. A named failure
+ * (infra kind `fetch_limit`), never retried: the same commit hits the same budget again.
+ */
+export class FetchLimitError extends GitFetchError {
+  readonly limit: BudgetLimit;
+  constructor(limit: BudgetLimit, message: string) {
+    super(message);
+    this.name = "FetchLimitError";
+    this.limit = limit;
+  }
+}
+
+/**
+ * The budget an error says the fetch ran over, or undefined for any other error: the pack body
+ * (the HTTP client's cap), the unpacked data, or the tarball writer's cap.
+ */
+export function budgetLimitOf(e: unknown): BudgetLimit | undefined {
+  if (e instanceof FetchLimitError) return e.limit;
+  if (e instanceof ResponseTooLargeError) return "maxPackBytes";
+  if (e instanceof Error && /the tarball is larger than the cap/.test(e.message))
+    return "maxTarballBytes";
+  return undefined;
+}
+
+/** A full-history delivery gets this many times the shallow tree's pack, unpacked and tarball budgets. */
+export const FULL_HISTORY_FACTOR = 4;
 
 export interface FetchLimits {
   /** Most bytes of packfile. Default 128 MiB. */
@@ -158,6 +190,8 @@ export interface FetchOptions {
 
 /** The checkout child's exit status when the forge refused the credential. */
 export const EXIT_AUTH_REFUSED = 77;
+/** The child ran over a size budget; stderr names it as `fetch_limit <name>`. */
+export const EXIT_FETCH_LIMIT = 78;
 
 /** The server refused the credential (or its absence): 401, 403, or a 404 when a token was sent. */
 export class GitAuthError extends Error {
@@ -534,7 +568,10 @@ function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes: number): Uint
   if (varint() !== base.length) throw new GitFetchError("a delta does not match its base");
   const size = varint();
   if (size > maxBytes)
-    throw new GitFetchError("a delta would produce more than the pack may unpack to");
+    throw new FetchLimitError(
+      "maxInflatedBytes",
+      "a delta would produce more than the pack may unpack to",
+    );
   const out = new Uint8Array(size);
   let o = 0;
   while (i < delta.length) {
@@ -598,7 +635,7 @@ export function readPack(
   const spend = (n: number): void => {
     budget += n;
     if (budget > limits.maxInflatedBytes)
-      throw new GitFetchError("the pack is too large when unpacked");
+      throw new FetchLimitError("maxInflatedBytes", "the pack is too large when unpacked");
   };
   const byte = (): number => {
     if (pos >= end) throw new GitFetchError("the pack is truncated");
@@ -948,7 +985,8 @@ export function materialize(
         if (!blob || blob.type !== "blob")
           throw new GitFetchError("the pack lacks a blob the commit needs");
         bytes += blob.data.length;
-        if (bytes > max.maxInflatedBytes) throw new GitFetchError("the repository is too large");
+        if (bytes > max.maxInflatedBytes)
+          throw new FetchLimitError("maxInflatedBytes", "the repository is too large");
         reachable.add(e.oid);
         if (e.mode === "120000") {
           if (isDotGitmodules(e.name)) throw new GitFetchError(".gitmodules may not be a symlink");
