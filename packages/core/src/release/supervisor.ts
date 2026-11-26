@@ -12,7 +12,7 @@
 // What this does not do: the child runs as the parent's user. See the design doc for what that
 // leaves (same-user code can read /proc/<pid>/environ), and docs/release-lane.mdx.
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { controlPost } from "@turntable/net";
@@ -80,6 +80,31 @@ export interface PreparedLane {
   cleanup(): void;
 }
 
+/** Removes socket directories a crashed earlier boot left behind. Best effort; never throws. */
+export function removeStaleLaneDirs(runDir: string): void {
+  try {
+    for (const name of readdirSync(runDir)) {
+      if (!name.startsWith("tt-lane-")) continue;
+      const dir = join(runDir, name);
+      try {
+        const pid = Number(readFileSync(join(dir, "owner.pid"), "utf8").trim());
+        if (!Number.isInteger(pid) || pid <= 0) continue; // not ours to judge
+        try {
+          process.kill(pid, 0);
+          continue; // its owner is alive
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === "EPERM") continue;
+        }
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // unreadable or already gone
+      }
+    }
+  } catch {
+    // the run directory may not exist or may not be listable
+  }
+}
+
 /**
  * Takes every release variable out of `env` (the parent's process.env) and builds the child's
  * environment. Throws, before anything is spawned, when the lane's configuration is incomplete or
@@ -114,7 +139,14 @@ export function prepareSupervisedLane(o: {
   }
   const requestKey = randomBytes(32).toString("hex");
   const configKey = randomBytes(32).toString("hex");
-  const dir = mkdtempSync(join(o.runDir ?? tmpdir(), "tt-lane-")); // mode 0700
+  const runDir = o.runDir ?? tmpdir();
+  removeStaleLaneDirs(runDir);
+  const dir = mkdtempSync(join(runDir, "tt-lane-")); // mode 0700
+  try {
+    writeFileSync(join(dir, "owner.pid"), String(process.pid), { mode: 0o600 });
+  } catch {
+    // best effort: without it a later boot just cannot tell this directory is live
+  }
   const socket = join(dir, "channel.sock");
   const childEnv: Record<string, string> = {
     ...passthrough,
@@ -151,7 +183,7 @@ export function prepareSupervisedLane(o: {
   };
 }
 
-export type LaneState = "starting" | "ready" | "restarting" | "stopped";
+export type LaneState = "starting" | "ready" | "restarting" | "failed" | "stopped";
 
 export interface LaneStatus {
   state: LaneState;
@@ -176,8 +208,10 @@ export type LaneSpawner = (argv: string[], env: Record<string, string>) => LaneP
 
 /** This binary, run again: the compiled binary, or `bun <script>` in development. */
 export function selfCommand(): string[] {
-  const script = process.argv[1];
-  return script && existsSync(script) ? [process.execPath, script] : [process.execPath];
+  // A compiled binary's entry is the virtual /$bunfs/root/<name>: passing it would make the child
+  // read it as a command. The binary alone is the whole program.
+  const compiled = Bun.main.startsWith("/$bunfs/") || /^[A-Za-z]:[\\/]~BUN/.test(Bun.main);
+  return compiled ? [process.execPath] : [process.execPath, Bun.main];
 }
 
 /** Spawns with an explicit environment: Bun.spawn's `env` replaces, never extends, the parent's. */
@@ -213,7 +247,9 @@ export class LaneSupervisor {
   private stopping = false;
   private proc: LaneProcess | undefined;
   private loop: Promise<void> | undefined;
-  private wake: (() => void) | undefined;
+  // Two waits with two handles: the restart backoff and the readiness poll. stop() wakes both.
+  private wakeRestart: (() => void) | undefined;
+  private wakeReady: (() => void) | undefined;
   private readonly spawnFn: LaneSpawner;
   private readonly now: () => number;
   private readonly log: (m: string) => void;
@@ -252,7 +288,9 @@ export class LaneSupervisor {
           ? "the release lane stopped and is restarting; try again shortly"
           : this.state === "starting"
             ? "the release lane is starting; try again shortly"
-            : "the release lane is stopped",
+            : this.state === "failed"
+              ? "the release lane could not be started and will be tried again"
+              : "the release lane is stopped",
     };
   }
 
@@ -268,10 +306,10 @@ export class LaneSupervisor {
     this.since = this.now();
   }
 
-  private sleep(ms: number): Promise<void> {
+  private sleep(ms: number, which: "wakeRestart" | "wakeReady"): Promise<void> {
     return new Promise((resolve) => {
       const t = setTimeout(resolve, ms);
-      this.wake = () => {
+      this[which] = () => {
         clearTimeout(t);
         resolve();
       };
@@ -299,7 +337,21 @@ export class LaneSupervisor {
     const command = this.o.command ?? selfCommand();
     while (!this.stopping) {
       this.set("starting");
-      const proc = this.spawnFn([...command, ...this.o.args], { ...this.o.prepared.childEnv });
+      let proc: LaneProcess;
+      try {
+        proc = this.spawnFn([...command, ...this.o.args], { ...this.o.prepared.childEnv });
+      } catch (e) {
+        // A spawn that throws (no such binary, out of processes) must never reach the server.
+        this.set("failed");
+        this.log(
+          `release lane could not be started: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        const wait = Math.min(this.backoff.baseMs * 2 ** attempt, this.backoff.maxMs);
+        attempt++;
+        await this.sleep(wait, "wakeRestart");
+        if (!this.stopping) this.restarts++;
+        continue;
+      }
       this.proc = proc;
       let alive = true;
       let readyAt: number | undefined;
@@ -314,7 +366,7 @@ export class LaneSupervisor {
             }
             return;
           }
-          await this.sleep(this.o.readyPollMs ?? 200);
+          await this.sleep(this.o.readyPollMs ?? 200, "wakeReady");
         }
       })();
       const code = await exit.catch(() => ({ code: null, signal: null }));
@@ -329,7 +381,7 @@ export class LaneSupervisor {
       if (readyAt !== undefined && this.now() - readyAt >= this.backoff.stableMs) attempt = 0;
       const wait = Math.min(this.backoff.baseMs * 2 ** attempt, this.backoff.maxMs);
       attempt++;
-      await this.sleep(wait);
+      await this.sleep(wait, "wakeRestart");
       if (!this.stopping) this.restarts++;
     }
     this.set("stopped");
@@ -338,7 +390,8 @@ export class LaneSupervisor {
   /** Stops the child with the parent: SIGTERM, then SIGKILL after the grace period. */
   async stop(): Promise<void> {
     this.stopping = true;
-    this.wake?.();
+    this.wakeRestart?.();
+    this.wakeReady?.();
     const proc = this.proc;
     if (proc) {
       proc.kill("SIGTERM");

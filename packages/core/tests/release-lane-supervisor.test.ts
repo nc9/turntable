@@ -25,6 +25,8 @@ import {
   LaneSupervisor,
   laneSupervised,
   prepareSupervisedLane,
+  removeStaleLaneDirs,
+  selfCommand,
   spawnLane,
   type LaneProcess,
   type LaneSpawner,
@@ -346,6 +348,113 @@ describe("supervision (fake child)", () => {
     expect(sigs).toEqual(["SIGTERM", "SIGKILL"]);
   });
 
+  test("a spawn that throws leaves the lane failed with backoff, never exits the caller, and stop is prompt", async () => {
+    const f = fakeSpawner();
+    const starts: number[] = [];
+    let throws = 2;
+    const logs: string[] = [];
+    const sup = new LaneSupervisor({
+      prepared: prepared(),
+      args: [],
+      command: ["x"],
+      spawn: (a, e) => {
+        starts.push(Date.now());
+        if (throws-- > 0) throw new Error("ENOENT: no such binary");
+        return f.spawn(a, e);
+      },
+      probe: async () => true,
+      log: (m) => logs.push(m),
+      backoff: { baseMs: 40, maxMs: 1000, stableMs: 1e9 },
+      readyPollMs: 10,
+    });
+    sup.start();
+    await until(() => sup.status().state === "failed");
+    expect(sup.availability()).toMatchObject({ ok: false, code: "release_lane_unavailable" });
+    await until(() => sup.availability().ok); // third attempt spawns
+    expect(starts).toHaveLength(3);
+    expect(starts[2]! - starts[1]!).toBeGreaterThanOrEqual(starts[1]! - starts[0]! + 20);
+    expect(logs.some((m) => m.includes("could not be started"))).toBe(true);
+    await sup.stop();
+    expect(sup.status().state).toBe("stopped");
+  });
+
+  test("stop during the backoff after a failed spawn does not wait it out", async () => {
+    const sup = new LaneSupervisor({
+      prepared: prepared(),
+      args: [],
+      command: ["x"],
+      spawn: () => {
+        throw new Error("boom");
+      },
+      probe: async () => false,
+      log: () => {},
+      backoff: { baseMs: 60_000, maxMs: 60_000, stableMs: 1e9 },
+    });
+    sup.start();
+    await until(() => sup.status().state === "failed");
+    const t = Date.now();
+    await sup.stop();
+    expect(Date.now() - t).toBeLessThan(2000);
+  });
+
+  test("stop is not delayed by a readiness poll that is waiting", async () => {
+    const f = fakeSpawner();
+    const sup = new LaneSupervisor({
+      prepared: prepared(),
+      args: [],
+      command: ["x"],
+      spawn: f.spawn,
+      probe: async () => false, // never ready: the poll keeps sleeping
+      log: () => {},
+      backoff: { baseMs: 60_000, maxMs: 60_000, stableMs: 1e9 },
+      readyPollMs: 60_000,
+    });
+    sup.start();
+    await until(() => f.procs.length === 1);
+    await sleep(50);
+    const t = Date.now();
+    const stopping = sup.stop();
+    f.procs[0]!.exit(0); // the child honours SIGTERM
+    await stopping;
+    expect(Date.now() - t).toBeLessThan(2000);
+  });
+
+  test("a restart wait is still woken by stop while a poll sleeps (separate wake handles)", async () => {
+    const f = fakeSpawner();
+    const sup = new LaneSupervisor({
+      prepared: prepared(),
+      args: [],
+      command: ["x"],
+      spawn: f.spawn,
+      probe: async () => false,
+      log: () => {},
+      backoff: { baseMs: 60_000, maxMs: 60_000, stableMs: 1e9 },
+      readyPollMs: 60_000,
+    });
+    sup.start();
+    await until(() => f.procs.length === 1);
+    f.procs[0]!.exit(1); // into the 60s restart wait
+    await until(() => sup.status().state === "restarting");
+    const t = Date.now();
+    await sup.stop();
+    expect(Date.now() - t).toBeLessThan(2000);
+  });
+
+  test("selfCommand does not pass a bunfs path; stale socket directories of dead owners are removed", () => {
+    expect(selfCommand().some((a) => a.startsWith("/$bunfs/"))).toBe(false);
+    const dead = join(tmp, "tt-lane-dead");
+    const live = join(tmp, "tt-lane-live");
+    const foreign = join(tmp, "tt-lane-nopid");
+    for (const d of [dead, live, foreign]) mkdirSync(d);
+    writeFileSync(join(dead, "owner.pid"), "2147483646");
+    writeFileSync(join(live, "owner.pid"), String(process.pid));
+    removeStaleLaneDirs(tmp);
+    expect(existsSync(dead)).toBe(false);
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(foreign)).toBe(true);
+    removeStaleLaneDirs(join(tmp, "absent")); // never throws
+  });
+
   test("doctor: not supervised here passes", () => {
     expect(checkReleaseLane({} as unknown as DoctorInputs).status).toBe("pass");
   });
@@ -482,7 +591,10 @@ describe("through a real child process (fakes for the forge and the signer)", ()
       );
       if (!co.ok) throw new Error(`${co.error.code} ${co.error.message}`);
       const coId = (co.output as { id: string }).id;
-      await until(async () => (await getReleaseRequest(db, a.scope, coId))?.status !== "pending");
+      await until(async () => {
+        const st = (await getReleaseRequest(db, a.scope, coId))?.status;
+        return st === "signed" || st === "refused" || st === "error";
+      });
       const coGot = await dispatch(
         { registry, db },
         { kind: "bearer", token: tok },
@@ -582,4 +694,63 @@ describe("the loopback release proxy", () => {
       db.close();
     }
   });
+});
+
+describe("the compiled binary", () => {
+  // The compiled entry is /$bunfs/root/<name>; the child must be started as the binary alone.
+  test.skipIf(onPostgres)(
+    "with the lane on, the supervised child reaches ready (no restart loop)",
+    { timeout: 170_000 },
+    async () => {
+      const out = join(tmp, "turntable-bin");
+      const built = await Bun.build({
+        entrypoints: [join(import.meta.dir, "../src/main.ts")],
+        compile: { outfile: out },
+      });
+      if (!built.success) throw new Error(built.logs.join("\n"));
+      const env = parentEnv();
+      const clean: Record<string, string> = {};
+      for (const [k, v] of Object.entries(env))
+        if (v !== undefined && k !== "HOME" && !k.startsWith("LONGSHORE_")) clean[k] = v;
+      const p = Bun.spawn(
+        [out, "serve", "--roles", "web", "--port", "0", "--data-dir", join(tmp, "data")],
+        {
+          env: {
+            ...clean,
+            PATH: process.env.PATH ?? "/usr/bin",
+            HOME: tmp,
+            TURNTABLE_ALLOW_ROOT: "1",
+            TURNTABLE_DATABASE_URL: "",
+          },
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      let text = "";
+      const pump = async (r: ReadableStream<Uint8Array>) => {
+        for await (const c of r) text += new TextDecoder().decode(c);
+      };
+      void pump(p.stdout);
+      void pump(p.stderr);
+      try {
+        await until(
+          () =>
+            text.includes("[turntable release] release lane started") ||
+            p.exitCode !== null ||
+            text.includes("unknown command"),
+          120_000,
+        );
+        console.log(text);
+        expect(text).not.toContain("unknown command");
+        expect(text).toContain("[turntable release] release channel listening");
+        expect(text).toContain("[turntable release] release lane started");
+        expect(text.match(/release lane exited/g)).toBeNull();
+        expect(p.exitCode).toBeNull();
+      } finally {
+        p.kill("SIGTERM");
+        await p.exited;
+      }
+    },
+  );
 });
