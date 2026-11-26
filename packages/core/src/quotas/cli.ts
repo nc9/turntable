@@ -79,11 +79,11 @@ export async function quotasCommand(args: string[]): Promise<number> {
       await setOrgQuotas(db, org.id, patch, "cli", Date.now());
     }
     const q = await getOrgQuotas(db, org.id);
-    const u = await quotaUsage(db, org.id, Date.now());
+    const u = await quotaUsage(db, org.id, Date.now(), q);
     for (const st of quotaStatuses(q, u)) {
       const lim = st.limit === null ? "no limit" : String(st.limit);
       console.log(
-        `${st.metric.padEnd(16)} ${String(st.used).padStart(12)} of ${lim}${st.percent === null ? "" : ` (${st.percent}%)`}${st.held ? `\n  held: ${st.held}` : ""}`,
+        `${st.metric.padEnd(16)} ${(st.used === null ? "-" : String(st.used)).padStart(12)} of ${lim}${st.percent === null ? "" : ` (${st.percent}%)`}${st.held ? `\n  held: ${st.held}` : ""}`,
       );
     }
     return 0;

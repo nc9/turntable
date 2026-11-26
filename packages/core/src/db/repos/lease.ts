@@ -46,6 +46,7 @@ import {
   orgsWithQuotas,
   quotaStatuses,
   quotaUsage,
+  type OrgQuotas,
   type QuotaStatus,
   type QuotaUsage,
 } from "./quotas";
@@ -106,12 +107,20 @@ export type ClaimOptions = {
 export const DEFAULT_PREEMPT_LIMIT = { max: 0, windowMs: 60 * 60_000 } as const;
 
 const usageCache = new WeakMap<Db, Map<string, { at: number; usage: QuotaUsage }>>();
-async function cachedUsage(db: Db, orgId: string, now: number, ttl: number): Promise<QuotaUsage> {
+async function cachedUsage(
+  db: Db,
+  orgId: string,
+  now: number,
+  ttl: number,
+  limits: Pick<OrgQuotas, "maxLogBytes">,
+): Promise<QuotaUsage> {
   let m = usageCache.get(db);
   if (!m) usageCache.set(db, (m = new Map()));
   const hit = m.get(orgId);
-  if (ttl > 0 && hit && Math.abs(now - hit.at) < ttl) return hit.usage;
-  const usage = await quotaUsage(db, orgId, now);
+  // A limit set since the entry was cached needs the measured figure, not the skipped one.
+  const measured = limits.maxLogBytes === null || hit?.usage.logBytes != null;
+  if (ttl > 0 && hit && measured && Math.abs(now - hit.at) < ttl) return hit.usage;
+  const usage = await quotaUsage(db, orgId, now, limits);
   m.set(orgId, { at: now, usage });
   return usage;
 }
@@ -252,7 +261,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
       for (const w of waiting) {
         const q = quotas.get(w.orgId);
         if (!q) continue;
-        const usage = await cachedUsage(tx, w.orgId, o.now, o.quotaCacheMs ?? 0);
+        const usage = await cachedUsage(tx, w.orgId, o.now, o.quotaCacheMs ?? 0, q);
         const statuses = quotaStatuses(q, { ...usage, concurrent: perOrg.get(w.orgId) ?? 0 });
         await noticesOnce(tx, w.orgId, statuses, o.now, o.quotaCacheMs ?? 0);
         if (
