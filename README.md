@@ -11,6 +11,7 @@ It is early and under active development: it runs our own CI, and interfaces can
 One rule shapes the design: **a job holds untrusted code or usable credentials, never both.** The full list, with links to how each part works, is in [Core features](docs/features.mdx).
 
 **Secrets never meet untrusted code**
+
 - **Trust classes.** Every run is classed at ingest from forge facts, never from pull request text. Fork pull requests get no secrets and no write token, even after approval.
 - **Secrets proxy.** A sandbox never holds a raw secret: a proxy adds credentials to outbound requests per allowed host.
 - **Scoped secrets vault.** Secrets are bound to org, project, environment, ref pattern, trust classes and destination hosts, and every use is audited.
@@ -18,17 +19,20 @@ One rule shapes the design: **a job holds untrusted code or usable credentials, 
 - **Your own OIDC issuer** per org, and a GitHub token per job that is revoked when the job ends.
 
 **Supply-chain defence**
+
 - **Action pins and moved tags.** Every `uses:` is pinned to a commit. A tag that moves fails protected and release runs until an operator accepts the new commit.
 - **Impostor commits refused.** An action commit must be reachable from the repository it names, not only from a fork.
 - **Workflow source and taint.** Privileged triggers read the workflow from the protected base branch, never from the pull request head.
 - **Cache isolation.** A job never restores a cache written by a lower trust class.
 
 **People approve, agents cannot**
+
 - Approvals are bound to the run's commit and workflow hash. By default agents cannot approve (`no_agents`), and a project can require signed approvals from passkeys or hardware keys.
 - **Signed releases.** A separate release lane alone holds the signing key and publish credentials. It re-checks the tag and recomputes digests, and approvals name the exact artifact set.
 - **Tamper-evident audit log.** A per-org hash chain with signed checkpoints anchored off the instance. An incident freeze stops scheduling in one call.
 
 **Built for agents, runs anywhere**
+
 - **MCP, REST, CLI and web UI** from one operations registry, with events over SSE, signed webhooks and WebSocket.
 - **Your compute.** Docker and Daytona are built in, and providers are plugins with a conformance suite.
 - **Your workflows.** GitHub Actions YAML runs through [act](https://github.com/nektos/act). See [Compatibility](docs/compatibility.mdx).
