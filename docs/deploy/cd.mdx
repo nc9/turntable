@@ -81,9 +81,26 @@ Before the deploy, `scripts/cd/backup.ts` creates a platform volume backup (`vol
 
 `scripts/cd/verify.ts` polls `/healthz` until it reports `"ok": true` and a `build_sha` (or `version`) equal to the target commit, or the timeout passes. During the drain the old instance still answers with its own sha, so a mismatch is retried and only fails at the timeout.
 
-The image build writes the deployed commit from a `BUILD_SHA` file at the repository root into the binary. Without that file (a local build) `build_sha` is `unknown`. `/healthz` is the unauthenticated version route; `version` is unchanged.
+The image build writes the deployed commit from a `BUILD_SHA` file at the repository root into the binary. Without that file (a local build) `build_sha` is `unknown`. `/healthz` is the unauthenticated version route; it also reports `built_at`, and `version` is the full build version (see [Build version](#build-version)).
 
 If verification fails and no migration ran, the workflow redeploys the previous commit and publishes the rollback note `rolled back <target> to <previous>: <reason>`. `verifyDeploy` returns the plan (`redeploy` with the note, or `stop` with the reason), so the workflow decides from its result. If a migration ran, it stops and notifies: the database is never restored automatically, because that would discard data written since the backup. Restoring a backup is a maintainer's decision.
+
+## Build version
+
+Every build has a version of the form `<base>-dev<N>+<sha8>`, for example `0.1.0-dev7+594b21af`. The base is the root `package.json` version. `N` is not committed and no git tags are created; the operator bumps it per deploy. The same string is the `Turntable-Version` response header, `/healthz` `version`, MCP `serverInfo.version`, the served OpenAPI `info.version`, `turntable version` and the label in the web UI. The web UI shows a "new version available" banner when the server answers with a different version than its bundle. Compare versions with equality only: `dev10` sorts before `dev9` under semver rules, so nothing orders them.
+
+A cross-origin browser caller cannot read `Turntable-Version` unless the proxy in front sends `Access-Control-Expose-Headers: Turntable-Version`; Turntable sets no CORS headers itself.
+
+The build resolves the version in this order: the `TURNTABLE_VERSION` environment variable, then a one-line `BUILD_VERSION` file at the repository root (next to `BUILD_SHA`), then `<base>-dev0+<sha8>` (`+unknown` without a `BUILD_SHA`). A supplied value is used verbatim and a malformed one fails the build. A tagged release passes `TURNTABLE_VERSION=<tag without v>`.
+
+The deploy contract, for the operator's script:
+
+1. Read the running version from `GET <instance>/healthz` (`.version`, or the `Turntable-Version` header of any response). Match it with `^(\d+\.\d+\.\d+)-dev(\d+)(\+.*)?$`.
+2. If the running base equals the base in the repository being deployed, the next version is `N+1`. If the base changed, or the running version is not a `-dev` one, `N` is `0`. The result is `<base>-dev<N>+<sha8>`, with `sha8` the first 8 hex characters of the deployed commit.
+3. Pass it as `BUILD_VERSION` in the archive root or as `TURNTABLE_VERSION`.
+4. Verification keeps matching `build_sha`; it may also assert `version` equals what was passed.
+
+A deploy that never went live leaves `N` unused, because the next deploy re-reads the running one. No state lives outside the running instance.
 
 ## Deploy notes
 

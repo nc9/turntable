@@ -39,7 +39,7 @@ import {
 import { handleRequest } from "../src/server";
 import { drainTimeoutSecondsSetting, settingsRegistry } from "../src/settings/definitions";
 import { createSettingsRuntime } from "../src/settings/resolve";
-import { BUILD_SHA, VERSION } from "../src/version";
+import { BUILD_SHA, BUILD_TIME, VERSION } from "../src/version";
 import { mintToken } from "./ops-helpers";
 
 let db: Db;
@@ -370,7 +370,12 @@ describe("boot, healthz and doctor", () => {
 
   test("/healthz stays 200 while draining and carries only the draining flag", async () => {
     const plain = await handleRequest(new Request("http://localhost/healthz"));
-    expect(await plain.json()).toEqual({ ok: true, version: VERSION, build_sha: BUILD_SHA });
+    expect(await plain.json()).toEqual({
+      ok: true,
+      version: VERSION,
+      build_sha: BUILD_SHA,
+      built_at: BUILD_TIME,
+    });
     processDrain.trackRunning(() => 3);
     processDrain.set(true, "deploy", T0);
     const res = await handleRequest(new Request("http://localhost/healthz"));
@@ -379,6 +384,7 @@ describe("boot, healthz and doctor", () => {
       ok: true,
       version: VERSION,
       build_sha: BUILD_SHA,
+      built_at: BUILD_TIME,
       draining: true,
     });
   });
