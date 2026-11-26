@@ -4,6 +4,8 @@ import {
   SpecError,
   assertExecId,
   buildCmdScript,
+  OUTPUT_HEAD_BYTES,
+  OUTPUT_TAIL_BYTES,
   capOutput,
   newExecId,
   shellQuote,
@@ -45,6 +47,10 @@ describe("execId", () => {
 });
 
 describe("capOutput", () => {
+  test("the default tail is 64 MiB and the head 1 MiB (#690, docs/providers.mdx)", () => {
+    expect(OUTPUT_TAIL_BYTES).toBe(64 * 1024 * 1024);
+    expect(OUTPUT_HEAD_BYTES).toBe(1024 * 1024);
+  });
   const opts = { head: 10, tail: 20, slack: 5 };
   test("under head+tail+slack is untouched, with no cut", () => {
     const b = new Uint8Array(35);
