@@ -582,6 +582,20 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     description:
       "Build input for the web UI bundle: the commit baked into the UI by `packages/ui/scripts/build-bundle.ts`, compared with the server's `build_sha`. Set by `scripts/build.ts`; never set by hand.",
   },
+  {
+    name: "TURNTABLE_EGRESS_PROBE_SECONDS",
+    area: "Server",
+    default: "off",
+    description:
+      "Interim egress diagnostics (10 to 3600 seconds): every period the server resolves each probe host and sends it one unauthenticated HEAD, logging failures and slow calls with DNS and HTTP timings and the error code, and an OK line every ten minutes. Unset turns it off.",
+  },
+  {
+    name: "TURNTABLE_EGRESS_PROBE_HOSTS",
+    area: "Server",
+    default: "api.github.com",
+    description:
+      "Comma-separated host names (1 to 5) the egress probe checks. Host names only; the probe never sends a credential.",
+  },
   // ---- the checkout child (control plane fetches a run's commit without git) ----
   {
     name: "TURNTABLE_CHECKOUT_TIMEOUT_SECONDS",

@@ -1,4 +1,5 @@
 import "./legacy-env-boot";
+import { egressProbeConfigFromEnv, startEgressProbe } from "./egress-probe";
 import { readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -477,6 +478,13 @@ async function startBackground(
       Math.max(leaseMs, 10_000),
     );
     log("worker started");
+  }
+
+  // Interim egress diagnostics (#693, #698): off unless TURNTABLE_EGRESS_PROBE_SECONDS is set.
+  const egressProbe = egressProbeConfigFromEnv();
+  if (egressProbe) {
+    startEgressProbe(egressProbe, log);
+    log(`egress probe on: ${egressProbe.hosts.join(", ")} every ${egressProbe.periodSeconds} s`);
   }
 
   if (pollConfig) {
