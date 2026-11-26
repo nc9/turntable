@@ -1,0 +1,76 @@
+---
+title: Core features
+description: What Turntable does that other CI does not. Secrets never meet untrusted code, agents can work but cannot approve, and it runs on the compute you choose.
+---
+
+Turntable runs your GitHub Actions workflows on the compute you choose. It is built around one rule: **a job holds untrusted code or usable credentials, never both.** Everything below is built and on `main` today. Planned work is listed separately at the end.
+
+## Secrets never meet untrusted code
+
+- **Trust classes.** Every run is classed once, at ingest, as `protected`, `release`, `trusted_pr` or `untrusted_pr`. The class comes from facts re-fetched from the forge, never from pull request text. Credentials follow the class: a fork pull request gets no secrets and no write token, even after it is approved. See [Trust classes](/security#trust-classes-and-fork-pr-gating).
+- **Secrets proxy.** A sandbox never holds a raw secret. A proxy on the sandbox's only network path adds credentials to outbound requests, per allowed host, so job code and third-party actions see placeholders at most. See [Secrets proxy](/secrets-proxy).
+- **Scoped secrets vault.** Each secret is bound to an org, and optionally a project, environment and ref pattern. It can be used only by the trust classes it names and only toward the hosts it names. Values are never returned by any operation, and every use and denial is audited. See [Secrets vault](/secrets-vault).
+- **Egress denied by default.** `untrusted_pr` runs get no egress at all. A job that holds a secret or a token runs with egress limited to the proxy, and a canary checks that from inside the sandbox before the job starts. See [Egress](/security#egress).
+- **Your own OIDC issuer.** Each org is an OpenID Connect issuer. Tokens last at most 5 minutes, need an audience, are not issued to pull request classes by default, and the credential stays outside the sandbox. See [OIDC](/oidc).
+- **A GitHub token per job.** One repository, the job's `permissions:` block, minted when the job starts and revoked at GitHub when it ends. See [Scoped per-job GitHub token](/security#scoped-per-job-github-token).
+
+## Supply-chain defence
+
+- **Action pins and moved tags.** Every `uses:` is resolved to a commit and remembered. If a tag later points somewhere else, protected and release runs fail until an operator accepts that exact commit. Nested composite actions are pinned the same way, five levels deep. See [Action pins](/security#action-pins-and-moved-tags).
+- **Impostor commits refused.** GitHub serves commits from a whole fork network under the parent's name. Turntable requires every action commit to be reachable from a branch or tag of the repository it names. See [Impostor commits](/security#impostor-commits-and-nested-actions).
+- **Workflow source and taint.** Privileged triggers such as `pull_request_target` read the workflow from the protected base branch, never from the pull request head, and a job that checks out untrusted code is demoted before it starts. A lint flags attacker-controlled text placed inside a `run:` script. See [Workflow source](/security#workflow-source-and-workspace-taint).
+- **Cache isolation by trust class.** A job never restores a cache written by a lower trust class, and release jobs restore nothing unless a project opts in. See [Job cache](/cache).
+- **Optional policies.** `require_sha_pins` refuses any `uses:` that is not a full commit sha, and an action owner allowlist refuses actions from anyone else.
+
+## People approve, agents cannot
+
+- **Approvals bound to a commit and a workflow.** A held pull request run is released only by an approval that names its head sha and its workflow hash. A new push is a new run that waits again.
+- **Who may approve.** The `untrusted_run_approval` setting is `human` (only a statement signed with a passkey or an offline ed25519 key), `no_agents` (the default: never over MCP, never with an agent token) or `any`. See [Who may approve](/security#trust-classes-and-fork-pr-gating).
+- **Hardware keys.** An org's approval policy can require hardware keys, limited to the authenticator models it lists.
+- **Limits on agents.** By default an agent token cannot dispatch a `protected` run (`run_dispatch_agents`).
+- **Approval by label, if you want it.** Off unless set. A label releases a run only if a person with write access added it after the latest push, and that person is not the pull request's author.
+- **Passkey step-up** for sensitive actions in the web UI. See [Web sign-in](/web-sign-in).
+
+## Signed releases
+
+- **A separate release lane.** Signing and publishing run in their own process, which alone holds the signing key and the publish credentials. It re-checks the tag with the forge and recomputes artifact digests itself, so a compromised main server cannot cause a signature or a publish. See [Release lane](/release-lane).
+- **Approvals bound to the artifacts.** A release approval names the digest of the exact artifact set that will be signed (`manifest_sha256`). See [Signing](/signing).
+
+## Audit and incident response
+
+- **A tamper-evident audit log.** Each org has a hash chain with signed checkpoints and anchors exported off the instance, so edited rows and a rolled-back database are detected. Entries stream out as JSONL files or a signed webhook. See [Audit log](/security#audit-log-integrity-and-export).
+- **Incident freeze.** Stop scheduling for an org or a project in one call, and track which secrets still need rotating.
+- **Quotas and tenant isolation.** Per-org quotas, sealed per-org keys, and a cross-tenant test suite. See [Tenant isolation](/tenant-isolation).
+
+## Built for agents
+
+- **One operations registry.** Every capability is defined once and served over MCP, REST with OpenAPI, the CLI and the web UI. Operations that mint credentials or loosen security are kept off MCP on purpose. See [Agent interface](/agent-interface).
+- **Scoped agent tokens.** An orchestrator mints a short-lived child token per run, scoped to one project and the least role that works.
+- **Events.** Server-sent events, signed outbound webhooks (JSON or Slack), a realtime WebSocket and a Claude Code channel.
+- **A short fix loop.** `failure_digest` says why a job failed, `job_log` reads the tail, a range or a grep, and `rerun` tries again. `turntable run <workflow> -j <job>` runs one job locally.
+
+## Runs anywhere, adopted safely
+
+- **Your compute.** Sandboxes come from provider plugins (Docker and Daytona are built in) that pass a shared conformance suite. `runs-on` labels map to sandbox sizes, and a heavy job can be split across sandboxes without editing the workflow. See [Providers](/providers).
+- **Your existing workflows.** GitHub Actions YAML runs through [act](https://github.com/nektos/act). See [Compatibility](/compatibility).
+- **Try it beside your current CI.** Checks mode `shadow` posts neutral checks that never block, and `live` posts checks your rules can require. `turntable parity` compares a run with your other CI's results on the same commit, job by job. See [Parity](/parity).
+- **No webhook dependency.** Polling with ETag-cached requests picks up pushes and pull requests even when webhooks are lost.
+- **Simple to self-host.** One MIT-licensed binary with a built-in web UI, on SQLite or Postgres. Every setting can be changed in the web UI, in `turntable.toml` or by environment variable, and the file and the environment lock what they set. `turntable doctor` checks an instance before it goes live. See [Configuration](/configuration).
+
+## How this compares with GitHub Actions
+
+As of November 2026, from GitHub's published roadmap and community discussions:
+
+- GitHub plans scoped secrets and a native egress firewall. The firewall's first release covers GitHub-hosted runners only. Turntable has both today, on any compute.
+- GitHub serves fork-network commits under the parent repository's name and lists this as under discussion. Turntable refuses such commits.
+- On GitHub, a token with `actions: write` can delete run logs. Turntable's audit log detects removed or edited entries.
+
+## Planned
+
+Not built yet:
+- KMS signing backends;
+- two-person signed release approvals;
+- a microVM provider for hosted multi-tenant use;
+- one-click onboarding from the App install ([#720](https://github.com/turntable-ci/turntable/issues/720));
+- queued checks and live step progress on pull requests;
+- a skipped check for a workflow that a path filter leaves out, so a required check does not stay pending.

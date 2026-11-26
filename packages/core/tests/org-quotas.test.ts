@@ -16,6 +16,7 @@ import {
   type Db,
   getOrgQuotas,
   listEvents,
+  NO_QUOTAS,
   quotaStatuses,
   quotaUsage,
   recordArtifact,
@@ -79,8 +80,37 @@ const claim = (perOrgCap = 5) =>
   claimNextAttempt(db, { owner: "w", leaseMs: 10_000, now: NOW, globalCap: 50, perOrgCap });
 const set = (t: Tenant, patch: Parameters<typeof setOrgQuotas>[2]) =>
   setOrgQuotas(db, t.orgId, patch, "test", NOW);
-const statuses = async (t: Tenant) =>
-  quotaStatuses(await getOrgQuotas(db, t.orgId), await quotaUsage(db, t.orgId, NOW));
+const statuses = async (t: Tenant) => {
+  const q = await getOrgQuotas(db, t.orgId);
+  return quotaStatuses(q, await quotaUsage(db, t.orgId, NOW, q));
+};
+/** Tables the selects in `fn` read from (the orm's `select().from(table)` calls). */
+async function tablesRead(fn: () => Promise<unknown>): Promise<unknown[]> {
+  const seen: unknown[] = [];
+  type Select = (...a: unknown[]) => { from: (t: unknown) => unknown };
+  // Patch the prototype that owns `select` (PgDatabase or BaseSQLiteDatabase). A claim runs in a
+  // transaction, and on Postgres the transaction handle is a different object from `db.orm`, but
+  // its class extends the same base.
+  let owner: object | null = Object.getPrototypeOf(db.orm);
+  while (owner && !Object.prototype.hasOwnProperty.call(owner, "select")) {
+    owner = Object.getPrototypeOf(owner);
+  }
+  if (!owner) throw new Error("no prototype owns select");
+  const proto = owner as { select: Select };
+  const orig = proto.select;
+  proto.select = function (this: unknown, ...a: unknown[]) {
+    const b = orig.apply(this, a);
+    const from = b.from.bind(b);
+    b.from = (tbl: unknown) => (seen.push(tbl), from(tbl));
+    return b;
+  };
+  try {
+    await fn();
+  } finally {
+    proto.select = orig;
+  }
+  return seen;
+}
 
 describe("quota enforcement at claim", () => {
   test("a stored concurrency limit lowers the instance cap for that org only, and never raises it", async () => {
@@ -129,7 +159,7 @@ describe("quota enforcement at claim", () => {
 
   test("usage older than 24 hours does not count; a running attempt counts to now", async () => {
     await usedMinutes(a, 30, 25 * 60 * MIN);
-    expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(0);
+    expect((await quotaUsage(db, a.orgId, NOW, NO_QUOTAS)).sandboxMinutesLastDay).toBe(0);
     const x = await queued(a, "run");
     await db.run(async (h) => {
       await h.orm
@@ -137,7 +167,7 @@ describe("quota enforcement at claim", () => {
         .set({ state: "running", startedAt: NOW - 45 * MIN, sandboxCreatedAt: NOW - 45 * MIN })
         .where(eq(s.jobAttempts.id, x.attempt.id));
     });
-    expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(45);
+    expect((await quotaUsage(db, a.orgId, NOW, NO_QUOTAS)).sandboxMinutesLastDay).toBe(45);
   });
 
   test("sandbox minutes are create to confirmed destroy: waiting for capacity does not count", async () => {
@@ -154,7 +184,7 @@ describe("quota enforcement at claim", () => {
         })
         .where(eq(s.jobAttempts.id, x.attempt.id));
     });
-    expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(10);
+    expect((await quotaUsage(db, a.orgId, NOW, NO_QUOTAS)).sandboxMinutesLastDay).toBe(10);
   });
 
   describe("sandbox minutes are never under-counted", () => {
@@ -168,7 +198,7 @@ describe("quota enforcement at claim", () => {
       });
     };
     const used = async () => {
-      const u = await quotaUsage(db, a.orgId, NOW);
+      const u = await quotaUsage(db, a.orgId, NOW, NO_QUOTAS);
       return [u.sandboxMinutesLastDay, u.sandboxEstimated] as const;
     };
 
@@ -283,6 +313,34 @@ describe("quota enforcement at claim", () => {
     expect(second.attempt.id).not.toBe(sibAttempt.id);
   });
 
+  test("an org with no log-bytes limit never reads log_chunks on the claim path, and usage is null", async () => {
+    await set(a, { maxConcurrent: 5 });
+    const x = await queued(a, "nolimit");
+    await appendLog(db, a.scope, x.attempt.id, 0, new Uint8Array(150));
+    await queued(a, "next");
+    const read = await tablesRead(async () => {
+      expect((await claim())?.scope.orgId).toBe(a.orgId);
+    });
+    expect(read.length).toBeGreaterThan(0);
+    expect(read).not.toContain(s.logChunks);
+    const u = await quotaUsage(db, a.orgId, NOW, await getOrgQuotas(db, a.orgId));
+    expect(u.logBytes).toBeNull();
+    const st = (await statuses(a)).find((r) => r.metric === "log_bytes");
+    expect(st).toMatchObject({ used: null, limit: null, percent: null, held: null });
+  });
+
+  test("with a log-bytes limit the claim path reads log_chunks and measures it", async () => {
+    await set(a, { maxLogBytes: 1000 });
+    const x = await queued(a, "limit");
+    await appendLog(db, a.scope, x.attempt.id, 0, new Uint8Array(150));
+    await queued(a, "next");
+    const read = await tablesRead(async () => {
+      await claim();
+    });
+    expect(read).toContain(s.logChunks);
+    expect((await statuses(a)).find((r) => r.metric === "log_bytes")).toMatchObject({ used: 150 });
+  });
+
   test("log bytes and artifact bytes hold new claims once the limit is reached", async () => {
     await set(a, { maxLogBytes: 100 });
     const x = await queued(a, "logs");
@@ -324,7 +382,7 @@ describe("quota enforcement at claim", () => {
         usedAt: NOW,
       });
     });
-    expect((await quotaUsage(db, a.orgId, NOW)).storedBytes).toBe(57);
+    expect((await quotaUsage(db, a.orgId, NOW, NO_QUOTAS)).storedBytes).toBe(57);
   });
 });
 
@@ -340,7 +398,7 @@ describe("artifact sizes cannot be used to dodge the stored-bytes quota", () => 
       ...(bytes ? { bytes } : {}),
     });
   };
-  const stored = async () => (await quotaUsage(db, a.orgId, NOW)).storedBytes;
+  const stored = async () => (await quotaUsage(db, a.orgId, NOW, NO_QUOTAS)).storedBytes;
 
   test("a negative, NaN, infinite, fractional or unsafe size is refused, and nothing is recorded", async () => {
     for (const size of [-1, -1_000_000, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2 ** 60]) {

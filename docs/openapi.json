@@ -6235,9 +6235,17 @@
                             ]
                           },
                           "used": {
-                            "type": "integer",
-                            "minimum": -9007199254740991,
-                            "maximum": 9007199254740991
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Null when not measured (log bytes without a limit)."
                           },
                           "limit": {
                             "anyOf": [
@@ -17132,9 +17140,17 @@
                             ]
                           },
                           "used": {
-                            "type": "integer",
-                            "minimum": -9007199254740991,
-                            "maximum": 9007199254740991
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Null when not measured (log bytes without a limit)."
                           },
                           "limit": {
                             "anyOf": [
