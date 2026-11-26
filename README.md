@@ -4,20 +4,36 @@ Secure MCP-first CI runner for cloud containers.
 
 Turntable is an open source CI system. It runs GitHub Actions workflows outside GitHub, on the sandbox or container provider you choose. It ships as a single compiled Bun binary with a built-in web UI. Security is a design goal from the start, not an add-on.
 
-It is pre-alpha and under active development. Interfaces will change without notice, and it is not ready for general use.
+It is early and under active development: it runs our own CI, and interfaces can still change.
 
-## What exists today
+## Core features
 
-- **Workflow execution.** [act](https://github.com/nektos/act)-compatible: one job per sandbox, with `needs`, outputs, matrices, `if:`, path filters and concurrency. What is and is not supported is listed in [Compatibility](docs/compatibility.mdx).
-- **Providers.** Docker and Daytona sandboxes are built in. Providers are plugins with a small, tested contract.
-- **Web UI and API.** A built-in dashboard with live logs, and the same operations over REST (OpenAPI) and MCP.
-- **Storage.** SQLite by default, Postgres to scale, through Drizzle. Migrations are embedded in the binary.
-- **Security.**
-  - A secrets vault, and a secrets proxy so a sandbox never holds a raw secret.
-  - Per-job tokens, an OIDC issuer, and trust classes for pull requests, with egress denied by default.
-  - Human approvals, an incident freeze, and per-org quotas and tenant isolation.
-- **Releases.** A separate release lane that re-checks a tag, builds with nothing a lower class could write, signs and publishes.
-- **Parity checks.** `turntable parity` compares a run with another CI's check runs for the same commit.
+One rule shapes the design: **a job holds untrusted code or usable credentials, never both.** The full list, with links to how each part works, is in [Core features](docs/features.mdx).
+
+**Secrets never meet untrusted code**
+- **Trust classes.** Every run is classed at ingest from forge facts, never from pull request text. Fork pull requests get no secrets and no write token, even after approval.
+- **Secrets proxy.** A sandbox never holds a raw secret: a proxy adds credentials to outbound requests per allowed host.
+- **Scoped secrets vault.** Secrets are bound to org, project, environment, ref pattern, trust classes and destination hosts, and every use is audited.
+- **Egress denied by default**, checked from inside the sandbox before a job with credentials starts.
+- **Your own OIDC issuer** per org, and a GitHub token per job that is revoked when the job ends.
+
+**Supply-chain defence**
+- **Action pins and moved tags.** Every `uses:` is pinned to a commit. A tag that moves fails protected and release runs until an operator accepts the new commit.
+- **Impostor commits refused.** An action commit must be reachable from the repository it names, not only from a fork.
+- **Workflow source and taint.** Privileged triggers read the workflow from the protected base branch, never from the pull request head.
+- **Cache isolation.** A job never restores a cache written by a lower trust class.
+
+**People approve, agents cannot**
+- Approvals are bound to the run's commit and workflow hash. By default agents cannot approve (`no_agents`), and a project can require signed approvals from passkeys or hardware keys.
+- **Signed releases.** A separate release lane alone holds the signing key and publish credentials. It re-checks the tag and recomputes digests, and approvals name the exact artifact set.
+- **Tamper-evident audit log.** A per-org hash chain with signed checkpoints anchored off the instance. An incident freeze stops scheduling in one call.
+
+**Built for agents, runs anywhere**
+- **MCP, REST, CLI and web UI** from one operations registry, with events over SSE, signed webhooks and WebSocket.
+- **Your compute.** Docker and Daytona are built in, and providers are plugins with a conformance suite.
+- **Your workflows.** GitHub Actions YAML runs through [act](https://github.com/nektos/act). See [Compatibility](docs/compatibility.mdx).
+- **Adopt beside your current CI.** Shadow checks never block, and `turntable parity` compares results job by job.
+- **One binary** with a built-in web UI, on SQLite or Postgres. Settings work in the UI, `turntable.toml` or the environment.
 
 ## Dogfooding
 

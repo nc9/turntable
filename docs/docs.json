@@ -10,7 +10,7 @@
     "groups": [
       {
         "group": "Get started",
-        "pages": ["introduction", "overview", "quickstart", "configuration", "doctor", "skills"]
+        "pages": ["introduction", "features", "overview", "quickstart", "configuration", "doctor", "skills"]
       },
       {
         "group": "Concepts",
