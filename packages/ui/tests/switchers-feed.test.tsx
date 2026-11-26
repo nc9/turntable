@@ -27,7 +27,13 @@ import {
   stateOf,
 } from "../src/lib/activity";
 import { initialsOf, safeAvatarUrl } from "../src/lib/avatar";
-import { orgTarget, projectTarget, withLastFirst, filterValue } from "../src/lib/switcher";
+import {
+  orgTarget,
+  projectDisplayName,
+  projectTarget,
+  withLastFirst,
+  filterValue,
+} from "../src/lib/switcher";
 import { routeTree } from "../src/router";
 
 const HOSTILE =
@@ -184,7 +190,9 @@ describe("polling and paging helpers", () => {
 
 describe("the switchers", () => {
   const names = (html: string) =>
-    [...html.matchAll(/<span class="flex-1 truncate">([^<]*)<\/span>/g)].map((m) => m[1]);
+    [...html.matchAll(/<span class="flex-1 truncate"(?: title="[^"]*")?>([^<]*)<\/span>/g)].map(
+      (m) => m[1],
+    );
 
   test("the selection round-trips through the URL", async () => {
     const r = createRouter({
@@ -359,5 +367,32 @@ describe("the onboarding entry points", () => {
     );
     expect(html.indexOf("Acme")).toBeLessThan(html.indexOf("Connect repositories"));
     expect(html).toMatch(/Connect repositories<\/button><\/div>(<!--\/\$-->)?$/);
+  });
+});
+
+describe("project display name (#653)", () => {
+  test("drops the owner from a single-slash name only", () => {
+    expect(projectDisplayName("acme/web")).toBe("web");
+    expect(projectDisplayName("web")).toBe("web");
+    expect(projectDisplayName("a/b/c")).toBe("a/b/c");
+    expect(projectDisplayName("/web")).toBe("/web");
+    expect(projectDisplayName("acme/")).toBe("acme/");
+  });
+
+  test("the list shows the short name and keeps the full one in title", () => {
+    const html = renderToString(
+      <SwitcherList
+        label="Project"
+        allLabel="All projects"
+        allSelected={false}
+        items={[{ slug: "web", name: "acme/web" }]}
+        isSelected={() => false}
+        icon={() => null}
+        onPick={() => {}}
+        display={projectDisplayName}
+      />,
+    );
+    expect(html).toContain('title="acme/web"');
+    expect(html).toContain(">web<");
   });
 });

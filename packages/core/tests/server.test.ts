@@ -1,11 +1,16 @@
 import { expect, test } from "bun:test";
 import { handleRequest } from "../src/server";
-import { BUILD_SHA, VERSION } from "../src/version";
+import { BUILD_SHA, BUILD_TIME, VERSION } from "../src/version";
 
 test("GET /healthz returns ok and version", async () => {
   const res = await handleRequest(new Request("http://localhost/healthz"));
   expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ ok: true, version: VERSION, build_sha: BUILD_SHA });
+  expect(await res.json()).toEqual({
+    ok: true,
+    version: VERSION,
+    build_sha: BUILD_SHA,
+    built_at: BUILD_TIME,
+  });
   expect(BUILD_SHA).toBe("unknown");
 });
 

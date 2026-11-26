@@ -24,8 +24,14 @@ const ERROR_SCHEMA: JsonSchema = {
   additionalProperties: false,
 };
 
+/** The version of the committed document: the served one substitutes the live version. */
+export const OPENAPI_DOC_VERSION = "0.0.0-dev";
+
+const VERSION_HEADER_REF: Json = { $ref: "#/components/headers/TurntableVersion" };
+
 const errorResponse = (description: string): Json => ({
   description,
+  headers: { "Turntable-Version": VERSION_HEADER_REF },
   content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
 });
 
@@ -95,6 +101,7 @@ function operation(op: Op): Json {
         ...(op.untrustedOutput || op.download
           ? {
               headers: {
+                "Turntable-Version": VERSION_HEADER_REF,
                 ...(op.download
                   ? {
                       "Content-Disposition": {
@@ -122,7 +129,7 @@ function operation(op: Op): Json {
                   : {}),
               },
             }
-          : {}),
+          : { headers: { "Turntable-Version": VERSION_HEADER_REF } }),
         content: {
           [op.download?.contentType ?? "application/json"]: { schema: outputJsonSchema(op) },
         },
@@ -184,6 +191,13 @@ export function buildOpenApi(registry: OpRegistry, version: string): Json {
         },
       },
       schemas: { Error: ERROR_SCHEMA },
+      headers: {
+        TurntableVersion: {
+          description:
+            "The build version of the server that answered, on every response. Compare with equality only: versions have no order. Cross-origin browser callers cannot read it unless a proxy exposes it.",
+          schema: { type: "string" },
+        },
+      },
       responses: {
         InvalidInput: errorResponse("The input does not match the operation's schema."),
         Unauthenticated: errorResponse("Missing, invalid, expired or revoked token."),

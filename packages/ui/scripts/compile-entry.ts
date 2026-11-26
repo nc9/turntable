@@ -10,8 +10,11 @@ import { buildUi, uiDist } from "./build-bundle";
 
 const root = join(import.meta.dir, "../../..");
 
-export async function prepareCompileEntry(): Promise<string> {
-  const files = await buildUi();
+export async function prepareCompileEntry(opts?: {
+  version: string;
+  sha: string;
+}): Promise<string> {
+  const files = await buildUi(opts);
   const outDir = join(root, "packages/ui/dist-entry");
   mkdirSync(outDir, { recursive: true });
   const imports: string[] = [];

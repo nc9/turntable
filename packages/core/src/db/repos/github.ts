@@ -612,12 +612,17 @@ export function listProjectBindings(
   );
 }
 
-/** Drops the lost forge repo id a project waits to be re-granted by (an explicit removal). */
+/**
+ * Marks a project as removed on purpose (an explicit removal): clearing `unboundAt` takes it out
+ * of the re-grant lookup, so a sync never binds it back. `lastForgeRepoId` stays, as the identity
+ * of the repo it was bound to, so an explicit `add_project` of that same repo (and no other repo
+ * that shares its short name) can re-attach it.
+ */
 export async function forgetLostBinding(db: Db, scope: Scope, projectId: string): Promise<void> {
   await db.run((h) =>
     h.orm
       .update(s.projects)
-      .set({ lastForgeRepoId: null })
+      .set({ unboundAt: null })
       .where(scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.id, projectId))),
   );
 }

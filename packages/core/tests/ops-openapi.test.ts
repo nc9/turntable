@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { registry } from "../src/ops";
 import { lintOutputSchemas, outputFieldNames } from "../src/ops/lint";
 import { mcpTools } from "../src/ops/mcp";
-import { buildOpenApi } from "../src/ops/openapi";
+import { OPENAPI_DOC_VERSION, buildOpenApi } from "../src/ops/openapi";
 import { createRegistry, defineOp } from "../src/ops";
 import { z } from "zod";
 
@@ -13,11 +13,25 @@ const DOC = join(import.meta.dir, "../../../docs/openapi.json");
 test("docs/openapi.json is current (run `bun run --cwd packages/core openapi:gen`)", () => {
   const committed = JSON.parse(readFileSync(DOC, "utf8"));
   // compare parsed, so formatter whitespace cannot flap this
-  expect(committed).toEqual(JSON.parse(JSON.stringify(buildOpenApi(registry, "0.0.0-dev"))));
+  expect(committed).toEqual(
+    JSON.parse(JSON.stringify(buildOpenApi(registry, OPENAPI_DOC_VERSION))),
+  );
+});
+
+test("the committed document is fixed; the Turntable-Version header is documented", () => {
+  const committed = JSON.parse(readFileSync(DOC, "utf8"));
+  expect(committed.info.version).toBe(OPENAPI_DOC_VERSION);
+  expect(committed.components.headers.TurntableVersion.schema).toEqual({ type: "string" });
+  const ok = committed.paths[Object.keys(committed.paths)[0]!];
+  const op = ok[Object.keys(ok)[0]!];
+  expect(op.responses["200"].headers["Turntable-Version"]).toEqual({
+    $ref: "#/components/headers/TurntableVersion",
+  });
+  expect(committed.components.responses.Unauthenticated.headers["Turntable-Version"]).toBeDefined();
 });
 
 test("the generated document is a structurally valid OpenAPI 3.1 document", () => {
-  const doc = buildOpenApi(registry, "0.0.0-dev") as any;
+  const doc = buildOpenApi(registry, OPENAPI_DOC_VERSION) as any;
   expect(doc.openapi).toBe("3.1.0");
   expect(doc.info.title).toBeString();
   expect(doc.components.securitySchemes.bearerAuth).toMatchObject({
@@ -226,7 +240,7 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
   const { openDatabase } = await import("../src/db");
   void handleRequest;
   const api = createRestApi({ registry, db: openDatabase(":memory:") });
-  const doc = buildOpenApi(registry, "0.0.0-dev") as any;
+  const doc = buildOpenApi(registry, OPENAPI_DOC_VERSION) as any;
   const tools = new Set(mcpTools(registry).map((t) => t.name));
   const operationIds = new Set(
     Object.values<any>(doc.paths).flatMap((item) =>

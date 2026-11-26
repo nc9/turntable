@@ -119,7 +119,11 @@ export async function addProjectFor(
     if (
       existing &&
       existing.addedAt !== null &&
-      existing.name === repo.fullName &&
+      // Key on the repo identity, never on the short name alone: another repo can share it.
+      // With a recorded forge repo id it must match; legacy rows without one match the full name.
+      (existing.lastForgeRepoId !== null
+        ? existing.lastForgeRepoId === repo.id
+        : existing.name === repo.fullName) &&
       (await listProjectBindings(db, scope, existing.id)).length === 0
     ) {
       await bindRepo(
@@ -144,7 +148,7 @@ export async function addProjectFor(
     if (existing) continue;
     const project = await createProject(db, scope, {
       slug: candidate,
-      name: repo.fullName,
+      name: repo.name,
       addedAt: now,
     });
     await bindRepo(
@@ -328,7 +332,7 @@ export const removeProject = defineOp({
     }
     for (const b of bindings) await unbindRepo(ctx.db, scope, b.id);
     // A removed project must not be re-attached by a later sync that sees the repo again; only an
-    // explicit `add_project` binds it again. Forgetting the lost id keeps sync from doing it.
+    // explicit `add_project` binds it again. Clearing the unbound time keeps sync from doing it; the repo id stays as the identity.
     await forgetLostBinding(ctx.db, scope, projectId);
     return { project: project.slug, unbound: repos, deleted: false };
   },

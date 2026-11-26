@@ -105,6 +105,31 @@ describe("my_activity_feed", () => {
   });
 });
 
+describe("version header", () => {
+  test("call() feeds Turntable-Version to the observer, on success and on an error", async () => {
+    const seen: (string | null)[] = [];
+    const s = stub((url) =>
+      url.pathname.endsWith("/runs")
+        ? new Response(JSON.stringify({ runs: [], next_cursor: null }), {
+            headers: { "turntable-version": "0.1.0-dev1+aaaaaaaa" },
+          })
+        : new Response("{}", {
+            status: 500,
+            headers: { "turntable-version": "0.1.0-dev2+bbbbbbbb" },
+          }),
+    );
+    const api = createHttpApi({
+      org: () => "acme",
+      token: () => "tt_secret",
+      fetch: s.fetchStub,
+      observeVersion: (v) => seen.push(v),
+    });
+    await api.listRuns({ projectId: "api" });
+    await api.getRun({ runId: "r1" } as never).catch(() => {});
+    expect(seen).toEqual(["0.1.0-dev1+aaaaaaaa", "0.1.0-dev2+bbbbbbbb"]);
+  });
+});
+
 describe("requests", () => {
   test("sends the bearer token in a header only, never in the URL, and omits cookies", async () => {
     const { api, calls } = make(() => json({ runs: [wireRun()], next_cursor: "c2" }));

@@ -133,6 +133,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -353,6 +356,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -996,6 +1002,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -1190,6 +1199,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -1382,6 +1394,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -1547,6 +1562,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -1835,6 +1853,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -2029,6 +2050,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -2249,6 +2273,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -2384,6 +2413,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -2564,6 +2598,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -2700,6 +2739,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -2839,6 +2883,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -3199,6 +3246,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -3334,6 +3386,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -3437,6 +3494,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -3590,6 +3650,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -3730,6 +3793,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -3983,6 +4049,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -4140,6 +4209,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -4598,6 +4670,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -4724,6 +4801,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -4905,6 +4985,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -5003,6 +5088,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -5137,6 +5225,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -5323,6 +5414,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -5465,6 +5559,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "Content-Disposition": {
                 "description": "`attachment; filename=\"<basename>\"`: a plain name.",
                 "schema": {
@@ -5592,6 +5689,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "Content-Disposition": {
                 "description": "`attachment; filename=\"<basename>\"`: a plain name.",
                 "schema": {
@@ -5707,6 +5807,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -5826,6 +5929,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -5951,6 +6057,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -6168,6 +6279,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -6268,6 +6384,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -6363,6 +6484,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -6625,6 +6751,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -6799,6 +6930,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -6962,6 +7098,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -7053,6 +7194,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -7154,6 +7300,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -7253,6 +7404,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -7334,6 +7490,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -7489,6 +7648,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -7747,6 +7909,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -7916,6 +8083,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -8085,6 +8255,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -8157,6 +8332,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -8312,6 +8492,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -8409,6 +8594,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -8544,6 +8734,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -8687,6 +8882,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -8792,6 +8992,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -8901,6 +9106,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -9043,6 +9253,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -9247,6 +9462,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -9355,6 +9575,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -9478,6 +9703,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -9565,6 +9795,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -9750,6 +9983,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -9923,6 +10159,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -10258,6 +10499,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -10427,6 +10673,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -10630,6 +10881,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -10778,6 +11034,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -10869,6 +11130,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -10966,6 +11232,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -11063,6 +11334,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -11170,6 +11446,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -11254,6 +11535,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -11349,6 +11635,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -11444,6 +11735,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -11552,6 +11848,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -11716,6 +12017,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -11886,6 +12192,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -12373,6 +12684,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -12591,6 +12907,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -12816,6 +13137,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -13029,6 +13355,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -13089,6 +13420,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -13274,6 +13608,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -13352,6 +13691,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -13435,6 +13779,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -13487,6 +13836,9 @@
           "200": {
             "description": "Success.",
             "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              },
               "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
@@ -13606,6 +13958,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -13707,6 +14064,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -13829,6 +14191,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -13971,6 +14338,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -14059,6 +14431,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -14149,6 +14526,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -14224,6 +14606,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -14351,6 +14738,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -14444,6 +14836,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -14539,6 +14936,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -14711,6 +15113,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -14869,6 +15276,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -15340,6 +15752,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -15789,6 +16206,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -15945,6 +16367,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -16158,6 +16585,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -16236,6 +16668,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -16349,6 +16786,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -16460,6 +16902,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -16566,6 +17013,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -16656,6 +17108,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -16799,6 +17256,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -16966,6 +17428,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -17249,6 +17716,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -17336,6 +17808,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -17401,6 +17878,11 @@
         "responses": {
           "200": {
             "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -17520,9 +18002,22 @@
         "additionalProperties": false
       }
     },
+    "headers": {
+      "TurntableVersion": {
+        "description": "The build version of the server that answered, on every response. Compare with equality only: versions have no order. Cross-origin browser callers cannot read it unless a proxy exposes it.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
     "responses": {
       "InvalidInput": {
         "description": "The input does not match the operation's schema.",
+        "headers": {
+          "Turntable-Version": {
+            "$ref": "#/components/headers/TurntableVersion"
+          }
+        },
         "content": {
           "application/json": {
             "schema": {
@@ -17533,6 +18028,11 @@
       },
       "Unauthenticated": {
         "description": "Missing, invalid, expired or revoked token.",
+        "headers": {
+          "Turntable-Version": {
+            "$ref": "#/components/headers/TurntableVersion"
+          }
+        },
         "content": {
           "application/json": {
             "schema": {
@@ -17543,6 +18043,11 @@
       },
       "Forbidden": {
         "description": "The token's role or scope does not allow this.",
+        "headers": {
+          "Turntable-Version": {
+            "$ref": "#/components/headers/TurntableVersion"
+          }
+        },
         "content": {
           "application/json": {
             "schema": {
@@ -17553,6 +18058,11 @@
       },
       "NotFound": {
         "description": "No such route, or no such resource in the token's scope.",
+        "headers": {
+          "Turntable-Version": {
+            "$ref": "#/components/headers/TurntableVersion"
+          }
+        },
         "content": {
           "application/json": {
             "schema": {

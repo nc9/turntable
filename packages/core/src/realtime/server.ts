@@ -13,6 +13,7 @@ import {
 } from "../db/repos";
 import { type DispatchEnv, authenticate, dispatch, resolveCallerScope } from "../ops/dispatch";
 import { OpError } from "../ops/errors";
+import { VERSION } from "../version";
 import {
   BEARER_PREFIX,
   CLOSE,
@@ -617,7 +618,7 @@ export function createRealtime(options: RealtimeOptions) {
     try {
       ok = server.upgrade(req, {
         // Echo only the protocol name, never the token.
-        headers: { "Sec-WebSocket-Protocol": protocol },
+        headers: { "Sec-WebSocket-Protocol": protocol, "Turntable-Version": VERSION },
         data: {
           token,
           tokenId,
