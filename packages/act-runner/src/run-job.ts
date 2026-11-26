@@ -87,6 +87,12 @@ export interface RunInput {
    * so the job fails naming it instead of hanging in act.
    */
   docker?: { egress: "none" | "open" | "other"; waitSeconds?: number };
+  /**
+   * The sandbox's real size when the create request or the size class declares it. Set for the
+   * steps as `TURNTABLE_SANDBOX_MEMORY_MB` and `TURNTABLE_SANDBOX_CPUS`, because in a container
+   * sandbox `/proc/meminfo`, `nproc` and `os.totalmem()` can report the host. Absent: not set.
+   */
+  limits?: { memoryMb?: number; cpus?: number };
 }
 
 export interface RunOptions {
@@ -374,6 +380,10 @@ export async function* runJob(
         ["ACTIONS_ID_TOKEN_REQUEST_TOKEN", input.oidc.requestToken],
       ]);
     }
+    if (input.limits?.memoryMb !== undefined)
+      envText += envFileOf([["TURNTABLE_SANDBOX_MEMORY_MB", String(input.limits.memoryMb)]]);
+    if (input.limits?.cpus !== undefined)
+      envText += envFileOf([["TURNTABLE_SANDBOX_CPUS", String(input.limits.cpus)]]);
     let envFile = "";
     if (envText !== "") {
       envFile = `${L.root}/job.env`;
@@ -559,6 +569,9 @@ export function resumeJob(
   return watchExec(provider, sandboxId, execId, opts, plan);
 }
 
+/** 128 + SIGKILL: what the sandbox's OOM killer leaves behind (the cause is inferred, not proven). */
+const OOM_EXIT = 137;
+
 /** Turns the authoritative exec status plus parsed events into a verdict. */
 export function decide(status: ExecStatus, sum: ReturnType<typeof summarize>): JobResult {
   if (status.state === "lost") {
@@ -573,6 +586,13 @@ export function decide(status: ExecStatus, sum: ReturnType<typeof summarize>): J
     };
   }
   const code = status.exitCode ?? -1;
+  if (code === OOM_EXIT && !(sum.started && sum.finished && sum.result === "failure")) {
+    return {
+      state: "failure",
+      exitCode: code,
+      reason: "job killed: out of memory (exit 137, SIGKILL from the sandbox)",
+    };
+  }
   if (code === 0) {
     if (!sum.started)
       return { state: "skipped", exitCode: 0, reason: "job produced no events (skipped)" };
@@ -587,6 +607,8 @@ export function decide(status: ExecStatus, sum: ReturnType<typeof summarize>): J
   }
   if (sum.started && sum.finished && sum.result === "failure") {
     const steps = sum.failedSteps.length ? `: ${sum.failedSteps.join(", ")}` : "";
+    if (code === OOM_EXIT)
+      return { state: "failure", exitCode: code, reason: `job killed: out of memory${steps}` };
     return { state: "failure", exitCode: code, reason: `job failed${steps}` };
   }
   return {

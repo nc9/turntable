@@ -383,6 +383,19 @@ export async function executeJob(
                 },
               }
             : {}),
+          ...(env.sandbox?.resources &&
+          (env.sandbox.resources.memoryMb !== undefined || env.sandbox.resources.cpus !== undefined)
+            ? {
+                limits: {
+                  ...(env.sandbox.resources.memoryMb !== undefined
+                    ? { memoryMb: env.sandbox.resources.memoryMb }
+                    : {}),
+                  ...(env.sandbox.resources.cpus !== undefined
+                    ? { cpus: env.sandbox.resources.cpus }
+                    : {}),
+                },
+              }
+            : {}),
           ...(env.act ? { act: env.act } : {}),
           ...(env.fetchAction ? { fetchAction: env.fetchAction } : {}),
         },
