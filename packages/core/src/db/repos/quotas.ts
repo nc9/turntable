@@ -4,6 +4,7 @@
 import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
+import { logStoreFor } from "../../logstore/registry";
 import { appendEvent } from "./events";
 import { sandboxSeconds } from "./usage";
 
@@ -148,15 +149,8 @@ export async function quotaUsage(
           gte(s.jobAttempts.startedAt, now - HOUR_MS),
         ),
       );
-    // length(blob) reads every stored log blob of the org: only worth it when a limit needs it.
-    let logBytes: number | null = null;
-    if (limits.maxLogBytes !== null) {
-      const [logs] = await h.orm
-        .select({ n: sql<number>`coalesce(sum(length(${s.logChunks.bytes})), 0)`.mapWith(Number) })
-        .from(s.logChunks)
-        .where(eq(s.logChunks.orgId, orgId));
-      logBytes = Number(logs?.n ?? 0);
-    }
+    // Summing log bytes scans the whole store for the org: only worth it when a limit needs it.
+    const logBytes = limits.maxLogBytes !== null ? await logStoreFor(h).orgBytes(orgId) : null;
     const stored = await storedBytesIn(h, orgId);
     return {
       concurrent: Number(conc?.n ?? 0),

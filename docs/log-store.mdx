@@ -1,0 +1,78 @@
+---
+title: Log store
+description: Keep job logs in ClickHouse instead of the main database.
+---
+
+Job logs are the largest data Turntable writes. By default they live in the main database, in
+`log_chunks`, so one binary needs nothing else. A hosted server can keep them in a dedicated
+**log store** instead. The first backend besides the database is ClickHouse. The main database
+keeps only metadata: cuts, notices and the incomplete flags.
+
+## Choose a store
+
+| Setting | Value |
+| --- | --- |
+| `TURNTABLE_LOG_STORE` | `db` (default) or `clickhouse` |
+| `TURNTABLE_CLICKHOUSE_URL` | Base URL of the HTTP interface, for example `http://clickhouse.railway.internal:8123` |
+| `TURNTABLE_CLICKHOUSE_USER`, `TURNTABLE_CLICKHOUSE_PASSWORD` | Credentials, sent as headers |
+| `TURNTABLE_CLICKHOUSE_DATABASE` | Database for the table (the default database when unset) |
+| `TURNTABLE_LOG_RETENTION_DAYS` | Retention, default 90 |
+| `TURNTABLE_LOG_QUEUE_MIB` | Write queue memory, default 64 |
+
+The server talks to ClickHouse over HTTP through the same outbound client as every other
+request, so it adds no dependency. That client refuses private addresses and plain http unless the
+host is listed: add the ClickHouse host to `TURNTABLE_NET_ALLOW_HOSTS`. A wrong setting stops the
+boot with a message; it never falls back to the database silently.
+
+## The table
+
+The server creates this table at boot when it is missing, and applies the retention to it each
+boot:
+
+```sql
+CREATE TABLE IF NOT EXISTS log_chunks (
+  org_id String, project_id String, attempt_id String,
+  offset UInt64,
+  bytes String CODEC(ZSTD),
+  received_at DateTime64(3, 'UTC')
+) ENGINE = MergeTree
+PARTITION BY toYYYYMM(received_at)
+ORDER BY (org_id, project_id, attempt_id, offset)
+TTL toDateTime(received_at, 'UTC') + INTERVAL 90 DAY
+```
+
+Every `DateTime64` column carries the `'UTC'` time zone. Rows are scoped by org, project and
+attempt in every query, with the values bound as query parameters. A chunk written twice (a
+retried batch) is read once: the first copy at an offset wins, as in the database store.
+
+## How reads and writes behave
+
+- **Writes never block.** An append puts the chunk in a bounded in-memory queue and returns. A
+  timer sends batches over HTTP with a deadline per request. Nothing waits on ClickHouse in the
+  request path, in a database transaction or on the event loop.
+- **Reads include queued chunks**, so a live tail does not wait for a flush.
+- **Tail** reads only the last bytes asked for. **Size** is the end of the highest chunk.
+- **Grep** has a server-side prefilter (`positionCaseInsensitiveUTF8` or `match`) that returns the
+  chunks containing a match, with a cursor. A match that spans two chunks is not found by the
+  prefilter, so line matching in `job_log` reads the byte range and stays exact.
+- **Resetting an attempt** (a re-attached worker replaying its log) deletes that attempt's rows
+  and waits for the delete.
+
+## When ClickHouse is down
+
+Failed batches stay in the queue and are retried with a growing delay. The queue holds up to
+`TURNTABLE_LOG_QUEUE_MIB`. A chunk that does not fit is dropped, and the attempt's log is marked
+incomplete: a row in `log_cuts` (reason `log_store_unavailable`, so `log_incomplete` is true on
+`get_run` and `job_steps`) and one notice that says output was lost. The same markers describe a
+log cut by the sandbox. The server keeps serving. Chunks still queued when the process is killed
+are lost; a clean stop gives the queue a few seconds to drain.
+
+## Move existing logs
+
+`log_store_migrate` (instance administrator, REST only) copies the logs of attempts created in the
+last `days` days (default `TURNTABLE_LOG_MIGRATE_DAYS`, 14) from `log_chunks` into the store, then
+compares chunk count and size for each attempt and reports any difference. It is idempotent: an
+attempt that already matches is skipped, so run it again after an interruption. It does not delete
+database rows. Once the server runs on `clickhouse`, reads go to ClickHouse only: logs older than
+the window that were not copied are no longer served, so choose a window that covers what people
+still open before you switch.

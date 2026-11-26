@@ -5,6 +5,7 @@ import type { Db } from "..";
 import * as s from "../schema";
 import type { EventType, StepResult, StepStage } from "../schema";
 import { ulid } from "../ulid";
+import { externalLogStore, logStoreFor } from "../../logstore/registry";
 import { requireProject, type Scope, scoped } from "./scope";
 
 export type EventRow = typeof s.events.$inferSelect;
@@ -329,13 +330,22 @@ const MAX_NOTICE_TEXT = 300;
  * attempt is not in scope or already has the most it may. The text is capped and stripped of
  * control characters. Wakes the attempt's live log tails.
  */
-export function addNotice(
+export async function addNotice(
   db: Db,
   scope: Scope,
-  input: { attemptId: string; source: string; text: string },
+  input: { attemptId: string; source: string; text: string; atOffset?: number },
 ): Promise<boolean> {
+  const { projectId } = requireProject(scope);
+  // With an external store the end of the log is asked before the transaction opens, so no HTTP
+  // happens while the write lock is held. An unreachable store places the notice at 0.
+  let at = input.atOffset;
+  if (at === undefined && externalLogStore()) {
+    at = await logStoreFor(db)
+      .stat({ orgId: scope.orgId, projectId, attemptId: input.attemptId })
+      .then((r) => r.size)
+      .catch(() => 0);
+  }
   return db.transaction(async (tx) => {
-    const { projectId } = requireProject(scope);
     const [attempt] = await tx.orm
       .select({ id: s.jobAttempts.id })
       .from(s.jobAttempts)
@@ -354,12 +364,12 @@ export function addNotice(
       .where(eq(s.logNotices.attemptId, input.attemptId));
     if (Number(have?.n ?? 0) >= MAX_NOTICES_PER_ATTEMPT) return false;
     // Where the stored log ends now: a reader can place the notice in the stream.
-    const [end] = await tx.orm
-      .select({
-        n: sql<number>`coalesce(max(${s.logChunks.offset} + length(${s.logChunks.bytes})), 0)`,
-      })
-      .from(s.logChunks)
-      .where(eq(s.logChunks.attemptId, input.attemptId));
+    const end = {
+      n:
+        at ??
+        (await logStoreFor(tx).stat({ orgId: scope.orgId, projectId, attemptId: input.attemptId }))
+          .size,
+    };
     await tx.orm.insert(s.logNotices).values({
       id: ulid(),
       orgId: scope.orgId,

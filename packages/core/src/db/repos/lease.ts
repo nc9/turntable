@@ -22,6 +22,7 @@ import { sanitizeInfraError } from "../../infra-error-text";
 import { announceCancelled } from "../abort-bus";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
+import { externalLogStore, logStoreFor } from "../../logstore/registry";
 import {
   appendLog,
   createAttempt,
@@ -61,7 +62,7 @@ import {
   type Readiness,
   resolveDependents,
 } from "./readiness";
-import { type Scope, scoped } from "./scope";
+import { logKey, type Scope, scoped } from "./scope";
 
 export type Claim = {
   attempt: JobAttempt;
@@ -1241,17 +1242,11 @@ export function resetAttemptOutput(
   attemptId: string,
   owner: string,
 ): Promise<boolean> {
-  return db.transaction(async (tx) => {
+  const ext = externalLogStore();
+  const wiped = db.transaction(async (tx) => {
     if (!(await holdsLease(tx, scope, attemptId, owner))) return false;
-    await tx.orm
-      .delete(s.logChunks)
-      .where(
-        scoped(
-          scope,
-          { orgId: s.logChunks.orgId, projectId: s.logChunks.projectId },
-          eq(s.logChunks.attemptId, attemptId),
-        ),
-      );
+    // An external store is cleared after the transaction: no HTTP while the write lock is held.
+    if (!ext) await logStoreFor(tx).deleteAttempt(logKey(scope, attemptId));
     await tx.orm
       .delete(s.attemptSteps)
       .where(
@@ -1271,6 +1266,10 @@ export function resetAttemptOutput(
         ),
       );
     return true;
+  });
+  return wiped.then(async (ok) => {
+    if (ok && ext) await ext.deleteAttempt(logKey(scope, attemptId));
+    return ok;
   });
 }
 

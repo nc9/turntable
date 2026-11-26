@@ -9,6 +9,7 @@ const ALLOWED_OUTSIDE_TRANSACTION = [
   "instance_bind_installation", // reads GitHub (installation facts, then the sync's repo list) before and while it syncs, which must not hold the write lock; the sync is idempotent so a partial bind is repaired by running it again, and the audit row and event are written in one db.transaction
   "instance_replace_app_private_key", // calls GET /app on GitHub to verify the new key before the swap, which must not hold the write lock; the seal and the swap are one db.transaction after the verification, and the audit row follows in its own short transaction
   "instance_rotate_webhook_secret", // PATCHes the new secret to GitHub (/app/hook/config), which must not hold the write lock; the seal commits first and a GitHub refusal restores the old secret and expiry, and the audit row follows in its own short transaction
+  "log_store_migrate", // copies logs to the external store over HTTP for minutes; must not hold the write lock
   "onboard_repos", // asks GitHub for the installation's repos first; all writes are one inner transaction (all or nothing)
   "release_cosign_key_remove", // same: a lane channel round trip
   "release_cosign_key_set", // same: a lane channel round trip; the lane's own file changes, not this database

@@ -76,6 +76,9 @@ import { jobCacheProvider } from "./cache/job";
 import { createCacheService, type CacheService } from "./cache/service";
 import { FsCacheStore } from "./cache/store";
 import { SecretVault } from "./secrets/vault";
+import { logStoreConfigFromEnv, openLogStore } from "./logstore/config";
+import { createDropReporter } from "./logstore/outage";
+import { setLogStore } from "./logstore/registry";
 import { bootstrapExpiryDays, bootstrapInstanceToken } from "./ops/instance-bootstrap";
 import { generateInstanceToken, generateToken, hashToken } from "./ops/tokens";
 import { DispatchError, Poller, type RunDispatcher } from "./poll";
@@ -714,7 +717,17 @@ async function serve(args: string[]): Promise<void> {
     });
   }
   const db = openDatabase(join(dataDir, "turntable.db"));
+  const dropReport = createDropReporter(db, {
+    onError: (err) => console.error("[turntable] could not record a dropped log chunk:", err),
+  });
   await ensureInstance(db);
+  // The log store (#717): `db` keeps job logs in this database; `clickhouse` sends them to a
+  // ClickHouse service through a bounded queue that never blocks the event loop. A bad setting
+  // or an unreachable store at boot stops the boot, so a typo does not silently fall back.
+  const logStore = await openLogStore(logStoreConfigFromEnv(), (k, o, n) =>
+    dropReport.report(k, o, n),
+  );
+  setLogStore(logStore);
   // Before anything serves: orgs that already had two owners or admins keep the strict approval
   // default after one leaves (#663). Idempotent.
   await backfillApprovalDefaultStrict(db);
@@ -1230,6 +1243,8 @@ async function serve(args: string[]): Promise<void> {
     void background
       .stop()
       .then(() => server?.stop())
+      // Queued log chunks get a few seconds to reach the store; what is left is lost.
+      .then(() => logStore && Promise.race([logStore.flush(), Bun.sleep(5000)]).catch(() => {}))
       .finally(() => {
         db.close();
         process.exit(0);

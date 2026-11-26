@@ -19,6 +19,7 @@ import {
 } from "./definitions/approvals";
 import { getApprovalPolicyOp, setApprovalPolicyOp } from "./definitions/approval-policy";
 import { dbBackupOp } from "./definitions/db-backup";
+import { logStoreMigrateOp } from "./definitions/log-store-migrate";
 import { approveRunChallengeOp, approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
 import { doctor } from "./definitions/doctor";
@@ -233,6 +234,7 @@ export const registry = createRegistry([
   setQuotas,
   bootstrapApprover,
   dbBackupOp,
+  logStoreMigrateOp,
   acceptActionMoveOp,
   setSecretOp,
   rotateSecretOp,

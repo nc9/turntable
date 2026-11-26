@@ -254,6 +254,14 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_SELF_SERVE_ORG_LOGINS` |  |  | Comma-separated GitHub logins (at most 200, compared without regard to case) that may create an org when `self_serve_orgs` is `allowlist`. The environment name of the `self_serve_org_logins` setting, which `turntable.toml` also sets. See [the account principal](/security#the-account-principal-and-self-serve-orgs). |
 | `TURNTABLE_APPROVAL_POLICY` |  |  | The approval policy for every org on the instance (JSON): a map from environment name to `required`, `allow_author_approval` and `key_policy`, for example `{"release":{"required":1,"allow_author_approval":true}}`. The environment name of the `approval_policy` setting, which `turntable.toml` sets per org and `instance_set_setting` sets for one org. A value here locks it: the CLI and the instance op refuse to change it. See [Human approvals](/security#human-approvals). |
 | `TURNTABLE_PR_APPROVAL_LABEL` |  |  | A GitHub label (for example `ci:approved`) that releases a pull request run waiting for approval, for a repo in `prMode: approval`. The environment name of the `pr_approval_label` setting. Empty is off. See [Human approvals](/security#human-approvals). |
+| `TURNTABLE_LOG_STORE` |  | db | Where job logs are stored: `db` (the main database, one binary) or `clickhouse` (a ClickHouse service, over HTTP). `clickhouse` needs `TURNTABLE_CLICKHOUSE_URL`, and the URL's host must be in `TURNTABLE_NET_ALLOW_HOSTS` when it is private or plain http. See [Log store](/log-store). |
+| `TURNTABLE_CLICKHOUSE_URL` |  | unset | Base URL of the ClickHouse HTTP interface, for example `http://clickhouse.railway.internal:8123`. No credentials in the URL. Used when `TURNTABLE_LOG_STORE=clickhouse`. |
+| `TURNTABLE_CLICKHOUSE_USER` |  | ClickHouse default user | ClickHouse user, sent as a header. |
+| `TURNTABLE_CLICKHOUSE_PASSWORD` |  | none | ClickHouse password, sent as a header. Never logged. |
+| `TURNTABLE_CLICKHOUSE_DATABASE` |  | ClickHouse default database | Database that holds the `log_chunks` table. The server creates the table at boot when it is missing. |
+| `TURNTABLE_LOG_RETENTION_DAYS` |  | 90 | Days the ClickHouse log store keeps a chunk before its TTL removes it (1 to 36500). Applied at boot. |
+| `TURNTABLE_LOG_QUEUE_MIB` |  | 64 | Memory the ClickHouse write queue may hold while the store is slow or down (1 to 4096 MiB). A chunk that does not fit is dropped and the attempt's log is marked incomplete. |
+| `TURNTABLE_LOG_MIGRATE_DAYS` |  | 14 | How many days back the `log_store_migrate` operation copies from the database into the log store (1 to 3650). |
 
 ### Worker and provider
 
