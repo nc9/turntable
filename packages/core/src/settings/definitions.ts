@@ -713,7 +713,7 @@ function checkoutBudgetSettings(b: BudgetSpec): SettingDef[] {
       mcpEditable: false,
       mcpReason: why,
       description: `The most MiB a project's \`project_${inst}\` may be set to (1 to ${b.max}). A higher value is refused, and a stored one above it is clamped to it. It does not limit the full-history multiplier.`,
-      env: [`TURNTABLE_CHECKOUT_CEILING_${b.name.toUpperCase()}_MIB`],
+      env: [b.env.replace("_MAX_", "_CEILING_")],
       envParse: mibEnv,
       toml: `checkout.ceiling_${b.name}_mib`,
     }),
