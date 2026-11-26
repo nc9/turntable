@@ -121,5 +121,7 @@ export interface DoctorInputs {
   humanApprovalGaps?: (() => Promise<number>) | undefined;
   /** How many projects resolve to `human` while their org key policy is `any`. Server only. */
   humanAnyKeyPolicy?: (() => Promise<number>) | undefined;
+  /** Whether this host can read a process's resident memory (`/proc`); the checkout ceiling needs it. */
+  rssReadable?: () => boolean;
   now: () => number;
 }

@@ -1,6 +1,7 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { sql } from "drizzle-orm";
+import { checkoutConfigFromEnv, procRssReadable } from "../run/checkout-child";
 import { ingestStatus, POLL_RESERVE } from "../poll/status";
 import { processDrain } from "../scheduler/drain";
 import {
@@ -836,6 +837,36 @@ export function checkLimitLocks(i: DoctorInputs): DoctorCheck {
   );
 }
 
+/**
+ * The checkout memory ceiling (`TURNTABLE_CHECKOUT_MAX_MEMORY_MIB`) is enforced by reading the
+ * checkout child's resident memory from /proc. Say whether this host can.
+ */
+export function checkCheckoutMemory(i: DoctorInputs): DoctorCheck {
+  const area = "limits";
+  const mib = checkoutConfigFromEnv(i.env).memoryMb;
+  if (mib === 0) {
+    return warn(
+      "checkout_memory",
+      area,
+      "the checkout memory ceiling is off (TURNTABLE_CHECKOUT_MAX_MEMORY_MIB=0)",
+      "Only the pack, unpacked and tarball caps bound a checkout's memory. Unset the variable or set a ceiling.",
+    );
+  }
+  if (i.rssReadable?.() ?? procRssReadable()) {
+    return pass(
+      "checkout_memory",
+      area,
+      `the checkout memory ceiling (${mib} MiB) is enforced on this host`,
+    );
+  }
+  return warn(
+    "checkout_memory",
+    area,
+    `the checkout memory ceiling (${mib} MiB) is NOT enforced on this host: /proc cannot be read`,
+    "Mount /proc (without hidepid) for the service user, or keep checkout concurrency low and rely on the pack, unpacked and tarball caps.",
+  );
+}
+
 /** Every check, in a fixed order. A check that throws is reported as a fail, never as a crash. */
 export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
   const safe = async (
@@ -874,6 +905,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("release_config_channel", "release", () => checkConfigChannel(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
     ...(await safe("limit_locks", "limits", () => checkLimitLocks(i))),
+    ...(await safe("checkout_memory", "limits", () => checkCheckoutMemory(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
     ...(await safe("draining", "scheduler", () => checkDraining())),
     ...(await safe("human_approval_approvers", "approvals", () => checkHumanApprovalApprovers(i))),
