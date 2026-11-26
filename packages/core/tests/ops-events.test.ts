@@ -178,6 +178,7 @@ test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async (
   expect(await run("job_steps", { job_id: a.jobId })).toEqual({
     job_id: a.jobId,
     attempt: 1,
+    log_incomplete: false,
     steps: [],
   });
   expect(await run("job_cuts", { job_id: a.jobId })).toEqual({
@@ -214,6 +215,12 @@ test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async (
   });
 
   const steps = await run("job_steps", { job_id: a.jobId });
+  // A cut makes the log incomplete, on job_steps and on every get_run attempt of that attempt.
+  expect(steps.log_incomplete).toBe(true);
+  const gr = await run("get_run", { run_id: a.runId });
+  expect(gr.jobs.find((x: { id: string }) => x.id === a.jobId).attempts[0].log_incomplete).toBe(
+    true,
+  );
   expect(steps.steps.map((s: { key: string }) => s.key)).toEqual(["setup", "checkout"]);
   expect(steps.steps[1]).toMatchObject({
     stage: "main",
@@ -238,6 +245,7 @@ test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async (
   // a second attempt starts empty; the first stays addressable
   const second = (await createAttempt(db, a.scope, { jobId: a.jobId, provider: "p" }))!;
   expect((await run("job_steps", { job_id: a.jobId })).steps).toEqual([]);
+  expect((await run("job_steps", { job_id: a.jobId })).log_incomplete).toBe(false);
   expect((await run("job_steps", { job_id: a.jobId, attempt: 1 })).steps).toHaveLength(2);
   expect((await run("job_cuts", { job_id: a.jobId, attempt: 2 })).cuts).toEqual([]);
   expect(second.attempt).toBe(2);
@@ -252,6 +260,7 @@ test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async (
   expect(await run("job_steps", { job_id: j.id })).toEqual({
     job_id: j.id,
     attempt: null,
+    log_incomplete: false,
     steps: [],
   });
 

@@ -111,6 +111,10 @@ These were checked by running the conformance suite and a short capability test 
 - Sandboxes are Linux x86_64 containers (`sandboxClass: container`) running as user `daytona`, with 1 vCPU, 1 GB memory and 3 GB disk by default.
 - Exit codes, signal deaths, offset logs across silent gaps, output caps, binary file round trips and the absence of controller environment variables all pass the shared conformance suite.
 
+### Incomplete logs
+
+A sandbox keeps the first 1 MiB and last 4 MiB of a step's raw output (act's JSON, which is larger than the stored text) once the step ends. If the controller could not read the log in time, for example because the provider was slow to answer while a heavy job ran, the middle is gone. Turntable never leaves that as a silent gap: the stored log gets a `[turntable] N bytes of output from HH:MM:SS to HH:MM:SS could not be retrieved: <reason>` line (UTC, the time range is when output was last stored to when it resumed), `job_cuts` lists the gap, `get_run` (per attempt) and `job_steps` report `log_incomplete: true`, and `turntable doctor` counts the attempts of the last 7 days with a gap. The marker is plain text, so a job can print the same words; `log_incomplete` and `job_cuts` are the record to trust.
+
 ### Per-project snapshot and concurrency cap
 
 Three settings belong to the instance operator, one project at a time (`--untrusted-run-approval <human|no_agents|any>` sets the third, who may approve a held run; see [Secrets and security](/security)). A tenant must not choose its own image or lift its own cap, so they are set with `turntable policy set --org <slug> --project <slug> --sandbox-snapshot <name|none> --max-concurrent <n|none>` on the host, or with `set_project_settings` over REST with an instance token (not an MCP tool, audited in the system chain and the org's). `get_project_settings` (reader, project-scoped) and `turntable policy show` read them.
