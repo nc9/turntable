@@ -187,6 +187,40 @@ export const untrustedRunApprovalSetting = defineSetting({
   toml: "untrusted_run_approval",
 });
 
+/** Longest `pr_approval_label`: GitHub's own limit for a label name. */
+export const PR_APPROVAL_LABEL_MAX = 50;
+
+/** A label name with no control characters, or an empty string for off. */
+const prApprovalLabel = z
+  .string()
+  .max(PR_APPROVAL_LABEL_MAX)
+  .refine((v) => v === v.trim() && !/[\u0000-\u001f\u007f,]/.test(v), {
+    message: "a label name with no surrounding spaces, commas or control characters",
+  });
+
+export const prApprovalLabelSetting = defineSetting({
+  key: "pr_approval_label",
+  scope: "project",
+  type: prApprovalLabel,
+  default: "",
+  // Setting it lets a label release an untrusted pull request, so it is the instance
+  // administrator's, as for `untrusted_run_approval`, and never an agent's.
+  role: "owner",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides what releases an untrusted pull request, so only a person changes it",
+  description:
+    "For a repo in `prMode: approval`: a GitHub label (for example `ci:approved`) that releases a pull request run waiting for approval. Empty is off. The label counts only when its latest `labeled` event was made by a human (not a Bot, not the PR's author) with write, maintain or admin access, after the head was pushed and after the run was created, and it approves that exact sha. A new push needs a new label. The released run keeps its untrusted class: no secrets. The signed approval keeps working.",
+  warning:
+    "Every user with write access to the repo can then approve a pull request by adding the label, with no passkey. It runs the PR's code in a sandbox without secrets.",
+  loosens: (before, after) =>
+    after !== "" && after !== before
+      ? [`a pull request label (${after}) now releases untrusted runs`]
+      : [],
+  env: ["TURNTABLE_PR_APPROVAL_LABEL"],
+  toml: "pr_approval_label",
+});
+
 /** The values of `checks_mode`; the same three the `projects.checks_mode` column has always held. */
 export const CHECKS_MODE_VALUES = ["off", "shadow", "live"] as const;
 
@@ -476,6 +510,7 @@ export const settingsRegistry = createSettingsRegistry([
   auditAnchorExportIntervalSetting,
   untrustedRunApprovalSetting,
   checksModeSetting,
+  prApprovalLabelSetting,
   runDispatchAgentsSetting,
   approvalPolicySetting,
   schedulingClassSetting,

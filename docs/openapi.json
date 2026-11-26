@@ -530,6 +530,24 @@
                             },
                             "workflow_hash": {
                               "type": "string"
+                            },
+                            "via": {
+                              "description": "Set when a pull request label approved the run (`approval.label`).",
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "label"
+                                },
+                                "label": {
+                                  "type": "string"
+                                },
+                                "event_id": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "label", "event_id"],
+                              "additionalProperties": false
                             }
                           },
                           "required": ["by", "at", "head_sha", "workflow_hash"],

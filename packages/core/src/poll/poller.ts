@@ -27,6 +27,7 @@ import {
   type DispatchResult,
 } from "./dispatch";
 import { newTagCaches, pollRepo, targetScope } from "./ingest";
+import { githubNoticeWriter, type PrNoticeWriter } from "./pr-notices";
 import type { DefaultBranchRunResult, RepoReader } from "./onboarding-forge";
 import { ingestStatus, POLL_RESERVE, type PollAuthMode, type RepoStatus } from "./status";
 
@@ -42,6 +43,9 @@ export interface InstallationMinter {
 }
 
 /** What a poll reads: nothing is written, so nothing more is asked for. */
+/** What the App is asked for to remove a stale approval label and comment once (#666). */
+const NOTICE_PERMISSIONS = { issues: "write", metadata: "read" } as const;
+
 const POLL_PERMISSIONS = { contents: "read", metadata: "read", pull_requests: "read" } as const;
 
 export type PollerOptions = {
@@ -405,6 +409,33 @@ export class Poller {
     }
   }
 
+  /**
+   * A writer for the stale-label notices of one repo, minted only when called (a label turned out
+   * stale) with `issues: write` for that one repo. Undefined when the repo has no installation or
+   * the mint fails: the label stays and the run still waits.
+   */
+  #noticesFor(cfg: PollRepoConfig): () => Promise<PrNoticeWriter | undefined> {
+    return async () => {
+      const key = cfg.repo.toLowerCase();
+      const installationId = this.#installs.get(key);
+      if (!this.#o.auth || !installationId) return undefined;
+      const slug = this.#effective.get(key) ?? cfg.repo;
+      try {
+        const { token } = await this.#o.auth.mint(installationId, {
+          repositories: [slug.split("/")[1] as string],
+          permissions: NOTICE_PERMISSIONS,
+        });
+        return githubNoticeWriter({
+          baseUrl: this.#o.config.apiBaseUrl,
+          token,
+          ...(this.#o.fetch ? { fetch: this.#o.fetch } : {}),
+        });
+      } catch {
+        return undefined;
+      }
+    };
+  }
+
   #now(): number {
     return (this.#o.now ?? Date.now)();
   }
@@ -705,6 +736,7 @@ export class Poller {
             overCap: this.#overCap,
             tagCaches: this.#tagCaches,
             authMode: mode,
+            notices: this.#noticesFor(entry),
             ...(this.#o.now ? { now: this.#o.now } : {}),
             log,
           },
@@ -714,7 +746,7 @@ export class Poller {
           skipped = true;
           continue;
         }
-        created += res.created.length;
+        created += res.created.length + (res.released?.length ?? 0);
         if (res.superseded.length > 0) this.#o.onSuperseded?.(res.superseded);
       }
       this.#failures.delete(repo);
