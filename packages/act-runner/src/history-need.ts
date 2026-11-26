@@ -41,3 +41,39 @@ export function workflowFullHistoryJobs(yaml: string): Record<string, boolean> {
   }
   return out;
 }
+
+export type SubmoduleMode = "true" | "recursive";
+
+/**
+ * What one checkout step's `submodules` input asks for: nothing (`false`, the default), the
+ * gitlinks (`true`) or their own too (`recursive`). An expression cannot be read before the job
+ * runs, so it counts as `recursive`: the job gets a bigger repository, never a wrong one.
+ */
+export function stepSubmodules(w: unknown): SubmoduleMode | undefined {
+  if (!isObj(w)) return undefined;
+  const v = w["submodules"];
+  if (v === undefined || v === null) return undefined;
+  const text = String(v).trim().toLowerCase();
+  if (text.includes("${{")) return "recursive";
+  if (text === "true") return "true";
+  if (text === "recursive") return "recursive";
+  return undefined;
+}
+
+/** Per job id: the submodule delivery its checkout steps ask for (the widest), if any. */
+export function workflowSubmodulesJobs(yaml: string): Record<string, SubmoduleMode | undefined> {
+  const doc: unknown = parse(yaml, { merge: true });
+  const jobs = isObj(doc) && isObj(doc.jobs) ? doc.jobs : {};
+  const out: Record<string, SubmoduleMode | undefined> = {};
+  for (const [id, job] of Object.entries(jobs)) {
+    if (!isObj(job) || !Array.isArray(job.steps)) continue;
+    let mode: SubmoduleMode | undefined;
+    for (const s of job.steps) {
+      if (!isObj(s) || !isCheckout(s.uses)) continue;
+      const m = stepSubmodules(s.with);
+      if (m === "recursive" || (m === "true" && mode === undefined)) mode = m;
+    }
+    out[id] = mode;
+  }
+  return out;
+}

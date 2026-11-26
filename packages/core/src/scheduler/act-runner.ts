@@ -20,6 +20,7 @@ import {
   rebuildArgv,
   splitJob,
   workflowFullHistoryJobs,
+  workflowSubmodulesJobs,
   workflowHeadCheckouts,
 } from "@turntable/act-runner";
 import type { JobArtifactProvider } from "../artifacts/job";
@@ -46,6 +47,7 @@ import {
   sweepOldCheckouts,
 } from "../run/checkout-child";
 import { clean, DEFAULT_FETCH_LIMITS } from "../run/git-fetch";
+import { deliverSubmodules } from "../run/submodule-fetch";
 import { scrubToken } from "../run/scrub-token";
 import { tarballReader } from "../run/tarball-reader";
 import { treeScanOutcome } from "./tree-scan-outcome";
@@ -97,7 +99,12 @@ export interface RepoSource {
   checkout(
     run: Run,
     repo: { owner: string; repo: string; installationId?: string | null | undefined } | undefined,
-    opts?: { signal?: AbortSignal | undefined; fullHistory?: boolean | undefined },
+    opts?: {
+      signal?: AbortSignal | undefined;
+      fullHistory?: boolean | undefined;
+      /** Also deliver each submodule at its pinned commit (a job's `submodules:` input). */
+      submodules?: "true" | "recursive" | undefined;
+    },
   ): Promise<Checkout>;
 }
 
@@ -194,10 +201,12 @@ export function gitRepoSource(
       const dir = mkdtempSync(join(tmpdir(), "tt-src-"));
       const out = join(tmpdir(), `tt-src-${crypto.randomUUID()}.tgz`);
       // Removed in the background: a recursive delete of a large tree must not hold the event loop.
+      const manifests: string[] = [];
       const cleanup = async (): Promise<void> => {
         await Promise.all([
           rmAsync(dir, { recursive: true, force: true }),
           rmAsync(out, { force: true }),
+          ...manifests.map((m) => rmAsync(m, { force: true })),
         ]).catch(() => {});
       };
       try {
@@ -212,7 +221,11 @@ export function gitRepoSource(
             );
           }
         }
-        const res = await runCheckoutChild({
+        const startedAt = Date.now();
+        const submodules = opts?.submodules;
+        const manifest = join(tmpdir(), `tt-src-${crypto.randomUUID()}.json`);
+        manifests.push(manifest);
+        let res = await runCheckoutChild({
           ...(token ? { token } : {}),
           ...(opts?.fullHistory ? { fullHistory: true } : {}),
           owner,
@@ -221,11 +234,47 @@ export function gitRepoSource(
           ...(o.cloneUrl ? { url: clone } : {}),
           dir,
           out,
+          // With submodules the main tree is written and listed first; the tarball is made last,
+          // over the tree and the modules together.
+          ...(submodules ? { stage: "tree" as const, manifest } : {}),
           allowHosts: o.allowHosts ?? [],
           config: cfg,
           signal: opts?.signal,
           ...(o.command ? { command: o.command } : {}),
         });
+        if (submodules) {
+          if (res.sha !== sha)
+            throw new Error("the checkout is of a different commit than the one asked for");
+          await deliverSubmodules({
+            mode: submodules,
+            root: dir,
+            manifest,
+            main: res,
+            owner,
+            installationId,
+            mint: o.installationToken,
+            cloneUrl: o.cloneUrl,
+            allowHosts: o.allowHosts ?? [],
+            config: cfg,
+            startedAt,
+            signal: opts?.signal,
+            command: o.command,
+          });
+          const left = cfg.timeoutMs - (Date.now() - startedAt);
+          if (left <= 1000) throw new Error("the checkout took too long");
+          res = await runCheckoutChild({
+            stage: "pack",
+            owner,
+            repo,
+            sha,
+            dir,
+            out,
+            allowHosts: o.allowHosts ?? [],
+            config: { ...cfg, timeoutMs: left },
+            signal: opts?.signal,
+            ...(o.command ? { command: o.command } : {}),
+          });
+        }
         // The child is not trusted: what it says it fetched, and the file it wrote, are checked.
         if (res.sha !== sha)
           throw new Error("the checkout is of a different commit than the one asked for");
@@ -621,20 +670,28 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       // fetched again that way, and fails with the reason when the repository is over the caps.
       if (repo && !dbRun.local) {
         let wantsFull = false;
+        let wantsSubmodules: "true" | "recursive" | undefined;
         try {
-          const jobs = workflowFullHistoryJobs(workflowYaml);
           const pj = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
-          wantsFull = jobs[pj?.id ?? job.jobKey] === true;
+          const id = pj?.id ?? job.jobKey;
+          wantsFull = workflowFullHistoryJobs(workflowYaml)[id] === true;
+          // `submodules: true|recursive` (the default is false): the modules at their pinned
+          // commits are delivered too, under the checkout's own limits and rules.
+          wantsSubmodules = workflowSubmodulesJobs(workflowYaml)[id];
         } catch {
           // a workflow that does not parse fails in the planner below, with its own reason
         }
-        if (wantsFull) {
+        if (wantsFull || wantsSubmodules) {
           checkout.dispose?.();
           try {
             checkout = await o.source.checkout(
               dbRun,
               { owner: repo.owner, repo: repo.repo, installationId: repo.installationId },
-              { signal: ctx.signal, fullHistory: true },
+              {
+                signal: ctx.signal,
+                ...(wantsFull ? { fullHistory: true } : {}),
+                ...(wantsSubmodules ? { submodules: wantsSubmodules } : {}),
+              },
             );
           } catch (e) {
             if (e instanceof CheckoutAuthError)
