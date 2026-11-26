@@ -120,6 +120,8 @@ export class DaytonaApi {
         headers,
         ...(init.json !== undefined ? { body: JSON.stringify(init.json) } : {}),
         ...(init.form ? { body: init.form } : {}),
+        // The client enforces the deadline (DNS and body included); the signal is a second guard.
+        timeoutMs: init.timeoutMs ?? 60_000,
         signal: AbortSignal.timeout(init.timeoutMs ?? 60_000),
         redirect: "error",
       });

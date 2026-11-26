@@ -1,0 +1,45 @@
+---
+title: "Internals: outbound calls and liveness"
+description: Every outbound call is bounded, a watchdog shows the ones that hang, and the server says it is alive once a minute.
+---
+
+Issue [#693](https://github.com/turntable-ci/turntable/issues/693): a hosted instance once went seven minutes without a log line while its outbound GitHub calls hung. A hung call must never stall a loop, and a stall must leave a trace.
+
+## Every call has a deadline
+
+All outbound HTTP goes through the one client in `@turntable/net` (a source-guard test fails on any other `fetch`). The client enforces one deadline per call, 30 s unless the caller sets `timeoutMs`. The deadline covers the whole exchange: preparing the body, the DNS lookup, every connect attempt, every redirect hop and the response body. A DNS lookup also has its own 5 s limit (`resolveMs`), and `tunnel` uses the same bounded lookup. A caller's `AbortSignal` ends the call too.
+
+| Call site | Deadline |
+| --- | --- |
+| GitHub poller (`poll/github.ts`) | 15 s |
+| GitHub App auth, job tokens, installation calls (`github/*`) | 30 s (default) |
+| Checks client (`checks/client.ts`) | 15 s |
+| Daytona API and toolbox, including log reads (`provider-daytona/api.ts`) | 60 s, or the call's own `timeoutMs` |
+| Outbound webhooks (`webhooks/service.ts`) | `REQUEST_TIMEOUT_MS` |
+| Audit export and anchor export | 30 s and `SEND_TIMEOUT_MS` |
+| Login and user tokens (`auth/*`) | 15 s |
+| Release publish (GitHub release, npm, OCI, forge) | 15 s to 300 s, set per call |
+| Action tarballs, pins, reachability, git fetch | 30 s (default), act install 120 s |
+| Signer (AWS, GCP) | 30 s |
+| Doctor probes | 5 s |
+| Worker to release lane (`controlPost`) | 10 s, with the body read inside it |
+
+The poller schedules each repo's next poll after the previous one returns, so a bounded call also bounds the loop.
+
+## Watchdog
+
+Each call is registered while it is open: host, method and a coarse path (identifier-like segments become `:x`, no query, no header). `instance_runtime_health` shows the open calls per host, the oldest call's host, operation and age, and the calls that ended by timeout. A call open for more than 20 s is logged once:
+
+```
+[turntable] outbound call to api.github.com (GET /repos/:x/:x/pulls) still open after 21 s
+```
+
+## Event loop and heartbeat
+
+The loop is sampled every second. The window is the last 60 samples (p50, p99, max). A sample over 1 s is logged with the window. `doctor` (`runtime_health`) warns when the window max is over 1 s, an outbound call is older than 20 s, or a log reader is behind. A stall with idle CPU is usually a hung outbound call; a stall with busy CPU is blocking work in the process.
+
+A heartbeat line is logged every 60 s: uptime, loop lag, open outbound calls and the oldest, log readers and their lag, and memory. A gap in these lines is itself the signal.
+
+## Log reader lag
+
+For each running attempt the lag is now minus the last successful read of the exec's log. Past 20 s the job log gets a line (`the log reader is N s behind ...`), the server logs it once per episode, and a line says when it caught up. The check runs on its own timer, so a read that never returns cannot hide it.

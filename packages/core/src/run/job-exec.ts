@@ -15,6 +15,7 @@ import {
 import type { Provider, ProxyEndpoint, SandboxResources } from "@turntable/provider-sdk";
 import { Redactor, SecretRegistry, redactString } from "@turntable/redact";
 import { type ErrorDetail, errorDetailOf } from "../scheduler/error-detail";
+import { LOG_LAG_WARN_MS, runtimeHealth } from "../health/monitor";
 import { renderEvent, stepLabel } from "./render";
 import type { JobIds, RunStore, StepRecord } from "./store";
 
@@ -57,6 +58,10 @@ export interface JobEnv {
   registry: SecretRegistry;
   signal?: AbortSignal | undefined;
   idleFlushMs?: number;
+  /** How far behind its last successful read the log reader may fall before the job log says so. */
+  logLagWarnMs?: number;
+  /** Where the server-side line about a lagging reader goes. Default: the server log. */
+  onLogLag?: (line: string) => void;
   act?: ActTarball;
   fetchAction?: ActionFetcher;
   pollMs?: number;
@@ -157,7 +162,41 @@ export async function executeJob(
   };
 
   const log = new LogPipe(env, ids.attemptId);
-  const idle = setInterval(() => log.idleFlush(env.idleFlushMs ?? 1000), 250);
+  // Log reader lag (#693): now minus the last successful read of the exec's log. It is armed when
+  // the exec exists, and a stuck read cannot hide it: this check runs on its own timer.
+  const lagWarnMs = env.logLagWarnMs ?? LOG_LAG_WARN_MS;
+  let lastRead: number | undefined;
+  let lagReported = false;
+  const armReader = (): void => {
+    lastRead = Date.now();
+    runtimeHealth.trackReader(ids.attemptId);
+  };
+  const onLogRead = (): void => {
+    if (lastRead === undefined) return;
+    const was = Date.now() - lastRead;
+    lastRead = Date.now();
+    runtimeHealth.readerOk(ids.attemptId);
+    if (lagReported) {
+      lagReported = false;
+      log.push(`[turntable] log reader caught up (it was ${Math.round(was / 1000)} s behind)\n`);
+    }
+  };
+  const checkLag = (): void => {
+    if (lastRead === undefined || lagReported) return;
+    const lag = Date.now() - lastRead;
+    if (lag <= lagWarnMs) return;
+    lagReported = true;
+    log.push(
+      `[turntable] the log reader is ${Math.round(lag / 1000)} s behind (the sandbox is not answering log reads); output may be delayed or cut\n`,
+    );
+    (env.onLogLag ?? ((l) => console.warn(`[turntable] ${l}`)))(
+      `log reader for attempt ${ids.attemptId} is ${Math.round(lag / 1000)} s behind its last successful read`,
+    );
+  };
+  const idle = setInterval(() => {
+    log.idleFlush(env.idleFlushMs ?? 1000);
+    checkLag();
+  }, 250);
   if (!resume) for (const n of env.notices ?? []) log.push(`${n}\n`);
 
   const steps = new Map<string, StepRecord>();
@@ -233,9 +272,10 @@ export async function executeJob(
         env.provider,
         resume.sandboxId,
         resume.execId,
-        { pollMs: env.pollMs ?? 500 },
+        { pollMs: env.pollMs ?? 500, onLogRead },
         plan,
       );
+      armReader();
     } else {
       if (!plan || !env.image || !env.repoTarball) {
         throw new Error("plan, image and repoTarball are required to start a job");
@@ -390,7 +430,11 @@ export async function executeJob(
           pollMs: env.pollMs ?? 500,
           ...(env.timeoutSeconds ? { timeoutSeconds: env.timeoutSeconds } : {}),
           // As soon as the exec exists, record it: a restarted controller needs it to re-attach.
-          onExec: ({ execId }) => env.store.setExec?.(ids.attemptId, execId) ?? Promise.resolve(),
+          onExec: ({ execId }) => {
+            armReader();
+            return env.store.setExec?.(ids.attemptId, execId) ?? Promise.resolve();
+          },
+          onLogRead,
         },
       );
     }
@@ -419,6 +463,7 @@ export async function executeJob(
     );
   } finally {
     clearInterval(idle);
+    runtimeHealth.untrackReader(ids.attemptId);
     if (sandboxId) {
       try {
         await env.provider.destroy(sandboxId);

@@ -136,6 +136,7 @@ import { addProject, removeProject } from "./definitions/projects";
 import { resyncInstallation } from "./definitions/resync-installation";
 import { ingestStatusOp } from "./definitions/ingest-status";
 import { instanceIngestStatusOp } from "./definitions/instance-ingest-status";
+import { instanceRuntimeHealthOp } from "./definitions/instance-runtime-health";
 import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
 import { jobSteps } from "./definitions/job-steps";
@@ -227,6 +228,7 @@ export const registry = createRegistry([
   instanceRunSummaryOp,
   instanceInfraErrorsOp,
   instanceIngestStatusOp,
+  instanceRuntimeHealthOp,
   instanceAuditVerifyOp,
   setQuotas,
   bootstrapApprover,

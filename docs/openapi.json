@@ -16525,6 +16525,225 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/instance/runtime-health": {
+      "get": {
+        "operationId": "instance_runtime_health",
+        "summary": "Event-loop lag, open outbound calls and log reader lag, for the instance administrator.",
+        "description": "Reports the health of the server process answering the call: event-loop lag over the last minute (p50, p99 and max in milliseconds, sampled every second), the outbound calls open now per host with the oldest one's host, operation and age (no URL query, no header), how many calls ended by timeout per host, and the lag of each running job's log reader (now minus its last successful read). It carries no secret. A stall with idle CPU is usually a hung outbound call. Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "running": {
+                      "type": "boolean",
+                      "description": "Whether the monitor runs in this process."
+                    },
+                    "uptime_seconds": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "event_loop": {
+                      "type": "object",
+                      "properties": {
+                        "samples": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "window_seconds": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "p50_ms": {
+                          "type": "number"
+                        },
+                        "p99_ms": {
+                          "type": "number"
+                        },
+                        "max_ms": {
+                          "type": "number"
+                        },
+                        "last_over_1s_at": {
+                          "type": ["string", "null"]
+                        }
+                      },
+                      "required": [
+                        "samples",
+                        "window_seconds",
+                        "p50_ms",
+                        "p99_ms",
+                        "max_ms",
+                        "last_over_1s_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "outbound": {
+                      "type": "object",
+                      "properties": {
+                        "in_flight": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "by_host": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "host": {
+                                "type": "string"
+                              },
+                              "count": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["host", "count"],
+                            "additionalProperties": false
+                          }
+                        },
+                        "oldest": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "host": {
+                                  "type": "string"
+                                },
+                                "operation": {
+                                  "type": "string"
+                                },
+                                "age_ms": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": ["host", "operation", "age_ms"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "timeouts_by_host": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "host": {
+                                "type": "string"
+                              },
+                              "count": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["host", "count"],
+                            "additionalProperties": false
+                          }
+                        },
+                        "slow_reported": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "in_flight",
+                        "by_host",
+                        "oldest",
+                        "timeouts_by_host",
+                        "slow_reported"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "log_readers": {
+                      "type": "object",
+                      "properties": {
+                        "tracking": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "max_lag_ms": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "lagging": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "attempt_id": {
+                                "type": "string"
+                              },
+                              "lag_ms": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["attempt_id", "lag_ms"],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": ["tracking", "max_lag_ms", "lagging"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "running",
+                    "uptime_seconds",
+                    "event_loop",
+                    "outbound",
+                    "log_readers"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/instance/audit-verify": {
       "post": {
         "operationId": "instance_audit_verify",

@@ -2,6 +2,7 @@ import { createPrivateKey, X509Certificate } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { sql } from "drizzle-orm";
 import { ingestStatus, POLL_RESERVE } from "../poll/status";
+import { LAG_WARN_MS, LOG_LAG_WARN_MS, OUTBOUND_SLOW_MS, runtimeHealth } from "../health/monitor";
 import { processDrain } from "../scheduler/drain";
 import { open, secretAad } from "../secrets/crypto";
 import { RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV } from "../roles";
@@ -784,6 +785,41 @@ export function checkPollHealth(now: number = Date.now()): DoctorCheck {
   return pass("poll_health", area, "no repo is failing to poll and the poll budget has room");
 }
 
+/**
+ * Event-loop lag, hung outbound calls and lagging log readers, from the in-process monitor (#693).
+ * Fixed sentences. A process without the monitor (the command line) passes: nothing to report.
+ */
+export function checkRuntimeHealth(): DoctorCheck {
+  const area = "process";
+  const s = runtimeHealth.snapshot();
+  if (!s.running) {
+    return pass("runtime_health", area, "the runtime monitor is not running in this process");
+  }
+  const problems: string[] = [];
+  if (s.loop.max > LAG_WARN_MS) {
+    problems.push(
+      `the event loop stalled for up to ${Math.round(s.loop.max)} ms in the last minute`,
+    );
+  }
+  if (s.outbound.oldest && s.outbound.oldest.ageMs > OUTBOUND_SLOW_MS) {
+    problems.push(
+      `an outbound call to ${s.outbound.oldest.host} has been open for ${Math.round(s.outbound.oldest.ageMs / 1000)} s`,
+    );
+  }
+  if (s.logReaders.maxLagMs > LOG_LAG_WARN_MS) {
+    problems.push("a job's log reader is behind");
+  }
+  if (problems.length > 0) {
+    return warn(
+      "runtime_health",
+      area,
+      problems.join("; "),
+      "Run `instance_runtime_health` for the lag, the open calls per host and the lagging attempts. A stall with idle CPU is usually a hung outbound call (network or egress trouble); a stall with busy CPU is blocking work in the process.",
+    );
+  }
+  return pass("runtime_health", area, "the event loop and outbound calls are responsive");
+}
+
 /** A drain holds back every new attempt: say so, with a fixed sentence (#446). */
 export function checkDraining(): DoctorCheck {
   const area = "scheduler";
@@ -837,6 +873,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
     ...(await safe("draining", "scheduler", () => checkDraining())),
+    ...(await safe("runtime_health", "process", () => checkRuntimeHealth())),
     ...(await safe("human_approval_approvers", "approvals", () => checkHumanApprovalApprovers(i))),
     ...(await safe("approver_github_ids", "approvals", () => checkApproverReenrol(i))),
     ...(await safe("human_approval_key_policy", "approvals", () => checkHumanApprovalKeyPolicy(i))),

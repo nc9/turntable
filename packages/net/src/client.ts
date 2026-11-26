@@ -17,6 +17,7 @@ import http from "node:http";
 import https from "node:https";
 import net, { isIP } from "node:net";
 import { blockedReason } from "./ip";
+import { coarsePath, outboundWatchdog } from "./watchdog";
 
 export class SsrfError extends Error {
   readonly host: string;
@@ -80,7 +81,34 @@ export interface HttpClientOptions {
   maxRedirects?: number;
   maxBytes?: number;
   timeoutMs?: number;
+  /** Deadline for a DNS answer (own limit, inside the overall one). Default 5000. */
+  resolveMs?: number;
   userAgent?: string;
+}
+
+/**
+ * Settles with the promise, or rejects with the signal's reason as soon as it aborts, so a step
+ * that does not take a signal (a DNS lookup, a body read) cannot outlive the deadline.
+ */
+function abortable<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    p.catch(() => {});
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolveP, rejectP) => {
+    const onAbort = (): void => rejectP(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolveP(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        rejectP(e);
+      },
+    );
+  });
 }
 
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
@@ -147,7 +175,14 @@ export interface HttpClient {
 
 export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
   const allow = new Set((o.allowHosts ?? []).map((h) => h.trim().toLowerCase()).filter(Boolean));
-  const resolve = o.resolve ?? defaultResolve;
+  const rawResolve = o.resolve ?? defaultResolve;
+  const resolveMs = o.resolveMs ?? 5000;
+  // A resolver that never answers must not hold a call (or a loop) open: bound every lookup.
+  const resolve: Resolver = (h) => {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(new RequestTimeoutError(resolveMs)), resolveMs);
+    return abortable(rawResolve(h), ac.signal).finally(() => clearTimeout(t));
+  };
   const maxRedirects = o.maxRedirects ?? 5;
   const defaultMax = o.maxBytes ?? 32 * 1024 * 1024;
   const defaultTimeout = o.timeoutMs ?? 30_000;
@@ -332,28 +367,10 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
     const request = input instanceof Request ? input : undefined;
     let url = new URL(request ? request.url : String(input));
     let method = (init.method ?? request?.method ?? "GET").toUpperCase();
-    const hdrs = new Headers(request?.headers);
-    new Headers(init.headers).forEach((v, k) => hdrs.set(k, v));
-    if (!hdrs.has("user-agent")) hdrs.set("user-agent", ua);
-    if (!hdrs.has("accept-encoding")) hdrs.set("accept-encoding", "identity");
-    let body: Uint8Array | undefined;
-    const rawBody = init.body ?? (request ? await request.clone().arrayBuffer() : undefined);
-    if (rawBody !== undefined && rawBody !== null) {
-      if (typeof rawBody === "string") {
-        body = new TextEncoder().encode(rawBody);
-      } else {
-        // FormData, URLSearchParams, Blob and streams: let Response serialise them, and keep the
-        // content type it derives (a multipart boundary, for one).
-        const r = new Response(rawBody as ConstructorParameters<typeof Response>[0]);
-        const ct = r.headers.get("content-type"); // before the body is consumed
-        body = new Uint8Array(await r.arrayBuffer());
-        if (ct && !hdrs.has("content-type")) hdrs.set("content-type", ct);
-      }
-      hdrs.set("content-length", String(body.length));
-    }
-
     const maxBytes = init.maxBytes ?? defaultMax;
     const timeoutMs = init.timeoutMs ?? defaultTimeout;
+    // The deadline starts first: everything below, preparing the body and resolving the name
+    // included, is inside it.
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(new RequestTimeoutError(timeoutMs)), timeoutMs);
     const outer = init.signal ?? request?.signal;
@@ -362,10 +379,34 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
       if (outer.aborted) onOuter();
       else outer.addEventListener("abort", onOuter, { once: true });
     }
+    const endWatch = outboundWatchdog.begin(hostOf(url), `${method} ${coarsePath(url.pathname)}`);
+    let timedOut = false;
     try {
+      const hdrs = new Headers(request?.headers);
+      new Headers(init.headers).forEach((v, k) => hdrs.set(k, v));
+      if (!hdrs.has("user-agent")) hdrs.set("user-agent", ua);
+      if (!hdrs.has("accept-encoding")) hdrs.set("accept-encoding", "identity");
+      let body: Uint8Array | undefined;
+      const rawBody =
+        init.body ??
+        (request ? await abortable(request.clone().arrayBuffer(), ac.signal) : undefined);
+      if (rawBody !== undefined && rawBody !== null) {
+        if (typeof rawBody === "string") {
+          body = new TextEncoder().encode(rawBody);
+        } else {
+          // FormData, URLSearchParams, Blob and streams: let Response serialise them, and keep the
+          // content type it derives (a multipart boundary, for one).
+          const r = new Response(rawBody as ConstructorParameters<typeof Response>[0]);
+          const ct = r.headers.get("content-type"); // before the body is consumed
+          body = new Uint8Array(await abortable(r.arrayBuffer(), ac.signal));
+          if (ct && !hdrs.has("content-type")) hdrs.set("content-type", ct);
+        }
+        hdrs.set("content-length", String(body.length));
+      }
+
       const redirectMode = init.redirect ?? "follow";
       for (let hop = 0; ; hop += 1) {
-        const t = await target(url);
+        const t = await abortable(target(url), ac.signal);
         const send: Record<string, string> = {};
         hdrs.forEach((v, k) => (send[k] = v));
         const res = await exchange(
@@ -400,9 +441,13 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
           headers: res.headers,
         });
       }
+    } catch (e) {
+      timedOut = e instanceof RequestTimeoutError;
+      throw e;
     } finally {
       clearTimeout(timer);
       outer?.removeEventListener("abort", onOuter);
+      endWatch(timedOut);
     }
   };
 

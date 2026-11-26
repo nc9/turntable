@@ -45,6 +45,7 @@
           "releases",
           "contributing",
           "internals/bun-notes",
+          "internals/outbound-calls",
           "design/daytona-proxy",
           "design/publish-targets",
           "design/microvm-provider",
