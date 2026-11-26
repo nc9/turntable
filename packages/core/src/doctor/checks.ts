@@ -2,6 +2,7 @@ import { createPrivateKey, X509Certificate } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { sql } from "drizzle-orm";
 import { ingestStatus, POLL_RESERVE } from "../poll/status";
+import { type NetworkHealth, processNetwork } from "../network";
 import { processDrain } from "../scheduler/drain";
 import {
   providerDaytonaCpuLimitSetting,
@@ -818,6 +819,29 @@ export function checkPollHealth(now: number = Date.now()): DoctorCheck {
   return pass("poll_health", area, "no repo is failing to poll and the poll budget has room");
 }
 
+/**
+ * The egress probe's verdict (#698): degraded holds back every new attempt and defers check posts.
+ * The summary is a fixed sentence plus times this process wrote; no probe text reaches it.
+ */
+export function checkEgress(net: NetworkHealth = processNetwork): DoctorCheck {
+  const snap = net.snapshot();
+  const n = snap.windows.length;
+  const last = snap.windows.at(-1);
+  const recent =
+    n === 0
+      ? ""
+      : `; ${n} degraded window${n === 1 ? "" : "s"} since boot, the last from ${new Date(last?.start ?? 0).toISOString()}${last?.end ? ` to ${new Date(last.end).toISOString()}` : " (still open)"}`;
+  if (snap.state === "degraded") {
+    return warn(
+      "egress",
+      "network",
+      `outbound network is degraded: no new attempt is claimed and check posts wait${recent}`,
+      "Check the host's outbound connectivity and DNS. The state clears after two successful probes (15 s apart).",
+    );
+  }
+  return pass("egress", "network", `outbound network is healthy${recent}`);
+}
+
 /** A drain holds back every new attempt: say so, with a fixed sentence (#446). */
 export function checkDraining(): DoctorCheck {
   const area = "scheduler";
@@ -904,6 +928,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("incomplete_logs", "logs", () => checkIncompleteLogs(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
     ...(await safe("draining", "scheduler", () => checkDraining())),
+    ...(await safe("egress", "network", () => checkEgress())),
     ...(await safe("human_approval_approvers", "approvals", () => checkHumanApprovalApprovers(i))),
     ...(await safe("approver_github_ids", "approvals", () => checkApproverReenrol(i))),
     ...(await safe("human_approval_key_policy", "approvals", () => checkHumanApprovalKeyPolicy(i))),

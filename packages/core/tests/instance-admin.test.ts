@@ -269,6 +269,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "instance_ingest_status",
       "instance_list_orgs",
       "instance_list_settings",
+      "instance_network_status",
       "instance_org_summary",
       "instance_prune_unconfigured_projects",
       "instance_revoke_org_token",

@@ -135,6 +135,7 @@ import { secretUsage } from "./definitions/secret-usage";
 import { addProject, removeProject } from "./definitions/projects";
 import { resyncInstallation } from "./definitions/resync-installation";
 import { ingestStatusOp } from "./definitions/ingest-status";
+import { instanceNetworkStatusOp, networkStatusOp } from "./definitions/network-status";
 import { instanceIngestStatusOp } from "./definitions/instance-ingest-status";
 import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
@@ -197,6 +198,7 @@ export const registry = createRegistry([
   myActivityFeed,
   listProjects,
   ingestStatusOp,
+  networkStatusOp,
   createApiToken,
   listApiTokensOp,
   revokeApiTokenOp,
@@ -229,6 +231,7 @@ export const registry = createRegistry([
   instanceRunSummaryOp,
   instanceInfraErrorsOp,
   instanceIngestStatusOp,
+  instanceNetworkStatusOp,
   instanceAuditVerifyOp,
   setQuotas,
   bootstrapApprover,

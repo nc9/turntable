@@ -1,6 +1,7 @@
 // Reports each job's result to the forge as a check run, from the scheduler's attempt events.
 // A GitHub outage never blocks a run: reporting is queued per attempt, retried with backoff, and
 // its failures are logged, never thrown into the scheduler.
+import { type NetworkHealth, processNetwork } from "../network";
 import { redactString } from "@turntable/redact";
 import { foldShardStates } from "@turntable/act-runner";
 import type { Db } from "../db";
@@ -74,6 +75,10 @@ export type CheckReporterOptions = {
   baseDelayMs?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** While degraded, posts wait for recovery (#698). Default: the process's own. */
+  network?: NetworkHealth;
+  /** The longest one post waits for the network to recover before its own retries. Default 30 min. */
+  networkWaitMs?: number;
   log?: (message: string) => void;
 };
 
@@ -255,7 +260,12 @@ export class CheckReporter {
   #enqueue(attemptId: string, work: () => Promise<void>): Promise<void> {
     const prev = this.#chains.get(attemptId) ?? Promise.resolve();
     const next = prev
-      .then(work)
+      .then(async () => {
+        // A degraded network (#698): hold the post until it recovers, so it reaches GitHub once
+        // instead of burning its retries inside the outage.
+        await (this.#o.network ?? processNetwork).waitHealthy(this.#o.networkWaitMs ?? 30 * 60_000);
+        return work();
+      })
       .catch((err) => this.#log(`check run for ${attemptId} not reported: ${msg(err)}`))
       .finally(() => {
         if (this.#chains.get(attemptId) === next) this.#chains.delete(attemptId);

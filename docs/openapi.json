@@ -4685,6 +4685,105 @@
         "x-turntable-untrusted-output": true
       }
     },
+    "/network/status": {
+      "get": {
+        "operationId": "network_status",
+        "summary": "Whether the instance's outbound network is healthy, and its recent degraded windows.",
+        "description": "The instance's outbound network state (#698). A probe every 15 s resolves and HEADs the forge and the sandbox provider; two failures in a row mean `degraded`, two successes mean `healthy`. While degraded no new attempt is claimed, an attempt that failed before its sandbox existed is re-queued without using its retry, and check posts wait. The state and the windows live in the server process and reset on a restart. Use it to tell why queued work is waiting. No probe detail is returned. Read-only and cheap.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": ["healthy", "degraded"]
+                    },
+                    "since": {
+                      "description": "When the current state began, or null since boot.",
+                      "type": ["string", "null"]
+                    },
+                    "windows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "start": {
+                            "type": "string",
+                            "description": "When the instance entered degraded (ISO 8601)."
+                          },
+                          "end": {
+                            "description": "When it recovered, or null while still degraded.",
+                            "type": ["string", "null"]
+                          }
+                        },
+                        "required": ["start", "end"],
+                        "additionalProperties": false
+                      },
+                      "description": "Recent degraded windows since this process started, oldest first."
+                    }
+                  },
+                  "required": ["state", "since", "windows"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/tokens": {
       "post": {
         "operationId": "create_api_token",
@@ -16729,6 +16828,140 @@
                     }
                   },
                   "required": ["running", "rate_limit_by_mode", "repos"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/network": {
+      "get": {
+        "operationId": "instance_network_status",
+        "summary": "The instance's network state, recent degraded windows and the last probe's timings.",
+        "description": "The instance's outbound network state (#698). A probe every 15 s resolves and HEADs the forge and the sandbox provider; two failures in a row mean `degraded`, two successes mean `healthy`. While degraded no new attempt is claimed, an attempt that failed before its sandbox existed is re-queued without using its retry, and check posts wait. The state and the windows live in the server process and reset on a restart. For the instance administrator it adds the consecutive failure count, the last probe time and, per probe target (a fixed label, never a URL), the DNS and HEAD timings and the error code. The read is audited in the system chain. Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Turntable-Version": {
+                "$ref": "#/components/headers/TurntableVersion"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": ["healthy", "degraded"]
+                    },
+                    "since": {
+                      "description": "When the current state began, or null since boot.",
+                      "type": ["string", "null"]
+                    },
+                    "windows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "start": {
+                            "type": "string",
+                            "description": "When the instance entered degraded (ISO 8601)."
+                          },
+                          "end": {
+                            "description": "When it recovered, or null while still degraded.",
+                            "type": ["string", "null"]
+                          }
+                        },
+                        "required": ["start", "end"],
+                        "additionalProperties": false
+                      },
+                      "description": "Recent degraded windows since this process started, oldest first."
+                    },
+                    "consecutive_failures": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "last_probe_at": {
+                      "type": ["string", "null"]
+                    },
+                    "targets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "target": {
+                            "type": "string"
+                          },
+                          "ok": {
+                            "type": "boolean"
+                          },
+                          "dns_ms": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "http_ms": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "error": {
+                            "type": ["string", "null"]
+                          }
+                        },
+                        "required": ["target", "ok", "dns_ms", "http_ms", "error"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "since",
+                    "windows",
+                    "consecutive_failures",
+                    "last_probe_at",
+                    "targets"
+                  ],
                   "additionalProperties": false
                 }
               }

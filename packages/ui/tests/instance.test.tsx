@@ -5,6 +5,7 @@ import { ApiError } from "../src/api/http-adapter";
 import { createInstanceApi } from "../src/api/instance";
 import { RotatedNotice } from "../src/features/instance/rotated-notice";
 import { EffectiveConcurrencyNote } from "../src/features/instance/settings-page";
+import { NetworkView } from "../src/features/instance/network-status";
 import { InstanceSignIn } from "../src/features/instance/sign-in";
 import { isInstancePath } from "../src/features/instance/instance-shell";
 import { parseLimit } from "../src/features/instance/use-action";
@@ -300,5 +301,59 @@ describe("effective concurrency (#661)", () => {
     expect(html).toContain(">6<");
     expect(html).toContain("provider_daytona_max_live");
     expect(html).toContain("150 vCPU");
+  });
+});
+
+describe("network status (#698)", () => {
+  test("the client maps the instance network read", async () => {
+    const { api, calls } = make(() =>
+      json({
+        state: "degraded",
+        since: "2026-01-01T00:00:00.000Z",
+        windows: [{ start: "2026-01-01T00:00:00.000Z", end: null }],
+        consecutive_failures: 2,
+        last_probe_at: null,
+        targets: [{ target: "forge", ok: false, dns_ms: null, http_ms: null, error: "ENOTFOUND" }],
+      }),
+    );
+    const s = await api.networkStatus();
+    expect(calls[0]!.url.pathname).toBe("/api/v1/instance/network");
+    expect(s.state).toBe("degraded");
+    expect(s.windows[0]!.end).toBeNull();
+    expect(s.targets[0]!.error).toBe("ENOTFOUND");
+  });
+
+  test("the page says degraded, shows the open window and probe errors", () => {
+    const html = renderToStaticMarkup(
+      <NetworkView
+        status={{
+          state: "degraded",
+          since: Date.UTC(2026, 0, 1),
+          windows: [{ start: Date.UTC(2026, 0, 1), end: null }],
+          consecutiveFailures: 2,
+          targets: [{ target: "forge", ok: false, dnsMs: null, httpMs: null, error: "ENOTFOUND" }],
+        }}
+      />,
+    );
+    expect(html).toContain('data-network="degraded"');
+    expect(html).toContain("Network degraded since 2026-01-01 00:00:00 UTC");
+    expect(html).toContain("still degraded");
+    expect(html).toContain("ENOTFOUND");
+  });
+
+  test("healthy shows one line and past windows", () => {
+    const html = renderToStaticMarkup(
+      <NetworkView
+        status={{
+          state: "healthy",
+          since: null,
+          windows: [{ start: Date.UTC(2026, 0, 1), end: Date.UTC(2026, 0, 1, 0, 10) }],
+          consecutiveFailures: 0,
+          targets: [],
+        }}
+      />,
+    );
+    expect(html).toContain("Network healthy.");
+    expect(html).toContain("2026-01-01 00:00:00 to 2026-01-01 00:10:00");
   });
 });

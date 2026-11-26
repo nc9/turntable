@@ -9,10 +9,12 @@ import {
   listUndestroyedSandboxes,
   type Readiness,
   requeueLostAttemptOnce,
+  requeuePreSandbox,
   takeExpiredLease,
   updateAttempt,
 } from "../db/repos";
 import type { Db } from "../db";
+import { type NetworkHealth, processNetwork } from "../network";
 import type { ProviderResolver } from "./types";
 import { workflowReadiness } from "./workflow-readiness";
 
@@ -53,6 +55,8 @@ export async function reconcileExpired(
      */
     adopt?: (claim: Claim, resume: { sandboxId: string; execId: string }) => void;
     readiness?: Readiness;
+    /** The network state (#698). Default: the process's own. */
+    network?: NetworkHealth;
     log?: (message: string) => void;
   } = {},
 ): Promise<ReconcileReport> {
@@ -149,6 +153,25 @@ export async function reconcileExpired(
     if (requeue === "requeued") {
       report.resolved.push({ attemptId: attempt.id, sandboxId: attempt.sandboxId, probe });
       continue;
+    }
+    // A controller lost before any sandbox existed, while the network is degraded (#698): the
+    // attempt cannot have had side effects, so it is requeued and keeps the job's one retry.
+    if (!attempt.sandboxId && !attempt.execId && requeue === "no") {
+      const net = opts.network ?? processNetwork;
+      await net.probeNow();
+      if (net.degraded || net.suspect) {
+        const again = await requeuePreSandbox(db, scope, {
+          attemptId: attempt.id,
+          owner: attempt.leaseOwner ?? "",
+          reason: errorClass,
+          now,
+          requireExpired: true,
+        }).catch(() => false);
+        if (again) {
+          report.resolved.push({ attemptId: attempt.id, sandboxId: null, probe });
+          continue;
+        }
+      }
     }
     const done = await finishAttempt(db, scope, {
       attemptId: attempt.id,
