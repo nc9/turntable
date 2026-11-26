@@ -106,6 +106,15 @@ export const instanceDbCopyOp = defineOp({
     if (!url || !/^postgres(ql)?:\/\//i.test(url)) {
       throw new OpError("invalid_input", "the named variable is not set to a postgres:// URL");
     }
+    const src = (ctx.db.orm as unknown as { $client: Database }).$client;
+    if (!src.filename || src.filename === ":memory:") {
+      // the snapshot needs its own connection to the file: on the server's connection, BEGIN
+      // would open a transaction on the handle every request uses
+      throw new OpError(
+        "invalid_input",
+        "the source database is in memory: there is no file to copy",
+      );
+    }
     if (!i.dry_run) {
       const running = await countRunning(ctx.db);
       if (!processDrain.draining || running > 0) {
@@ -127,7 +136,6 @@ export const instanceDbCopyOp = defineOp({
         input: { target_url_env: i.target_url_env, exclude_tables: i.exclude_tables },
       });
     }
-    const src = (ctx.db.orm as unknown as { $client: Database }).$client;
     let target;
     try {
       target = await connectCopyTarget(url);

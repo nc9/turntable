@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createRequire } from "node:module";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendAudit, appendEvent, type Db, openDatabase } from "../src/db";
@@ -229,8 +229,16 @@ sqliteDescribe("instance_db_copy op", () => {
     dispatch(env, { kind: "bearer", token }, "instance_db_copy", input);
   const ENV = "TURNTABLE_COPY_TARGET_URL";
   let lastTarget: CopyTarget;
+  const dirs: string[] = [];
 
   beforeEach(async () => {
+    // the op copies from a second read-only connection, so the source must be a file: move the
+    // seeded in-memory database into one
+    const dir = mkdtempSync(join(tmpdir(), "tt-copy-op-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "src.db"), src.serialize());
+    db = openDatabase(join(dir, "src.db"));
+    src = (db.orm as unknown as { $client: Database }).$client;
     env = { registry, db, allowInstance: true };
     secret = (await createInstanceTokenFromCli(db, { name: "ops" })).secret;
     process.env[ENV] = "postgres://invalid.example/db";
@@ -242,6 +250,23 @@ sqliteDescribe("instance_db_copy op", () => {
   });
   afterEach(() => {
     delete process.env[ENV];
+    src.close();
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  test("an in-memory source is refused, so BEGIN never opens on the server's connection", async () => {
+    const mem = await seedWorld();
+    const res = await dispatch(
+      { registry, db: mem.db, allowInstance: true },
+      {
+        kind: "bearer",
+        token: (await createInstanceTokenFromCli(mem.db, { name: "m" })).secret,
+      },
+      "instance_db_copy",
+      { target_url_env: ENV, dry_run: true },
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe("invalid_input");
   });
 
   test("a real run is refused unless drained; a dry run is not", async () => {
