@@ -147,6 +147,11 @@ export function openDatabase(path: string): Db {
   // test's own handle).
   sqlite.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
   enableWal(sqlite);
+  // WAL with synchronous NORMAL: the database stays consistent after a crash, and fsyncs happen at
+  // checkpoints instead of on every commit. The default (FULL) fsynced every commit, synchronously
+  // on the event loop, which stalled the server on a slow volume (2026-11-26). A power loss can
+  // lose the last few commits; an application crash cannot.
+  sqlite.run("PRAGMA synchronous = NORMAL");
   sqlite.run("PRAGMA foreign_keys = ON");
   applyMigrations(sqlite, migrations);
   const orm = drizzle(sqlite, { schema });
