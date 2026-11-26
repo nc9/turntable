@@ -715,7 +715,7 @@ export async function checkIncompleteLogs(i: DoctorInputs): Promise<DoctorCheck>
     "incomplete_logs",
     area,
     `${n} job attempt(s) of the last 7 days stored a log with output missing`,
-    "Each has a `[turntable] ... could not be retrieved` line and `log_incomplete` on get_run. The sandbox keeps the first 1 MiB and last 4 MiB of output and drops the middle if the controller could not read it in time (a slow provider). Check the provider's health and the server log for log-poll retries.",
+    "Each has a `[turntable] ... could not be retrieved` line and `log_incomplete` on get_run. The sandbox keeps the first 1 MiB and last 64 MiB of output and drops the middle if the controller could not read it in time (a slow provider). Check the provider's health and the server log for log-poll retries.",
   );
 }
 
