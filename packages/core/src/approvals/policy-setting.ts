@@ -34,7 +34,8 @@ export function defaultEnvEntry(environment: string): { entry: EnvPolicyEntry; g
   };
 }
 
-const effective = (map: ApprovalPolicyMap, environment: string) => {
+/** One environment's effective entry in a map: its own, or the built-in default. */
+export const effective = (map: ApprovalPolicyMap, environment: string) => {
   const e = map[environment];
   return e ? { entry: e, gated: true } : defaultEnvEntry(environment);
 };

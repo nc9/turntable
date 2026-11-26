@@ -830,6 +830,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       "run_default_branch", // owner or admin starts a default-branch run; same `admin` gate
       "run_dispatch", // owner or admin starts a workflow_dispatch run; the op's release_operator role gates it (#617)
       "set_setting", // each setting's own role; loosening a trust setting also needs a step-up
+      "set_approval_policy", // an owner session; loosening also needs a step-up (and a quorum)
       "notifications_ack", // a person's own notification rows (#611)
       "set_notification_prefs", // a person's own preferences (#611)
 

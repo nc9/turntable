@@ -101,6 +101,8 @@ export const SESSION_STEP_UP_OPS: ReadonlySet<string> = new Set([
   "remove_project",
   // Only for loosening a trust setting; the settings guard requires it then and no other time.
   "set_setting",
+  // Only for loosening the approval policy (#664); the handler requires it then and no other time.
+  "set_approval_policy",
   ...LANE_CONFIG_WRITE_OPS,
   // The GitHub App's webhook secret and private key (#586): an owner of the operator org only.
   "instance_rotate_webhook_secret",

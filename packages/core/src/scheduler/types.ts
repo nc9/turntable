@@ -16,6 +16,9 @@ export type AttemptOutcome = {
    * Absent means `other`: never retried.
    */
   infraKind?: InfraKind | undefined;
+  /** For infra_error: the underlying error's name and code (identifiers only), when known. */
+  errorName?: string | undefined;
+  errorCode?: string | undefined;
   /** For a transient kind that must wait first (a rate limit): ms until the retry may start. */
   retryAfterMs?: number | undefined;
   /** The job's declared outputs, kept for its dependents. */

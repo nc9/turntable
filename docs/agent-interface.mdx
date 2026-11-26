@@ -115,6 +115,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `instance_org_summary` | none | no |  | read | admin | instance | Counts of tokens, approvers, members and pending invites per org. |
 | `instance_run_activity` | none | no |  | read | admin | instance | Counts of runs, jobs and running attempts per org, for a deploy check. |
 | `instance_run_summary` | none | no |  | read | admin | instance | Counts of finished runs by trigger and conclusion, per org and project, for operators. |
+| `instance_infra_errors` | none | no |  | read | admin | instance | Recent infra_error attempts across orgs, with a sanitized error message, for operators. |
 | `instance_ingest_status` | none | no |  | read | admin | instance | Poll health of every org's repos, for the instance administrator. |
 | `instance_audit_verify` | none | no |  | read | admin | instance | Check orgs' audit chains against exported anchors, for the instance administrator. |
 | `set_quotas` | none | no |  | write | admin | instance | Set an org's quotas (instance administrator only). |
@@ -146,6 +147,10 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `enrol_first_approver` | `POST /api/v1/approvers/first` | no |  | write | owner | token | Enrol the org's first approver with a passkey (owner web session only). |
 | `key_policy_challenge` | `POST /api/v1/approvers/key-policy/challenge` | no |  | write | release_operator | token | Issue the statement an approver signs to change the key policy. |
 | `approve_key_policy` | `POST /api/v1/approvers/key-policy` | no |  | write | viewer | signature | Approve a key policy change with a signed statement. Human only. |
+| `approval_policy_challenge` | `POST /api/v1/approvers/approval-policy/challenge` | no |  | write | release_operator | token | Issue the statement an approver signs to let an environment's approval policy loosen. |
+| `approve_approval_policy` | `POST /api/v1/approvers/approval-policy` | no |  | write | viewer | signature | Sign an approval policy loosening. Human only. |
+| `get_approval_policy` | `GET /api/v1/approval-policy` | no |  | read | owner | token | The org's effective approval policy per environment, with its source and lock. |
+| `set_approval_policy` | `POST /api/v1/approval-policy` | no |  | write | owner | token | Set one environment's approval policy (org owner, web session). |
 | `request_enrolment` | `POST /api/v1/approvers/enrolments` | no |  | write | release_operator | token | Ask to enrol a passkey or an ed25519 public key as an approver, pending a quorum. |
 | `submit_approval` | `POST /api/v1/approvals/relay` | yes |  | write | operator | token | Upload an approval statement a human already signed. |
 | `approve_environment` | `POST /api/v1/approvals` | no |  | write | viewer | signature | Approve a run for an environment with a signed statement. Human only. |
