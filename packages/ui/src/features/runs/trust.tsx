@@ -104,6 +104,22 @@ export function TrustBadge({
   return plain ? badge : <Tooltip label={t.hint}>{badge}</Tooltip>;
 }
 
+/**
+ * How a held run was released, when the API says. A label approval shows the labeler and the
+ * label; both are forge text and rendered as text.
+ */
+export function ApprovalNote({ run }: { run: Pick<Run, "approval"> }) {
+  const a = run.approval;
+  if (!a) return null;
+  return (
+    <span className="text-[13px] text-dim" data-testid="approval-note">
+      {a.via?.kind === "label"
+        ? `Approved by label ${a.via.label}, from ${a.by}`
+        : `Approved by ${a.by}`}
+    </span>
+  );
+}
+
 /** Egress `open` is the exception worth a mark; `none` is the default and stays quiet. */
 export function EgressBadge({ run, className }: { run: Pick<Run, "egress">; className?: string }) {
   if (run.egress !== "open") return null;

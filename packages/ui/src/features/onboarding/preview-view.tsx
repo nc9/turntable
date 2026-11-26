@@ -17,6 +17,7 @@ export function WorkflowPreviewView({ preview }: { preview: WorkflowPreview }) {
     return <p className="text-sm text-dim">No workflow files found at the default branch.</p>;
   return (
     <div className="space-y-3">
+      <SecretsSummary preview={preview} />
       {preview.workflows.map((w) => (
         <WorkflowRows key={w.path} w={w} />
       ))}
@@ -77,6 +78,59 @@ function WorkflowRows({ w }: { w: PreviewWorkflow }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/**
+ * The one-line answer to "which secrets does this project need", and a per-job table of every
+ * secret and var name the workflows refer to. Names only: the server never returns a value.
+ */
+export function SecretsSummary({ preview }: { preview: WorkflowPreview }) {
+  const rows = preview.workflows.flatMap((w) =>
+    w.jobs.filter((j) => (j.refs ?? []).length > 0).map((j) => ({ path: w.path, job: j })),
+  );
+  return (
+    <div className="space-y-2" data-testid="secrets-summary">
+      <p className="text-sm font-medium">
+        {preview.needs_summary?.text ?? "Secret needs are not available."}
+      </p>
+      {rows.length > 0 ? (
+        <table className="w-full text-left text-[13px]">
+          <thead className="text-xs text-faint">
+            <tr>
+              <th className="py-1 pr-3 font-normal">Job</th>
+              <th className="py-1 pr-3 font-normal">Runs</th>
+              <th className="py-1 font-normal">References</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ path, job: j }) => (
+              <tr key={`${path}:${j.job_id}`} className="border-t border-line align-top">
+                <td className="py-1.5 pr-3">
+                  <span className="break-words font-mono text-xs">{j.job_id}</span>
+                  <span className="block text-xs text-faint">{path}</span>
+                </td>
+                <td className="py-1.5 pr-3">{j.will_run ? "runs" : "won't run"}</td>
+                <td className="py-1.5">
+                  <ul className="space-y-0.5">
+                    {(j.refs ?? []).map((r) => (
+                      <li key={`${r.kind}:${r.name}`} className="break-words">
+                        <span className="font-mono text-xs">
+                          {r.kind === "secret" ? "secrets" : "vars"}.{r.name}
+                        </span>{" "}
+                        <span className="text-xs text-dim">
+                          {r.provided ? "provided by Turntable, not needed" : r.where.join(", ")}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
     </div>
   );
 }

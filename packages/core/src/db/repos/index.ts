@@ -11,6 +11,7 @@ import { canTransition, exitCodeValid, FINISHED_STATES } from "../job-state";
 import * as s from "../schema";
 import type { JobState } from "../schema";
 import { ulid } from "../ulid";
+import { ratchetApprovalDefault } from "./approval-default";
 import { appendEvent, notifyLogAppended } from "./events";
 import { requireProject, type Scope, scoped } from "./scope";
 
@@ -297,8 +298,12 @@ export function addMember(
   scope: Scope,
   input: { userId: string; role: s.MemberRole },
 ): Promise<void> {
-  return db.run(async (h) => {
-    await h.orm.insert(s.orgMembers).values({ orgId: scope.orgId, ...input });
+  // The strict ratchet shares the transaction: a second owner or admin is never visible without it.
+  return db.transaction(async (tx) => {
+    await tx.run(async (h) => {
+      await h.orm.insert(s.orgMembers).values({ orgId: scope.orgId, ...input });
+    });
+    await ratchetApprovalDefault(tx, scope.orgId);
   });
 }
 

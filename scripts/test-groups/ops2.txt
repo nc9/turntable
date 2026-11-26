@@ -39,3 +39,5 @@ packages/core/tests/checks-every-job-631.test.ts
 packages/core/tests/checks-backfill.test.ts
 packages/core/tests/skipped-superseded-648.test.ts
 packages/core/tests/checks-superseded-race-648.test.ts
+packages/core/tests/approval-default-solo.test.ts
+packages/core/tests/approval-default-backfill.test.ts

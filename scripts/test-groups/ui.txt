@@ -22,3 +22,4 @@ packages/ui/tests/run-workflow.test.tsx
 packages/ui/tests/approval-policy.test.tsx
 packages/ui/tests/build-version.test.ts
 packages/ui/tests/update-banner.test.tsx
+packages/ui/tests/approval-default-notice.test.tsx

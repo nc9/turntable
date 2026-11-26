@@ -87,6 +87,16 @@ export type PreviewJob = {
   verdict: "run" | "skip" | "fail";
   reason?: string;
   fix?: string;
+  /** True when the workflow is ingested and the verdict is run. */
+  will_run?: boolean;
+  /** Names only: never a value. */
+  refs?: PreviewRef[];
+};
+export type PreviewRef = {
+  kind: "secret" | "var";
+  name: string;
+  where: string[];
+  provided: boolean;
 };
 export type DispatchInput = {
   name: string;
@@ -111,6 +121,7 @@ export type WorkflowPreview = {
   truncated: boolean;
   default_branch?: string;
   workflows: PreviewWorkflow[];
+  needs_summary?: { needed: string[]; text: string };
 };
 export type DispatchedRun = {
   run_id: string;
@@ -148,6 +159,8 @@ export interface OnboardingApi {
     installationId: string;
     repo: string;
     project?: string;
+    /** The new project's cap on attempts at once; omitted, the org's default (2). */
+    maxConcurrent?: number;
   }): Promise<AddedProject>;
   /**
    * Unbinds a project's repo and keeps its history (`remove_project`). `deleteHistory` deletes
@@ -305,12 +318,18 @@ export function createOnboardingApi(options: OnboardingApiOptions = {}): Onboard
         )
       ).projects;
     },
-    addProject({ org, installationId, repo, project }) {
+    addProject({ org, installationId, repo, project, maxConcurrent }) {
       return call<AddedProject>(
         "POST",
         "/projects",
         {},
-        { org, installation_id: installationId, repo, ...(project ? { project } : {}) },
+        {
+          org,
+          installation_id: installationId,
+          repo,
+          ...(project ? { project } : {}),
+          ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
+        },
       );
     },
     removeProject({ org, project, deleteHistory, stepUp }) {

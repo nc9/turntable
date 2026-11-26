@@ -43,6 +43,7 @@ import type {
   Org,
   Project,
   Run,
+  RunApproval,
   RunDetail,
   StepEvent,
   Artifact,
@@ -80,6 +81,7 @@ import type {
   WireProjects,
   WireRerun,
   WireRun,
+  WireApproval,
   WireRunDetail,
   WireRunList,
   WireSetting,
@@ -212,6 +214,16 @@ export function mapRun(w: WireRun, org: string): Run {
     createdAt: ms(w.created_at) ?? 0,
     startedAt: ms(w.started_at),
     finishedAt: ms(w.finished_at),
+  };
+}
+
+function mapApproval(a: WireApproval): RunApproval {
+  return {
+    by: a.by,
+    at: ms(a.at),
+    ...(a.via
+      ? { via: { kind: "label" as const, label: a.via.label, eventId: a.via.event_id } }
+      : {}),
   };
 }
 
@@ -447,7 +459,9 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
           attempts.set(a.id, { jobId: j.id, attempt: a.attempt, state: a.state });
         }
       }
-      return { run: mapRun(w, slug), jobs, attempts: atts };
+      const run = mapRun(w, slug);
+      if (w.approval) run.approval = mapApproval(w.approval);
+      return { run, jobs, attempts: atts };
     },
 
     async jobLog({ attemptId, offset, limit }): Promise<LogSlice> {
@@ -1101,6 +1115,7 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
           source: p.source,
         })),
         warnings: w.warnings,
+        defaultMode: w.default_mode,
         instanceLoosenings: w.instance_loosenings.map((l) => ({
           at: ms(l.at) ?? 0,
           by: l.by,

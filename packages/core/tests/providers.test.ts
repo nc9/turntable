@@ -24,10 +24,11 @@ afterEach(async () => {
 test("daytona is selectable and its options are validated strictly", () => {
   expect(createProvider("daytona", { apiKeyEnv: "X" }).info.name).toBe("daytona");
   expect(() => createProvider("daytona", { nope: 1 })).toThrow(/unknown daytona provider option/);
-  expect(() => createProvider("daytona", { maxLive: 11 })).toThrow(
-    /maxLive must be an integer from 1 to 10/,
+  expect(() => createProvider("daytona", { maxLive: 501 })).toThrow(
+    /maxLive must be an integer from 1 to 500/,
   );
-  expect(() => createProvider("daytona", { maxLive: 10 })).not.toThrow();
+  expect(() => createProvider("daytona", { maxLive: 50 })).not.toThrow();
+  expect(() => createProvider("daytona", { maxLive: 500 })).not.toThrow();
   expect(() => createProvider("daytona", { maxLive: 0 })).toThrow();
   expect(() => createProvider("daytona", { maxLive: "2" })).toThrow();
   expect(() => createProvider("daytona", { ttlSeconds: 3600 })).toThrow(/ttlSeconds/);

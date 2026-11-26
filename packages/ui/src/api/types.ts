@@ -40,6 +40,13 @@ export type RunTrust = {
   decidedAt: number | null;
 };
 
+/** An approval recorded on a run. `via` is set when a pull request label approved it. */
+export type RunApproval = {
+  by: string;
+  at: number | null;
+  via?: { kind: "label"; label: string; eventId: string };
+};
+
 export type Run = {
   id: string;
   orgId: string;
@@ -60,6 +67,8 @@ export type Run = {
   /** null when the server has not classified the run (older data). */
   trustClass?: TrustClass | null;
   trust?: RunTrust | null;
+  /** Who approved a held run, when the API reports it (the run detail). */
+  approval?: RunApproval | null;
   /** Network policy of the run's sandboxes when the API reports it; absent means not reported. */
   egress?: "none" | "open" | "allowlist" | null;
   createdAt: number;
@@ -434,6 +443,8 @@ export type ApproversOverview = {
   }[];
   /** Ways the approval setup is weaker than it looks, such as too few approvers. */
   warnings: string[];
+  /** The built-in default for `production` and `release` where no entry is set (#663). */
+  defaultMode: "solo" | "strict";
   /** The instance administrator's recent loosenings of this org's approval policy, newest first. */
   instanceLoosenings: { at: number; by: string; reason: string; loosened: string[] }[];
 };

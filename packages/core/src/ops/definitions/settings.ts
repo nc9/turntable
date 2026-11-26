@@ -28,6 +28,7 @@ import { defineOp, type OpContext } from "../define";
 import { guardSettingChange } from "../setting-guard";
 import { recordSettingChange, settingLoosening } from "../setting-audit";
 import { OpError } from "../errors";
+import { invalidateSandboxLimits } from "../../scheduler/live-limits";
 
 const settingView = z.object({
   key: z.string(),
@@ -257,6 +258,8 @@ export async function setSetting(
       return resolved;
     }
   });
+  // The caps and provider limits are cached for the claim loop: a change shows on its next claim.
+  invalidateSandboxLimits();
   return view(def, after, showFile);
 }
 
@@ -485,5 +488,91 @@ export const instanceSetSettingOp = defineOp({
   async handler(ctx, i) {
     const def = lookup(ctx, i.key, ["instance", ...ORG_SCOPES]);
     return setSetting(ctx, def, i, true, targetOf(def, i));
+  },
+});
+
+// The sandbox limits (#661), read-only: the four live settings with their source and lock, and the
+// concurrency they allow together. Writes are `instance_set_setting` (REST and web only): nothing
+// that raises a limit is an MCP tool.
+const LIMIT_KEYS = [
+  "scheduler_global_cap",
+  "scheduler_org_cap",
+  "provider_daytona_max_live",
+  "provider_daytona_cpu_limit",
+] as const;
+
+const sandboxLimitsOutput = z.object({
+  limits: z.array(settingView),
+  effective_concurrency: z
+    .object({
+      value: z.int().describe("The most jobs that can run at once: the lower of the two below."),
+      bounded_by: z.enum(["scheduler_global_cap", "provider_daytona_max_live"]),
+      org_cap: z.int().describe("No single org runs more than this (and a project's own cap)."),
+      cpu_limit: z.int().describe("The Daytona org vCPU in use above which a create waits."),
+      note: z.string(),
+    })
+    .describe("What the limits allow together, at the current values."),
+});
+
+async function sandboxLimits(ctx: OpContext, showFile: boolean) {
+  const limits = await Promise.all(
+    LIMIT_KEYS.map((k) => read(ctx, lookup(ctx, k, ["instance"]), showFile)),
+  );
+  const v = (k: (typeof LIMIT_KEYS)[number]): number =>
+    limits.find((l) => l.key === k)!.value as number;
+  const global = v("scheduler_global_cap");
+  const maxLive = v("provider_daytona_max_live");
+  return {
+    limits,
+    effective_concurrency: {
+      value: Math.min(global, maxLive),
+      bounded_by:
+        maxLive < global
+          ? ("provider_daytona_max_live" as const)
+          : ("scheduler_global_cap" as const),
+      org_cap: v("scheduler_org_cap"),
+      cpu_limit: v("provider_daytona_cpu_limit"),
+      note: "The lower of the global cap and the Daytona max_live (which applies only when the Daytona provider runs jobs). The org cap, a project's cap and the vCPU limit can hold claims below it.",
+    },
+  };
+}
+
+export const sandboxLimitsOp = defineOp({
+  name: "sandbox_limits",
+  summary: "The sandbox limits with source and lock, and the concurrency they allow.",
+  description:
+    "Returns the four live sandbox limits (`scheduler_global_cap`, `scheduler_org_cap`, " +
+    "`provider_daytona_max_live`, `provider_daytona_cpu_limit`) with their effective value, source " +
+    "(`env`, `toml`, `db` or `default`) and lock, and the effective concurrency they allow " +
+    "together. Read-only: the limits are changed by the instance administrator over REST or in " +
+    "the web UI, never over MCP.",
+  input: z.object({}),
+  output: sandboxLimitsOutput,
+  effect: "read",
+  auth: { type: "token", minRole: "reader" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/limits/sandbox" },
+  async handler(ctx) {
+    return sandboxLimits(ctx, false);
+  },
+});
+
+export const instanceSandboxLimitsOp = defineOp({
+  name: "instance_sandbox_limits",
+  summary: "The sandbox limits with source and lock, and the concurrency they allow.",
+  description:
+    "The same as `sandbox_limits`, for the instance administrator (the instance settings page " +
+    "shows it). Read-only. Not an MCP tool.",
+  input: z.object({}),
+  output: sandboxLimitsOutput,
+  effect: "read",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/instance/sandbox-limits" },
+  mcp: false,
+  async handler(ctx) {
+    return sandboxLimits(ctx, true);
   },
 });

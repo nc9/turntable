@@ -2,6 +2,7 @@
 // caller is a `tti_` token minted on the host, and only such a token can call them over REST. No
 // org token of any role can, whatever its grant, and none of these is an MCP tool. Their audit
 // entries go to the system org's chain.
+import { instanceOrgCapOf } from "../org-cap";
 import { z } from "zod";
 import type { Db } from "../../db";
 import {
@@ -170,7 +171,7 @@ export const setQuotas = defineOp({
     if (Object.keys(patch).length === 0) {
       throw new OpError("invalid_input", "name at least one limit to set");
     }
-    const cap = ctx.instanceOrgCap;
+    const cap = await instanceOrgCapOf(ctx);
     if (typeof i.max_concurrent === "number" && cap !== undefined && i.max_concurrent > cap) {
       throw new OpError(
         "invalid_input",

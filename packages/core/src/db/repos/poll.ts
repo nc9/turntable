@@ -329,6 +329,30 @@ export function countWaitingRuns(
   });
 }
 
+/**
+ * The pull request runs of one repo that wait for approval, oldest first. Only runs made for a
+ * pull request: a label can never release a held tag or any other run.
+ */
+export function listWaitingPrRuns(db: Db, scope: Scope, repo: string): Promise<Run[]> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    return h.orm
+      .select()
+      .from(s.runs)
+      .where(
+        and(
+          eq(s.runs.orgId, scope.orgId),
+          eq(s.runs.projectId, projectId),
+          eq(s.runs.repo, repo.toLowerCase()),
+          eq(s.runs.status, "awaiting_approval"),
+          eq(s.runs.event, "pull_request"),
+          sql`${s.runs.prNumber} IS NOT NULL`,
+        ),
+      )
+      .orderBy(s.runs.createdAt, s.runs.id);
+  });
+}
+
 export type EgressMode = "none" | "open" | "allowlist";
 
 /** The project's default sandbox egress (`projects.egress`); `none` when the project is unknown. */
