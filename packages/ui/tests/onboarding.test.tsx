@@ -925,3 +925,49 @@ describe("reconnecting GitHub in place (#569)", () => {
     expect(reconnectHref({ step: "x", org: "acme" })).toBe("/auth/github/login");
   });
 });
+
+describe("secrets summary", () => {
+  test("shows the summary line and the per-job table, names only", () => {
+    const html = renderToStaticMarkup(
+      <WorkflowPreviewView
+        preview={{
+          sha: "0".repeat(40),
+          truncated: false,
+          needs_summary: { needed: ["B"], text: "1 secret needed by jobs that will run: B" },
+          workflows: [
+            {
+              path: ".github/workflows/ci.yml",
+              name: "ci",
+              triggers: ["push"],
+              ingested: true,
+              too_large: false,
+              jobs: [
+                {
+                  job_id: "build",
+                  name: null,
+                  verdict: "run",
+                  will_run: true,
+                  refs: [
+                    { kind: "secret", name: "B", where: ["step env"], provided: false },
+                    { kind: "secret", name: "GITHUB_TOKEN", where: ["job env"], provided: true },
+                  ],
+                },
+                {
+                  job_id: "deploy",
+                  name: null,
+                  verdict: "skip",
+                  will_run: false,
+                  refs: [{ kind: "secret", name: "X", where: ["job env"], provided: false }],
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain("1 secret needed by jobs that will run: B");
+    expect(html).toContain("won&#x27;t run");
+    expect(html).toContain("provided by Turntable, not needed");
+    expect(html).toContain("secrets.X");
+  });
+});
