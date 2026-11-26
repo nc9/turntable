@@ -56,7 +56,8 @@
           "design/daytona-proxy",
           "design/publish-targets",
           "design/microvm-provider",
-          "design/postgres-rls"
+          "design/postgres-rls",
+          "design/release-lane-hosted"
         ]
       }
     ]
