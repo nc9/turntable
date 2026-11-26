@@ -3,6 +3,7 @@
 // to one person never relaxes it, and an explicit policy entry beats both defaults.
 import { beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
+import { createApprovalVerifier } from "../src/approvals/verifier";
 import { generateEd25519, signEd25519 } from "../src/approvals/keys";
 import {
   addMember,
@@ -20,6 +21,7 @@ import {
   type Scope,
 } from "../src/db";
 import * as s from "../src/db/schema";
+import { completeSignIn, createMemberInvite } from "../src/db/repos/web-auth";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { mintToken } from "./ops-helpers";
 
@@ -208,5 +210,97 @@ describe("solo-aware default", () => {
   test("other environments stay ungated in a solo org", async () => {
     await member("owner");
     expect(await getEnvPolicy(db, orgId, "docs")).toMatchObject({ required: 1, gated: false });
+  });
+});
+
+describe("the ratchet is written with the membership", () => {
+  test("a second admin added and removed with no read in between: the org is strict", async () => {
+    await member("owner");
+    const second = await member("admin");
+    await unmember(second);
+    expect(await strictMarks()).toHaveLength(1);
+    expect(await getEnvPolicy(db, orgId, "release")).toMatchObject({
+      required: 2,
+      allowAuthorApproval: false,
+    });
+  });
+
+  test("an accepted invite writes it too", async () => {
+    await member("owner");
+    const now = Date.now();
+    await createMemberInvite(
+      db,
+      { orgId },
+      {
+        githubLogin: "newadmin",
+        githubUserId: "9001",
+        role: "admin",
+        createdBy: "test",
+        now,
+        expiresAt: now + 60_000,
+        canReplace: () => true,
+      },
+    );
+    await completeSignIn(db, {
+      githubUserId: "9001",
+      login: "newadmin",
+      now,
+      sessionHash: "h".repeat(64),
+      absoluteMs: 60_000,
+    });
+    expect(await strictMarks()).toHaveLength(1);
+  });
+
+  test("a read writes nothing, inside a transaction or not", async () => {
+    await member("owner");
+    await member("member");
+    await db.transaction(async (tx) => {
+      expect(await getEnvPolicy(tx, orgId, "release")).toMatchObject({ required: 1 });
+      // two eligible people appear in this transaction by raw SQL: the read computes strict
+      // but writes no marker and no audit row
+      const u = await createUser(tx, { displayName: "raw" });
+      await tx.orm.insert(s.orgMembers).values({ orgId, userId: u.id, role: "admin" });
+      expect(await getEnvPolicy(tx, orgId, "release")).toMatchObject({ required: 2 });
+    });
+    expect(await strictMarks()).toHaveLength(0);
+  });
+
+  test("a membership added inside a caller's transaction ratchets with it", async () => {
+    await member("owner");
+    await db.transaction(async (tx) => {
+      const u = await createUser(tx, { displayName: "in-tx" });
+      await addMember(tx, { orgId }, { userId: u.id, role: "admin" });
+      expect(await getEnvPolicy(tx, orgId, "release")).toMatchObject({ required: 2 });
+    });
+    expect(await strictMarks()).toHaveLength(1);
+  });
+});
+
+describe("in-flight approvals", () => {
+  // Nothing snapshots `required` at request time: the challenge binds the statement, and both the
+  // approve op and the publish-time verifier read the live policy, so the ratchet only raises it.
+  test("a solo-mode approval does not satisfy the publish check once the org is strict", async () => {
+    await member("owner");
+    const run = await releaseRun("octo");
+    expect(await approveAs("octo", run)).toMatchObject({ approvals: 1, required: 1 });
+    const verifier = createApprovalVerifier(db);
+    const subject = {
+      orgId,
+      projectId: scope.projectId,
+      runId: run,
+      headSha: SHA,
+      workflowHash: WF_HASH,
+    };
+    expect(await verifier.verify(subject, "production")).toMatchObject({ approved: true });
+    await member("admin");
+    const after = await verifier.verify(subject, "production");
+    expect(after).toMatchObject({ approved: false, required: 2 });
+  });
+
+  test("a request made in solo mode is judged by the current mode when approved", async () => {
+    await member("owner");
+    const run = await releaseRun("octo");
+    await member("admin");
+    expect(await approveAs("other", run)).toMatchObject({ approvals: 1, required: 2 });
   });
 });
