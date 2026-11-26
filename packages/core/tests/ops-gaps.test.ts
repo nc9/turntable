@@ -360,6 +360,63 @@ test("rerun: at most 2 per job per commit, across runs of the same sha", async (
   ).toBe(1);
 });
 
+async function failAgain(runId: string, jobId: string, state: "failure" | "infra_error") {
+  const attempt = (await listAttempts(db, a.scope, jobId)).at(-1)!;
+  await transitionJob(db, a.scope, jobId, "running");
+  await updateAttempt(db, a.scope, attempt.id, { state: "running" });
+  if (state === "infra_error") {
+    await updateAttempt(db, a.scope, attempt.id, { state, errorClass: "lost" });
+    await transitionJob(db, a.scope, jobId, state);
+  } else {
+    await updateAttempt(db, a.scope, attempt.id, { state, exitCode: 1 });
+    await transitionJob(db, a.scope, jobId, state, { exitCode: 1 });
+  }
+  await setRunStatus(db, a.scope, runId, "failure");
+}
+
+test("rerun: infra-error reruns leave the user budget, bounded by their own limit", async () => {
+  const sha = "1".repeat(40);
+  const first = await finishRun(a, [{ key: "test", state: "infra_error" }], sha);
+  const id = first.ids.test!;
+  // two reruns after infra errors: the user budget is still full
+  for (let i = 0; i < 2; i++) {
+    const out = await run(operator, "rerun", { run_id: first.run.id, reason: `infra ${i}` });
+    expect(out.reruns[0].reruns_used).toBe(0);
+    await failAgain(first.run.id, id, "infra_error");
+  }
+  // this rerun replaces an infra attempt, so it is the third infra rerun; it then fails for real
+  await run(operator, "rerun", { run_id: first.run.id, reason: "infra 2" });
+  await failAgain(first.run.id, id, "failure");
+  // user-outcome reruns still stop at 2
+  await run(operator, "rerun", { run_id: first.run.id, reason: "u1" });
+  await failAgain(first.run.id, id, "failure");
+  const u2 = await run(operator, "rerun", { run_id: first.run.id, reason: "u2" });
+  expect(u2.reruns[0].reruns_used).toBe(2);
+  await failAgain(first.run.id, id, "failure");
+  const refused = await call(operator, "rerun", { run_id: first.run.id, reason: "u3" });
+  expect(!refused.ok && refused.error.code).toBe("conflict");
+  // the message names both budgets
+  expect(!refused.ok && refused.error.message).toMatch(
+    /already rerun 2 times.*limit 2.*0 of 2 job-outcome reruns and 2 of 5 infra-error reruns remain/,
+  );
+});
+
+test("rerun: the infra streak is bounded at 5 per job per commit", async () => {
+  const sha = "2".repeat(40);
+  const first = await finishRun(a, [{ key: "test", state: "infra_error" }], sha);
+  const id = first.ids.test!;
+  for (let i = 0; i < 5; i++) {
+    await run(operator, "rerun", { run_id: first.run.id, reason: `infra ${i}` });
+    await failAgain(first.run.id, id, "infra_error");
+  }
+  const refused = await call(operator, "rerun", { run_id: first.run.id, reason: "again" });
+  expect(!refused.ok && refused.error.code).toBe("conflict");
+  expect(!refused.ok && refused.error.message).toMatch(
+    /after infra errors.*infra limit 5.*2 of 2 job-outcome reruns and 0 of 5 infra-error reruns remain/,
+  );
+  expect(await listAttempts(db, a.scope, id)).toHaveLength(6);
+});
+
 test("rerun: cross-tenant denial", async () => {
   const bRun = await finishRun(b, [{ key: "test", state: "failure" }]);
   const res = await call(operator, "rerun", { run_id: bRun.run.id, reason: "x" });
