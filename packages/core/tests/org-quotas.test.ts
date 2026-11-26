@@ -87,11 +87,18 @@ const statuses = async (t: Tenant) => {
 /** Tables the selects in `fn` read from (the orm's `select().from(table)` calls). */
 async function tablesRead(fn: () => Promise<unknown>): Promise<unknown[]> {
   const seen: unknown[] = [];
-  const orm = db.orm as unknown as {
-    select: (...a: unknown[]) => { from: (t: unknown) => unknown };
-  };
-  const orig = orm.select;
-  orm.select = function (this: unknown, ...a: unknown[]) {
+  type Select = (...a: unknown[]) => { from: (t: unknown) => unknown };
+  // Patch the prototype that owns `select` (PgDatabase or BaseSQLiteDatabase). A claim runs in a
+  // transaction, and on Postgres the transaction handle is a different object from `db.orm`, but
+  // its class extends the same base.
+  let owner: object | null = Object.getPrototypeOf(db.orm);
+  while (owner && !Object.prototype.hasOwnProperty.call(owner, "select")) {
+    owner = Object.getPrototypeOf(owner);
+  }
+  if (!owner) throw new Error("no prototype owns select");
+  const proto = owner as { select: Select };
+  const orig = proto.select;
+  proto.select = function (this: unknown, ...a: unknown[]) {
     const b = orig.apply(this, a);
     const from = b.from.bind(b);
     b.from = (tbl: unknown) => (seen.push(tbl), from(tbl));
@@ -100,7 +107,7 @@ async function tablesRead(fn: () => Promise<unknown>): Promise<unknown[]> {
   try {
     await fn();
   } finally {
-    orm.select = orig;
+    proto.select = orig;
   }
   return seen;
 }
