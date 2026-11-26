@@ -28,11 +28,10 @@ const dist = process.env.TURNTABLE_DIST
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
 
 // CD writes the deployed commit into BUILD_SHA at the repo root (the image build context carries it).
-// Absent, or not a 40-hex sha, the build reports "unknown". A BUILD_TIME file (committer date)
-// does the same for built_at when the context has no .git.
+// Absent, or not a 40-hex sha, the build reports "unknown".
 const buildSha = resolveBuildSha(root);
 const version = resolveBuildVersion(process.env, pkg.version, buildSha, root);
-const buildTime = resolveBuildTime(process.env, () => gitHeadDate(root), root);
+const buildTime = resolveBuildTime(process.env, () => gitHeadDate(root));
 
 const requested = process.argv.slice(2);
 const targets = requested.length > 0 ? requested : [...TARGETS];

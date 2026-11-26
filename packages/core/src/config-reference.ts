@@ -568,7 +568,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     name: "TURNTABLE_BUILD_TIME",
     area: "Build",
     description:
-      "Build time, a compile-time define set by `scripts/build.ts` and reported by `/healthz` as `built_at`. It is `SOURCE_DATE_EPOCH` when set, else a `BUILD_TIME` file at the repo root (the commit's committer date, ISO 8601 or epoch seconds; a malformed file is ignored), else the committer date of HEAD, else `unknown`; never the wall clock, so builds stay reproducible. Never set by hand.",
+      "Build time, a compile-time define set by `scripts/build.ts` and reported by `/healthz` as `built_at`. It is `SOURCE_DATE_EPOCH` when set, else the committer date of HEAD, else `unknown`; never the wall clock, so builds stay reproducible. Never set by hand.",
   },
   {
     name: "TURNTABLE_UI_VERSION",
