@@ -54,6 +54,7 @@ import { rewrapMasterKey } from "./secrets/rewrap";
 import { RETIRE_FILE_ENV, retireMasterKeyFile } from "./secrets/retire-key-file";
 import { autoInitMasterKey, autoInitRequested } from "./secrets/autoinit";
 import { appendAudit } from "./db/repos";
+import { backfillApprovalDefaultStrict } from "./db/repos/approval-default";
 import { systemOrgId } from "./audit/failures";
 import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
@@ -703,6 +704,9 @@ async function serve(args: string[]): Promise<void> {
   }
   const db = openDatabase(join(dataDir, "turntable.db"));
   await ensureInstance(db);
+  // Before anything serves: orgs that already had two owners or admins keep the strict approval
+  // default after one leaves (#663). Idempotent.
+  await backfillApprovalDefaultStrict(db);
   // A rotation: the previous key is given, so every sealed row moves to the new key before anything
   // reads one. All or nothing; a failure stops the boot.
   if (masterKeys && (masterKeys.previous || releaseKeys?.previous)) {

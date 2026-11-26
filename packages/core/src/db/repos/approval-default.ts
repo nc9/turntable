@@ -59,3 +59,28 @@ export async function ratchetApprovalDefault(db: Db, orgId: string): Promise<voi
       },
     );
 }
+
+/**
+ * Boot step (#663): writes the strict marker for every org that already has two or more owners
+ * or admins, so an org that had two people before the ratchet shipped never relaxes to solo when
+ * one leaves. Idempotent (the ratchet is a compare-and-set that skips marked orgs) and cheap, so
+ * it runs on every boot, before the server serves. A boot step, not a migration: it needs the
+ * settings write path and the audit chain, which raw SQL in an embedded migration would bypass,
+ * and it must behave the same on both dialects. Returns the number of orgs it newly marked.
+ */
+export async function backfillApprovalDefaultStrict(db: Db): Promise<number> {
+  const rows = await db.run((h) =>
+    h.orm
+      .selectDistinct({ orgId: s.orgMembers.orgId })
+      .from(s.orgMembers)
+      .where(inArray(s.orgMembers.role, ["owner", "admin"])),
+  );
+  let marked = 0;
+  for (const { orgId } of rows) {
+    const target = { kind: "org", id: orgId, orgId } as const;
+    if (await getStoredSetting(db, target, STRICT_MARKER_KEY)) continue;
+    await db.transaction((tx) => ratchetApprovalDefault(tx, orgId));
+    if (await getStoredSetting(db, target, STRICT_MARKER_KEY)) marked++;
+  }
+  return marked;
+}
