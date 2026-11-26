@@ -71,3 +71,27 @@ test("the build time never reads the wall clock", () => {
   expect(resolveBuildTime({}, () => "2026-01-02T03:04:05+00:00")).toBe("2026-01-02T03:04:05.000Z");
   expect(resolveBuildTime({}, () => "garbage")).toBe("unknown");
 });
+
+test("a BUILD_TIME file supplies the time without git, below SOURCE_DATE_EPOCH", () => {
+  const file = join(root, "BUILD_TIME");
+  writeFileSync(file, "2026-01-02T03:04:05+02:00\n");
+  expect(resolveBuildTime({}, () => undefined, root)).toBe("2026-01-02T01:04:05.000Z");
+  writeFileSync(file, "86400\n");
+  expect(resolveBuildTime({}, () => undefined, root)).toBe("1970-01-02T00:00:00.000Z");
+  // file beats git, SOURCE_DATE_EPOCH beats the file
+  expect(resolveBuildTime({}, () => "2030-01-01T00:00:00Z", root)).toBe("1970-01-02T00:00:00.000Z");
+  expect(resolveBuildTime({ SOURCE_DATE_EPOCH: "0" }, () => undefined, root)).toBe(
+    "1970-01-01T00:00:00.000Z",
+  );
+});
+
+test("a malformed BUILD_TIME file is ignored", () => {
+  const file = join(root, "BUILD_TIME");
+  for (const bad of ["", "garbage", "2026-13-45T00:00:00Z", "2026-01-02", "now", "-5"]) {
+    writeFileSync(file, `${bad}\n`);
+    expect(resolveBuildTime({}, () => undefined, root)).toBe("unknown");
+    expect(resolveBuildTime({}, () => "2026-01-02T03:04:05Z", root)).toBe(
+      "2026-01-02T03:04:05.000Z",
+    );
+  }
+});
