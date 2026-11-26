@@ -6,8 +6,7 @@
 // GitHub web host and the Daytona API host: never api.github.com for the HEAD, whose anonymous
 // requests count against the same per-IP REST budget the anonymous poller uses. api.github.com
 // gets a DNS lookup only.
-import { lookup } from "node:dns/promises";
-import { safeFetch } from "@turntable/net";
+import { defaultResolve, safeFetch } from "@turntable/net";
 
 const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const SLOW_MS = 2_000;
@@ -82,7 +81,13 @@ export async function probeHost(
   dnsOnly = false,
 ): Promise<ProbeResult> {
   const now = d.now ?? Date.now;
-  const resolve = d.resolve ?? ((h: string) => lookup(h));
+  const resolve =
+    d.resolve ??
+    (async (h: string) => {
+      const a = await defaultResolve(h);
+      if (a.length === 0) throw Object.assign(new Error("no answer"), { code: "ENOTFOUND" });
+      return a;
+    });
   // Through the one outbound client (address validation, pinned resolution, caps), never fetch.
   const head =
     d.head ??

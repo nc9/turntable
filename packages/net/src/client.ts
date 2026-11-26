@@ -12,10 +12,10 @@
 //  - redirects: followed by hand, each hop fully re-validated, at most 5, never to a refused
 //    address, credentials dropped when the origin changes;
 //  - size and time: responses are capped while streaming and the whole exchange has a deadline.
-import { lookup as dnsLookup } from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
 import net, { isIP } from "node:net";
+import { createDnsResolver } from "./dns";
 import { blockedReason } from "./ip";
 
 export class SsrfError extends Error {
@@ -70,7 +70,7 @@ export interface HttpClientOptions {
    * a test server), and may use plain http. Exact match, case-insensitive. Nothing else is.
    */
   allowHosts?: readonly string[];
-  /** DNS. Default: the system resolver, all answers. */
+  /** DNS. Default: async c-ares against the resolv.conf nameservers, all answers. */
   resolve?: Resolver;
   /**
    * How long one address may take to connect before the next one is tried, when a name has more
@@ -87,8 +87,8 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const NO_BODY = new Set([101, 204, 205, 304]);
 const SENSITIVE = ["authorization", "cookie", "proxy-authorization"];
 
-const defaultResolve: Resolver = async (h) =>
-  (await dnsLookup(h, { all: true, verbatim: true })).map((a) => a.address);
+/** Shared by every client: async c-ares, 2 s x 2 tries, TTL cache. Never getaddrinfo. */
+export const defaultResolve: Resolver = createDnsResolver();
 
 interface Target {
   url: URL;
