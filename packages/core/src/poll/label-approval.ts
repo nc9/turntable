@@ -33,7 +33,16 @@ const APPROVER_PERMISSIONS: readonly string[] = ["write", "maintain", "admin"];
 export type LabelVerdict =
   | { ok: true; event: LabeledEvent }
   /** `stale`: the label predates the head or the run, so it is removed and a new one is asked for. */
-  | { ok: false; reason: string; stale: boolean; event?: LabeledEvent };
+  | {
+      ok: false;
+      reason: string;
+      stale: boolean;
+      /** Why it is stale: older than the head's push, or only older than this run (no new commit). */
+      staleKind?: StaleKind;
+      event?: LabeledEvent;
+    };
+
+export type StaleKind = "push" | "run";
 
 /** The latest `labeled` event of `label` (GitHub compares label names case-insensitively). */
 export function latestLabeled(timeline: PrTimeline, label: string): LabeledEvent | undefined {
@@ -62,11 +71,18 @@ export function judgeLabelEvent(
       ok: false,
       reason: "the label is older than the head's latest push",
       stale: true,
+      staleKind: "push",
       event,
     };
   }
   if (event.at <= facts.runCreatedAt) {
-    return { ok: false, reason: "the label is older than this run", stale: true, event };
+    return {
+      ok: false,
+      reason: "the label is older than this run",
+      stale: true,
+      staleKind: "run",
+      event,
+    };
   }
   if (event.actor === null)
     return { ok: false, reason: "the labeler is unknown", stale: false, event };
@@ -101,8 +117,15 @@ export type LabelApprovalDeps = {
 };
 
 const NOTICE_EVENT = "label-notice";
+const RUN_NOTICE_EVENT = "label-notice-run";
 
-function staleComment(label: string): string {
+function staleComment(label: string, kind: StaleKind): string {
+  if (kind === "run") {
+    return (
+      `The \`${label}\` label was added before Turntable queued this commit, so it can't be ` +
+      `proven to cover it. Add the \`${label}\` label again to approve the current commit.`
+    );
+  }
   return (
     `New commits were pushed after the \`${label}\` label was added, so the earlier approval no ` +
     `longer applies and this run is waiting again. A maintainer can add the \`${label}\` label ` +
@@ -160,7 +183,9 @@ async function judgeRun(
     runCreatedAt: run.createdAt,
   });
   if (!verdict.ok) {
-    if (verdict.stale) await answerStaleLabel(deps, cfg, scope, label, pr, run);
+    if (verdict.stale) {
+      await answerStaleLabel(deps, cfg, scope, label, pr, run, verdict.staleKind ?? "push");
+    }
     return false;
   }
   const login = verdict.event.actor?.login ?? "";
@@ -214,6 +239,7 @@ async function answerStaleLabel(
   label: string,
   pr: PullRequest,
   run: Run,
+  kind: StaleKind,
 ): Promise<void> {
   const writer = deps.notices ? await deps.notices().catch(() => undefined) : undefined;
   if (!writer) return;
@@ -226,13 +252,13 @@ async function answerStaleLabel(
   const first = await markPollSkipped(deps.db, scope, {
     repo: cfg.repo,
     workflowPath: cfg.workflow,
-    event: NOTICE_EVENT,
+    event: kind === "run" ? RUN_NOTICE_EVENT : NOTICE_EVENT,
     sha: run.sha ?? pr.headSha,
     ...(deps.now ? { now: deps.now() } : {}),
     runId: run.id,
   });
   if (!first) return;
-  await writer.comment(cfg.repo, pr.number, staleComment(label)).catch((err) => {
+  await writer.comment(cfg.repo, pr.number, staleComment(label, kind)).catch((err) => {
     deps.log?.(`poll ${cfg.repo}: could not comment on pr #${pr.number}: ${String(err)}`);
   });
 }

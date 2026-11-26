@@ -149,7 +149,7 @@ const cfg = pollConfigSchema.parse({
 function writer(log: string[]): PrNoticeWriter {
   return {
     removeLabel: async (_r, pr, label) => void log.push(`remove ${pr} ${label}`),
-    comment: async (_r, pr, body) => void log.push(`comment ${pr} ${body.slice(0, 20)}`),
+    comment: async (_r, pr, body) => void log.push(`comment ${pr} ${body}`),
   };
 }
 
@@ -270,11 +270,29 @@ test("a push after the label: the new head waits, the old approval does not appl
   expect(second.approval).toBeNull();
   expect(notices.filter((n) => n.startsWith("remove"))).toEqual([`remove 7 ${LABEL}`]);
   expect(notices.filter((n) => n.startsWith("comment"))).toHaveLength(1);
+  expect(notices.find((n) => n.startsWith("comment"))).toContain("New commits were pushed");
   // the label is still shown by the stale list (removal is best-effort): no second comment
   await poll(gh, notices);
   await poll(gh, notices);
   expect(notices.filter((n) => n.startsWith("comment"))).toHaveLength(1);
   expect((await getRun(db, scope, second.id))!.status).toBe("awaiting_approval");
+});
+
+test("a label older than the run but newer than the push: removed, an accurate comment, once", async () => {
+  const gh = fake();
+  const run = await waitingRun(gh);
+  gh.state.labels = [LABEL];
+  gh.state.permission.set("maint", "write");
+  gh.state.timeline = [{ event: "labeled", id: 1, at: run.createdAt - 1, login: "maint" }];
+  const notices: string[] = [];
+  expect((await poll(gh, notices)).released).toBeUndefined();
+  await poll(gh, notices);
+  expect(notices.filter((n) => n.startsWith("remove"))[0]).toBe(`remove 7 ${LABEL}`);
+  const comments = notices.filter((n) => n.startsWith("comment"));
+  expect(comments).toHaveLength(1);
+  expect(comments[0]).toContain("added before Turntable queued this commit");
+  expect(comments[0]).not.toContain("New commits were pushed");
+  expect((await getRun(db, scope, run.id))!.status).toBe("awaiting_approval");
 });
 
 test("a label closer to the run than the head's push (older event) does not release", async () => {
