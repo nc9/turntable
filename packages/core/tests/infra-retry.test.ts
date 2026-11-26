@@ -152,6 +152,56 @@ for (const [name, open] of dialects) {
       }
     });
 
+    test("an unknown infra error retries once, then fails with both reasons (#670)", async () => {
+      const t = await setup(open);
+      const s = t.sched(
+        t.script([
+          transient("unknown", "provider exploded"),
+          transient("unknown", "provider exploded again"),
+        ]),
+      );
+      await t.drive(s);
+      const attempts = await listAttempts(t.db, t.scope, t.job.id);
+      expect(attempts).toHaveLength(2);
+      expect(attempts.map((a) => a.infraKind)).toEqual(["unknown", "unknown"]);
+      expect(attempts[1]!.errorClass).toContain("provider exploded again");
+      expect(attempts[1]!.errorClass).toContain("provider exploded");
+      expect((await getJob(t.db, t.scope, t.job.id))?.state).toBe("infra_error");
+    });
+
+    test("an unknown infra error retries once, and a later success passes (#670)", async () => {
+      const t = await setup(open);
+      const s = t.sched(
+        t.script([transient("unknown", "odd"), { state: "success", reason: "ok" }]),
+      );
+      await t.drive(s);
+      expect((await listAttempts(t.db, t.scope, t.job.id)).map((a) => a.state)).toEqual([
+        "infra_error",
+        "success",
+      ]);
+    });
+
+    test("an unknown infra error is not retried for a release job (steps may have run) (#670)", async () => {
+      const t = await setup(open);
+      const s = t.sched(t.script([transient("unknown", "odd")], "release"));
+      await t.drive(s);
+      expect(await listAttempts(t.db, t.scope, t.job.id)).toHaveLength(1);
+    });
+
+    test("a thrown runner error is recorded as kind unknown and retried once (#670)", async () => {
+      const t = await setup(open);
+      let n = 0;
+      const s = t.sched(async (ctx) => {
+        await ctx.store.setTrustClass("trusted_pr").catch(() => undefined);
+        if (n++ === 0) throw new Error("kaboom");
+        return { state: "success", reason: "ok" };
+      });
+      await t.drive(s);
+      const attempts = await listAttempts(t.db, t.scope, t.job.id);
+      expect(attempts.map((a) => a.state)).toEqual(["infra_error", "success"]);
+      expect(attempts[0]!.infraKind).toBe("unknown");
+    });
+
     test("a transient kind on the first attempt makes one new attempt on a fresh sandbox; the first is released and kept", async () => {
       const t = await setup(open);
       const s = t.sched(

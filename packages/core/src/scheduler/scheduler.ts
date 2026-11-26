@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isRetryableInfra, retryableAfterSteps } from "@turntable/act-runner";
+import { type InfraKind, isRetryableInfra, retryableAfterSteps } from "@turntable/act-runner";
 import { type Db, onAttemptsCancelled } from "../db";
 import {
   addCut,
@@ -74,7 +74,11 @@ export const MAX_RETRY_AFTER_MS = 3_600_000;
 export const INFRA_RETRY_BACKOFF_MS = 10_000;
 
 /** What the scheduler records when a runner throws or returns nonsense. */
-const infra = (reason: string): AttemptOutcome => ({ state: "infra_error", reason });
+const infra = (reason: string, infraKind?: InfraKind): AttemptOutcome => ({
+  state: "infra_error",
+  reason,
+  ...(infraKind ? { infraKind } : {}),
+});
 
 /**
  * Claims queued attempts and runs them through the runner, within the global and per-org caps.
@@ -397,7 +401,8 @@ export class Scheduler {
           outcome = await this.#o.runner(ctx);
         }
       } catch (err) {
-        outcome = infra(err instanceof Error ? err.message : String(err));
+        // An exception the runner did not classify: kind `unknown`, retried once (#670).
+        outcome = infra(err instanceof Error ? err.message : String(err), "unknown");
       }
       // A transient infra failure waits out the backoff while the lease is still held (the
       // heartbeat runs, a cancel still lands), then retries below. The sandbox is already gone.

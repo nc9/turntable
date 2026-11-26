@@ -122,6 +122,8 @@ const MCP_OFF: Record<string, string> = {
   instance_run_activity:
     "instance administrator ops are REST only: cross-tenant run counts are the operator's deploy check, never an agent's",
   instance_run_summary: "instance operator view; not an agent's decision",
+  instance_infra_errors:
+    "instance administrator ops are REST only: sanitized cross-tenant error text is the operator's diagnosis, never an agent's",
   instance_bind_github_login:
     "instance administrator ops are REST only: granting an org's first admin or owner is the operator's act, never an agent's",
   invite_member:

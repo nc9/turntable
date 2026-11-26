@@ -44,7 +44,17 @@ export const INFRA_KINDS = {
     beforeSteps: true,
     label: "GitHub rate limited the action lookups",
   },
-  /** Everything else: a deterministic or unknown cause. Never retried. */
+  /**
+   * An error that matches no known class (an unclassified exception from the provider or the
+   * runner, #670). Retried once, like `sandbox_lost`: it can happen mid-run, so only a pull
+   * request job retries it. The instance administrator reads its sanitized text.
+   */
+  unknown: {
+    transient: true,
+    beforeSteps: false,
+    label: "an unclassified infrastructure error",
+  },
+  /** Everything else: a deterministic cause. Never retried. */
   other: {
     transient: false,
     beforeSteps: false,

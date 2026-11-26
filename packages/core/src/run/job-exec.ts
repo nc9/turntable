@@ -406,7 +406,7 @@ export async function executeJob(
       e instanceof Error ? e.message : String(e),
       undefined,
       undefined,
-      creating ? "sandbox_create_failed" : undefined,
+      creating ? "sandbox_create_failed" : "unknown",
     );
   } finally {
     clearInterval(idle);
