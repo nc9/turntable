@@ -109,7 +109,12 @@ import {
   laneConfigClientFromEnv,
   withReleaseChannel,
 } from "./release/channel-client";
-import { DEFAULT_DRAIN_TIMEOUT_SECONDS, drainTimeoutSecondsSetting } from "./settings/definitions";
+import {
+  DEFAULT_DRAIN_TIMEOUT_SECONDS,
+  drainTimeoutSecondsSetting,
+  settingsRegistry,
+} from "./settings/definitions";
+import { withoutRefusals } from "./settings/define";
 import { resolveSetting } from "./settings/resolve";
 import { cachedDoctor } from "./doctor/cache";
 import { runDoctor } from "./doctor/checks";
@@ -642,14 +647,20 @@ async function serve(args: string[]): Promise<void> {
     get: (target, key) =>
       typeof key === "string" && key in cliOverrides ? cliOverrides[key] : target[key as string],
   });
-  const settings = loadSettingsRuntime({ config: values.config, env: settingsEnv });
+  const roles = resolveRoles(values.roles, { worker: values.worker, poll: values.poll });
+  // The release lane applies the approval policy and nothing that depends on the server's size
+  // classes: it must boot on any config the server boots on, so it skips those refusals.
+  const settings = loadSettingsRuntime({
+    config: values.config,
+    env: settingsEnv,
+    ...(roles.has("release") ? { registry: withoutRefusals(settingsRegistry) } : {}),
+  });
   // The approval engine and the release lane read the approval policy from the same runtime.
   setAmbientSettings(settings);
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`invalid --port: ${values.port}`);
   }
-  const roles = resolveRoles(values.roles, { worker: values.worker, poll: values.poll });
   if (roles.has("release")) {
     // The release lane is its own process with its own keys: nothing below runs for it. It drops
     // (or refuses) like every other process that opens a data dir, before any file is touched. It
@@ -820,9 +831,13 @@ async function serve(args: string[]): Promise<void> {
   }
 
   // The child opens the same database, so it starts after this process has migrated it.
+  // No respawn: a lane that is gone stops the other roles and exits non-zero (set below), so the
+  // platform restarts the container and this process never keeps the lane's variables or root.
+  let laneLost: ((why: string) => void) | undefined;
   const laneSupervisor = preparedLane
     ? new LaneSupervisor({
         prepared: preparedLane,
+        onLaneLost: (why) => laneLost?.(why),
         args: ["serve", "--roles", "release", "--data-dir", dataDir],
       })
     : undefined;
@@ -1277,6 +1292,7 @@ async function serve(args: string[]): Promise<void> {
   runDefaultBranch = background.runDefaultBranch;
 
   let stopping = false;
+  let exitCode = 0;
   const stop = () => {
     // A second signal does not wait for the drain.
     if (stopping) process.exit(1);
@@ -1289,8 +1305,13 @@ async function serve(args: string[]): Promise<void> {
       .then(() => laneSupervisor?.stop())
       .finally(() => {
         db.close();
-        process.exit(0);
+        process.exit(exitCode);
       });
+  };
+  laneLost = () => {
+    if (stopping) return;
+    exitCode = 1;
+    stop();
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);

@@ -16,7 +16,9 @@ import { eq } from "drizzle-orm";
 import { getReleaseRequest, openDatabase, type Db } from "../src/db";
 import * as s from "../src/db/schema";
 import { loadSettingsRuntime } from "../src/settings/boot";
-import { approvalPolicySetting } from "../src/settings/definitions";
+import { approvalPolicySetting, settingsRegistry } from "../src/settings/definitions";
+import { withoutRefusals } from "../src/settings/define";
+import { operatorSizes, parseSandboxSizes, setOperatorSizes } from "../src/scheduler/sandbox-size";
 import { envValue } from "../src/settings/resolve";
 import { onPostgres } from "./pg-mode";
 import { checkChannel, checkConfigChannel, checkReleaseLane } from "../src/doctor/checks";
@@ -260,6 +262,35 @@ describe("roles", () => {
     expect([...resolveRoles("release", {})]).toEqual(["release"]);
   });
 
+  test("a turntable.toml with org runner_labels onto an operator size class boots the parent and the lane child", () => {
+    const toml = join(tmp, "turntable.toml");
+    writeFileSync(toml, `[orgs.x]\nrunner_labels = { big = "large" }\n`);
+    const prior = operatorSizes();
+    try {
+      // The parent has the operator's size map: the labels are checked against it and boot.
+      setOperatorSizes(
+        parseSandboxSizes(
+          JSON.stringify({ classes: { large: { cpus: 4, tenantSelectable: true } } }),
+          "test",
+        ),
+      );
+      expect(() => loadSettingsRuntime({ config: toml, env: {} })).not.toThrow();
+      // The child is never given the size map (its environment is minimal): the full registry
+      // would refuse the label, the lane's registry does not judge it.
+      setOperatorSizes(undefined);
+      expect(() => loadSettingsRuntime({ config: toml, env: {} })).toThrow(/large/);
+      const rt = loadSettingsRuntime({
+        config: toml,
+        env: {},
+        registry: withoutRefusals(settingsRegistry),
+      });
+      // It still resolves what the lane uses.
+      expect(rt.registry.get(approvalPolicySetting.key)).toBeDefined();
+    } finally {
+      setOperatorSizes(prior);
+    }
+  });
+
   test("the supervised lane is off unless asked for", () => {
     expect(laneSupervised({})).toBe(false);
     expect(laneSupervised({ TURNTABLE_LANE_SUPERVISED: "0" })).toBe(false);
@@ -304,17 +335,17 @@ describe("supervision (fake child)", () => {
     cleanup: () => {},
   });
 
-  test("a crashed child restarts, requests fail with a named error in the gap, and doctor says so", async () => {
+  test("a crashed child is not respawned: the server is told, requests fail by name, and doctor says so", async () => {
     const f = fakeSpawner();
-    let ready = true;
+    const lost: string[] = [];
     const sup = new LaneSupervisor({
       prepared: prepared(),
       args: [],
       command: ["x"],
       spawn: f.spawn,
-      probe: async () => ready,
+      probe: async () => true,
+      onLaneLost: (why) => lost.push(why),
       log: () => {},
-      backoff: { baseMs: 80, maxMs: 80, stableMs: 1e9 },
       readyPollMs: 10,
     });
     sup.start();
@@ -322,54 +353,45 @@ describe("supervision (fake child)", () => {
     expect(f.procs).toHaveLength(1);
     expect(f.procs[0]!.env).toEqual({ A: "1" });
 
-    ready = false; // the restarted child is not up yet
     f.procs[0]!.exit(1);
-    await until(() => sup.status().state === "restarting");
-    const gap = sup.availability();
-    expect(gap).toMatchObject({ ok: false, code: "release_lane_unavailable", state: "restarting" });
+    await until(() => sup.status().state === "exited");
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toContain("code 1");
+    expect(sup.availability()).toMatchObject({
+      ok: false,
+      code: "release_lane_unavailable",
+      state: "exited",
+    });
     expect(sup.status().lastExit).toMatchObject({ code: 1 });
 
     const doctor = checkReleaseLane({ releaseLane: () => sup.status() } as unknown as DoctorInputs);
     expect(doctor.status).toBe("fail");
-    expect(doctor.summary).toContain("restarting");
+    expect(doctor.summary).toContain("exited");
     expect(doctor.summary).toContain("release_lane_unavailable");
 
-    await until(() => f.procs.length === 2); // started again after the backoff
-    expect(sup.availability()).toMatchObject({ ok: false, state: "starting" });
-    ready = true;
-    await until(() => sup.availability().ok);
-    expect(sup.status().restarts).toBe(1);
-    expect(
-      checkReleaseLane({ releaseLane: () => sup.status() } as unknown as DoctorInputs).status,
-    ).toBe("pass");
-
+    await sleep(100);
+    expect(f.procs).toHaveLength(1); // never started again
     await sup.stop();
-    expect(f.procs[1]!.killed).toEqual(["SIGTERM"]);
     expect(sup.status().state).toBe("stopped");
-    expect(f.procs).toHaveLength(2); // no restart after stop
+    expect(lost).toHaveLength(1);
   });
 
-  test("a child that keeps failing waits longer each time", async () => {
+  test("the supervisor keeps none of the child's variables once it has spawned", async () => {
     const f = fakeSpawner();
-    const starts: number[] = [];
+    const p = prepared();
     const sup = new LaneSupervisor({
-      prepared: prepared(),
+      prepared: p,
       args: [],
       command: ["x"],
-      spawn: (a, e) => (starts.push(Date.now()), f.spawn(a, e)),
-      probe: async () => false,
+      spawn: f.spawn,
+      probe: async () => true,
       log: () => {},
-      backoff: { baseMs: 40, maxMs: 1000, stableMs: 1e9 },
+      readyPollMs: 10,
     });
     sup.start();
-    for (let i = 0; i < 3; i++) {
-      await until(() => f.procs.length === i + 1);
-      f.procs[i]!.exit(1);
-    }
-    await until(() => f.procs.length === 4);
-    const gaps = starts.slice(1).map((t, i) => t - starts[i]!);
-    expect(gaps[1]!).toBeGreaterThanOrEqual(gaps[0]! + 20);
-    expect(gaps[2]!).toBeGreaterThanOrEqual(gaps[1]! + 30);
+    await until(() => sup.availability().ok);
+    expect(f.procs[0]!.env).toEqual({ A: "1" });
+    expect(Object.keys(p.childEnv)).toEqual([]);
     await sup.stop();
   });
 
@@ -398,53 +420,45 @@ describe("supervision (fake child)", () => {
     expect(sigs).toEqual(["SIGTERM", "SIGKILL"]);
   });
 
-  test("a spawn that throws leaves the lane failed with backoff, never exits the caller, and stop is prompt", async () => {
-    const f = fakeSpawner();
-    const starts: number[] = [];
-    let throws = 2;
-    const logs: string[] = [];
-    const sup = new LaneSupervisor({
-      prepared: prepared(),
-      args: [],
-      command: ["x"],
-      spawn: (a, e) => {
-        starts.push(Date.now());
-        if (throws-- > 0) throw new Error("ENOENT: no such binary");
-        return f.spawn(a, e);
-      },
-      probe: async () => true,
-      log: (m) => logs.push(m),
-      backoff: { baseMs: 40, maxMs: 1000, stableMs: 1e9 },
-      readyPollMs: 10,
-    });
-    sup.start();
-    await until(() => sup.status().state === "failed");
-    expect(sup.availability()).toMatchObject({ ok: false, code: "release_lane_unavailable" });
-    await until(() => sup.availability().ok); // third attempt spawns
-    expect(starts).toHaveLength(3);
-    expect(starts[2]! - starts[1]!).toBeGreaterThanOrEqual(starts[1]! - starts[0]! + 20);
-    expect(logs.some((m) => m.includes("could not be started"))).toBe(true);
-    await sup.stop();
-    expect(sup.status().state).toBe("stopped");
-  });
-
-  test("stop during the backoff after a failed spawn does not wait it out", async () => {
+  test("a spawn that throws ends the lane (exited), tells the server once, and never throws out", async () => {
+    const lost: string[] = [];
     const sup = new LaneSupervisor({
       prepared: prepared(),
       args: [],
       command: ["x"],
       spawn: () => {
-        throw new Error("boom");
+        throw new Error("ENOENT: no such binary");
       },
-      probe: async () => false,
+      probe: async () => true,
+      onLaneLost: (w) => lost.push(w),
       log: () => {},
-      backoff: { baseMs: 60_000, maxMs: 60_000, stableMs: 1e9 },
     });
     sup.start();
-    await until(() => sup.status().state === "failed");
-    const t = Date.now();
+    await until(() => sup.status().state === "exited");
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toContain("could not be started");
+    expect(sup.availability()).toMatchObject({ ok: false, code: "release_lane_unavailable" });
     await sup.stop();
-    expect(Date.now() - t).toBeLessThan(2000);
+    expect(sup.status().state).toBe("stopped");
+  });
+
+  test("an asked-for stop is not a lost lane", async () => {
+    const f = fakeSpawner();
+    const lost: string[] = [];
+    const sup = new LaneSupervisor({
+      prepared: prepared(),
+      args: [],
+      command: ["x"],
+      spawn: f.spawn,
+      probe: async () => true,
+      onLaneLost: (w) => lost.push(w),
+      log: () => {},
+      readyPollMs: 10,
+    });
+    sup.start();
+    await until(() => sup.availability().ok);
+    await sup.stop();
+    expect(lost).toEqual([]);
   });
 
   test("stop is not delayed by a readiness poll that is waiting", async () => {
@@ -456,7 +470,6 @@ describe("supervision (fake child)", () => {
       spawn: f.spawn,
       probe: async () => false, // never ready: the poll keeps sleeping
       log: () => {},
-      backoff: { baseMs: 60_000, maxMs: 60_000, stableMs: 1e9 },
       readyPollMs: 60_000,
     });
     sup.start();
@@ -469,38 +482,18 @@ describe("supervision (fake child)", () => {
     expect(Date.now() - t).toBeLessThan(2000);
   });
 
-  test("a restart wait is still woken by stop while a poll sleeps (separate wake handles)", async () => {
-    const f = fakeSpawner();
-    const sup = new LaneSupervisor({
-      prepared: prepared(),
-      args: [],
-      command: ["x"],
-      spawn: f.spawn,
-      probe: async () => false,
-      log: () => {},
-      backoff: { baseMs: 60_000, maxMs: 60_000, stableMs: 1e9 },
-      readyPollMs: 60_000,
-    });
-    sup.start();
-    await until(() => f.procs.length === 1);
-    f.procs[0]!.exit(1); // into the 60s restart wait
-    await until(() => sup.status().state === "restarting");
-    const t = Date.now();
-    await sup.stop();
-    expect(Date.now() - t).toBeLessThan(2000);
-  });
-
-  test("a ready child that stops answering is marked unavailable and restarted", async () => {
+  test("a ready child that stops answering is 'unresponsive' (not 'starting'), then killed and the server told", async () => {
     const f = fakeSpawner();
     let answering = true;
+    const lost: string[] = [];
     const sup = new LaneSupervisor({
       prepared: prepared(),
       args: [],
       command: ["x"],
       spawn: f.spawn,
       probe: async () => answering,
+      onLaneLost: (w) => lost.push(w),
       log: () => {},
-      backoff: { baseMs: 10, maxMs: 10, stableMs: 1e9 },
       readyPollMs: 10,
       healthPollMs: 10,
       healthMisses: 3,
@@ -508,10 +501,11 @@ describe("supervision (fake child)", () => {
     sup.start();
     await until(() => sup.status().state === "ready");
     answering = false;
-    await until(() => sup.status().state !== "ready");
-    expect(sup.availability().ok).toBe(false);
+    await until(() => sup.status().state === "unresponsive");
+    expect(sup.availability()).toMatchObject({ ok: false, state: "unresponsive" });
     await until(() => f.procs[0]!.killed.includes("SIGKILL"));
-    f.procs[0]!.exit(null);
+    await until(() => lost.length === 1);
+    expect(f.procs).toHaveLength(1);
     await sup.stop();
   });
 
@@ -547,6 +541,7 @@ describe("through a real child process (fakes for the forge and the signer)", ()
   let db: Db;
   let a: Tenant;
   let sup: LaneSupervisor | undefined;
+  const lostWhy: string[] = [];
   let cosigB64 = "";
   let prepared: ReturnType<typeof prepareSupervisedLane>;
   const dataDir = () => join(tmp, "data");
@@ -613,7 +608,7 @@ describe("through a real child process (fakes for the forge and the signer)", ()
 
   // the child opens its own SQLite file; on Postgres it would need the lane's own database URL
   test.skipIf(onPostgres)(
-    "request_release with dry_run round-trips through the child; a killed child restarts and the gap fails by name",
+    "request_release with dry_run round-trips through the child; a killed child is not respawned and the gap fails by name",
     { timeout: 90_000 },
     async () => {
       sup = new LaneSupervisor({
@@ -621,7 +616,7 @@ describe("through a real child process (fakes for the forge and the signer)", ()
         command: [process.execPath, join(import.meta.dir, "fixtures", "lane-child.ts")],
         args: ["--data-dir", dataDir()],
         log: () => {},
-        backoff: { baseMs: 700, maxMs: 700, stableMs: 1e9 },
+        onLaneLost: (w) => lostWhy.push(w),
         readyPollMs: 50,
       });
       sup.start();
@@ -689,7 +684,7 @@ describe("through a real child process (fakes for the forge and the signer)", ()
         coGot.ok && (coGot.output as { cosignatures: { status: string }[] }).cosignatures,
       ).toMatchObject([{ key: "pinned", file: "manifest.json", status: "verified" }]);
 
-      // kill the child: the gap fails with a named error, then it is back
+      // kill the child: the gap fails with a named error, and it is not respawned
       process.kill(sup.status().pid!, "SIGKILL");
       await until(() => !sup!.availability().ok);
       const gap = await request(tok);
@@ -699,10 +694,9 @@ describe("through a real child process (fakes for the forge and the signer)", ()
         expect(gap.error.message).toContain("release_lane_unavailable");
       }
       expect(sup.status().lastExit?.signal).toBe("SIGKILL");
-      await until(() => sup!.availability().ok);
-      expect(sup.status().restarts).toBe(1);
-      const again = await request(tok);
-      expect(again.ok).toBe(true);
+      expect(lostWhy).toHaveLength(1);
+      await sleep(300);
+      expect(sup.status().state).toBe("exited");
       await until(async () => {
         const rows = await db.orm.select().from(s.releaseRequests);
         return rows.every((r) => r.status !== "pending" && r.status !== "claimed");

@@ -696,16 +696,12 @@ export function checkReleaseLane(i: DoctorInputs): DoctorCheck {
     ? ` Last exit: code ${s.lastExit.code ?? "none"}, signal ${s.lastExit.signal ?? "none"}.`
     : "";
   if (s.state === "ready")
-    return pass(
-      id,
-      area,
-      `the release lane child is running and answers on its channel (${s.restarts} restart(s))`,
-    );
+    return pass(id, area, `the release lane child is running and answers on its channel`);
   return fail(
     id,
     area,
     `the release lane child is ${s.state}: release requests are refused with release_lane_unavailable.${exit}`,
-    "Read the lane's own log lines (`[turntable release]`) for why it exited; a bad key, data dir or token is the usual cause. It restarts by itself with backoff.",
+    "Read the lane's own log lines (`[turntable release]`) for why it exited; a bad key, data dir or token is the usual cause. The lane is not restarted by this process: when it is lost the server exits non-zero and the platform restarts the container.",
   );
 }
 

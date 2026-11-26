@@ -217,6 +217,21 @@ export function createSettingsRegistry(settings: readonly SettingDef[]): Setting
   };
 }
 
+/**
+ * The same settings with every `refuse` check removed: values still parse and validate, but a
+ * value that is only wrong against the server's own state (a runner label naming a size class the
+ * operator defines) is not judged. For a process that never applies those settings, such as the
+ * release lane.
+ */
+export function withoutRefusals(registry: SettingsRegistry): SettingsRegistry {
+  return createSettingsRegistry(
+    registry.settings.map((d) => {
+      const { refuse: _refuse, ...rest } = d;
+      return rest;
+    }),
+  );
+}
+
 /** A short human description of a setting's type, from its schema, for the generated docs. */
 export function describeType(def: SettingDef): string {
   const j = z.toJSONSchema(def.type, { target: "draft-2020-12", io: "input" }) as {

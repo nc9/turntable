@@ -4,8 +4,9 @@
 //  - `prepareSupervisedLane` runs ONCE, first: it removes every release variable from the parent's
 //    environment and builds the child's environment from an explicit allowlist. The parent's
 //    `process.env` has none of them from then on.
-//  - `LaneSupervisor` starts the child (`serve --roles release`, which never serves the web app),
-//    restarts it with backoff, reports its state, and stops it with the parent.
+//  - `LaneSupervisor` starts the child (`serve --roles release`, which never serves the web app)
+//    once, reports its state, and stops it with the parent. There is no respawn: a lane that is
+//    gone ends the server, so the platform restarts the container.
 //  - The parent reaches the child only over a unix socket in a 0700 directory, under channel keys
 //    it made for this boot: they never touch disk. The parent holds no signer and no master key.
 //
@@ -76,7 +77,7 @@ export function laneSupervised(env: Record<string, string | undefined>): boolean
 
 export interface PreparedLane {
   /** The child's complete environment. Only the supervisor reads it. */
-  readonly childEnv: Readonly<Record<string, string>>;
+  readonly childEnv: Record<string, string>;
   /** The unix socket the child's channel listens on, in a 0700 directory. */
   readonly socket: string;
   /** The parent's clients of the channel: they hold this boot's keys and nothing of the lane's. */
@@ -199,12 +200,10 @@ export function prepareSupervisedLane(o: {
   };
 }
 
-export type LaneState = "starting" | "ready" | "restarting" | "failed" | "stopped";
+export type LaneState = "starting" | "ready" | "unresponsive" | "exited" | "stopped";
 
 export interface LaneStatus {
   state: LaneState;
-  /** How many times the child was started again after it exited. */
-  restarts: number;
   /** The child's process id while it runs (not a secret). */
   pid?: number | undefined;
   lastExit?: { code: number | null; signal: string | null; at: number } | undefined;
@@ -256,9 +255,14 @@ export interface SupervisorOptions {
   spawn?: LaneSpawner;
   /** True once the child's channel answers. Default: a signed health request over the socket. */
   probe?: () => Promise<boolean>;
+  /**
+   * Called once when the lane is gone without being asked to stop: it exited, could not be
+   * started, or stopped answering and was killed. There is no respawn: the caller stops the
+   * server's other roles and exits non-zero, so the platform restarts the container.
+   */
+  onLaneLost?: (why: string) => void;
   log?: (m: string) => void;
   now?: () => number;
-  backoff?: { baseMs: number; maxMs: number; stableMs: number };
   readyPollMs?: number;
   /** How often a ready child is probed again, and how many misses in a row end it. */
   healthPollMs?: number;
@@ -266,22 +270,22 @@ export interface SupervisorOptions {
   stopGraceMs?: number;
 }
 
+/**
+ * Runs the lane child once and watches it. It never starts it again: a lane that is gone ends the
+ * server (`onLaneLost`), so this process never keeps the lane's variables, or root, to respawn it.
+ */
 export class LaneSupervisor {
   private state: LaneState = "starting";
   private since: number;
-  private restarts = 0;
   private lastExit: LaneStatus["lastExit"];
   private stopping = false;
+  private lost = false;
   private proc: LaneProcess | undefined;
   private loop: Promise<void> | undefined;
-  // Two waits with two handles: the restart backoff and the readiness poll. stop() wakes both.
-  private wakeRestart: (() => void) | undefined;
   private wakeReady: (() => void) | undefined;
   private readonly spawnFn: LaneSpawner;
   private readonly now: () => number;
   private readonly log: (m: string) => void;
-  private readonly backoff: { baseMs: number; maxMs: number; stableMs: number };
-
   private readonly o: SupervisorOptions;
 
   constructor(o: SupervisorOptions) {
@@ -289,18 +293,11 @@ export class LaneSupervisor {
     this.spawnFn = o.spawn ?? spawnLane;
     this.now = o.now ?? Date.now;
     this.log = o.log ?? ((m) => console.log(`[turntable] ${m}`));
-    this.backoff = o.backoff ?? { baseMs: 1000, maxMs: 30_000, stableMs: 60_000 };
     this.since = this.now();
   }
 
   status(): LaneStatus {
-    return {
-      state: this.state,
-      restarts: this.restarts,
-      pid: this.proc?.pid,
-      lastExit: this.lastExit,
-      since: this.since,
-    };
+    return { state: this.state, pid: this.proc?.pid, lastExit: this.lastExit, since: this.since };
   }
 
   /** Whether a release request can be taken now. A named error when it cannot. */
@@ -311,12 +308,12 @@ export class LaneSupervisor {
       code: "release_lane_unavailable",
       state: this.state,
       message:
-        this.state === "restarting"
-          ? "the release lane stopped and is restarting; try again shortly"
-          : this.state === "starting"
-            ? "the release lane is starting; try again shortly"
-            : this.state === "failed"
-              ? "the release lane could not be started and will be tried again"
+        this.state === "starting"
+          ? "the release lane is starting; try again shortly"
+          : this.state === "unresponsive"
+            ? "the release lane stopped answering and is being stopped; the server restarts with it"
+            : this.state === "exited"
+              ? "the release lane has exited; the server is stopping so the platform restarts it"
               : "the release lane is stopped",
     };
   }
@@ -333,10 +330,17 @@ export class LaneSupervisor {
     this.since = this.now();
   }
 
-  private sleep(ms: number, which: "wakeRestart" | "wakeReady"): Promise<void> {
+  private lose(why: string): void {
+    if (this.stopping || this.lost) return;
+    this.lost = true;
+    this.log(`release lane lost: ${why}; stopping the server so the platform restarts it`);
+    this.o.onLaneLost?.(why);
+  }
+
+  private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
       const t = setTimeout(resolve, ms);
-      this[which] = () => {
+      this.wakeReady = () => {
         clearTimeout(t);
         resolve();
       };
@@ -360,81 +364,66 @@ export class LaneSupervisor {
   }
 
   private async run(): Promise<void> {
-    let attempt = 0;
     const command = this.o.command ?? selfCommand();
-    while (!this.stopping) {
-      this.set("starting");
-      let proc: LaneProcess;
-      try {
-        proc = this.spawnFn([...command, ...this.o.args], { ...this.o.prepared.childEnv });
-      } catch (e) {
-        // A spawn that throws (no such binary, out of processes) must never reach the server.
-        this.set("failed");
-        this.log(
-          `release lane could not be started: ${e instanceof Error ? e.message : String(e)}`,
-        );
-        const wait = Math.min(this.backoff.baseMs * 2 ** attempt, this.backoff.maxMs);
-        attempt++;
-        await this.sleep(wait, "wakeRestart");
-        if (!this.stopping) this.restarts++;
-        continue;
+    let proc: LaneProcess;
+    try {
+      proc = this.spawnFn([...command, ...this.o.args], { ...this.o.prepared.childEnv });
+    } catch (e) {
+      this.set("exited");
+      this.lose(`could not be started: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    } finally {
+      // The child has its own copy. This process keeps none of the lane's variables.
+      for (const k of Object.keys(this.o.prepared.childEnv)) {
+        delete (this.o.prepared.childEnv as Record<string, string>)[k];
       }
-      this.proc = proc;
-      let alive = true;
-      let readyAt: number | undefined;
-      const exit = proc.exited.finally(() => (alive = false));
-      this.log(`release lane started (pid ${proc.pid ?? "?"})`);
-      void (async () => {
-        // Until the first answer: the readiness poll. After it: a slower health poll, so a child
-        // that is alive but no longer answering stops being "ready" and is killed to restart.
-        let misses = 0;
-        const maxMisses = this.o.healthMisses ?? 3;
-        while (alive && !this.stopping) {
-          const ok = await this.probe();
-          if (!alive || this.stopping) return;
-          if (ok) {
-            misses = 0;
-            if (readyAt === undefined) {
-              readyAt = this.now();
-              this.set("ready");
-            } else if (this.state !== "ready") this.set("ready");
-          } else if (readyAt !== undefined) {
-            misses++;
-            if (this.state === "ready") this.set("starting");
-            if (misses >= maxMisses) {
-              this.log("release lane stopped answering; restarting it");
-              proc.kill("SIGKILL");
-              return;
-            }
-          }
-          await this.sleep(
-            readyAt === undefined ? (this.o.readyPollMs ?? 200) : (this.o.healthPollMs ?? 5000),
-            "wakeReady",
-          );
-        }
-      })();
-      const code = await exit.catch(() => ({ code: null, signal: null }));
-      this.proc = undefined;
-      if (this.stopping) break;
-      this.lastExit = { ...code, at: this.now() };
-      this.set("restarting");
-      this.log(
-        `release lane exited (code ${code.code ?? "none"}, signal ${code.signal ?? "none"}); release requests are refused until it is back`,
-      );
-      // A lane that ran steadily starts again at once; one that keeps failing waits longer.
-      if (readyAt !== undefined && this.now() - readyAt >= this.backoff.stableMs) attempt = 0;
-      const wait = Math.min(this.backoff.baseMs * 2 ** attempt, this.backoff.maxMs);
-      attempt++;
-      await this.sleep(wait, "wakeRestart");
-      if (!this.stopping) this.restarts++;
     }
-    this.set("stopped");
+    this.proc = proc;
+    let alive = true;
+    let readyAt: number | undefined;
+    const exit = proc.exited.finally(() => (alive = false));
+    this.log(`release lane started (pid ${proc.pid ?? "?"})`);
+    void (async () => {
+      // Until the first answer: the readiness poll. After it: a slower health poll, so a child
+      // that is alive but no longer answering stops being "ready" and is killed.
+      let misses = 0;
+      const maxMisses = this.o.healthMisses ?? 3;
+      while (alive && !this.stopping) {
+        const ok = await this.probe();
+        if (!alive || this.stopping) return;
+        if (ok) {
+          misses = 0;
+          if (readyAt === undefined) readyAt = this.now();
+          if (this.state !== "ready") this.set("ready");
+        } else if (readyAt !== undefined) {
+          misses++;
+          // It was ready and no longer answers: its own state, not "starting".
+          if (this.state === "ready") this.set("unresponsive");
+          if (misses >= maxMisses) {
+            this.log("release lane stopped answering; killing it");
+            proc.kill("SIGKILL");
+            return;
+          }
+        }
+        await this.sleep(
+          readyAt === undefined ? (this.o.readyPollMs ?? 200) : (this.o.healthPollMs ?? 5000),
+        );
+      }
+    })();
+    const code = await exit.catch(() => ({ code: null, signal: null }));
+    this.proc = undefined;
+    if (this.stopping) {
+      this.set("stopped");
+      return;
+    }
+    this.lastExit = { ...code, at: this.now() };
+    this.set("exited");
+    this.lose(`exited (code ${code.code ?? "none"}, signal ${code.signal ?? "none"})`);
   }
 
   /** Stops the child with the parent: SIGTERM, then SIGKILL after the grace period. */
   async stop(): Promise<void> {
     this.stopping = true;
-    this.wakeRestart?.();
     this.wakeReady?.();
     const proc = this.proc;
     if (proc) {
@@ -446,6 +435,7 @@ export class LaneSupervisor {
       if (!done) proc.kill("SIGKILL");
     }
     await this.loop;
+    this.set("stopped");
     this.o.prepared.cleanup();
   }
 }
