@@ -87,6 +87,16 @@ export type PreviewJob = {
   verdict: "run" | "skip" | "fail";
   reason?: string;
   fix?: string;
+  /** True when the workflow is ingested and the verdict is run. */
+  will_run?: boolean;
+  /** Names only: never a value. */
+  refs?: PreviewRef[];
+};
+export type PreviewRef = {
+  kind: "secret" | "var";
+  name: string;
+  where: string[];
+  provided: boolean;
 };
 export type DispatchInput = {
   name: string;
@@ -111,6 +121,7 @@ export type WorkflowPreview = {
   truncated: boolean;
   default_branch?: string;
   workflows: PreviewWorkflow[];
+  needs_summary?: { needed: string[]; text: string };
 };
 export type DispatchedRun = {
   run_id: string;

@@ -667,6 +667,94 @@ jobs:
   });
 });
 
+describe("preview_workflows secret refs", () => {
+  type Ref = { kind: string; name: string; where: string[]; provided: boolean };
+  type Out = {
+    workflows: { jobs: { job_id: string; will_run: boolean; refs: Ref[] }[] }[];
+    needs_summary: { needed: string[]; text: string };
+  };
+  const wf = `name: CI
+on: [push]
+env:
+  TOP: \${{ secrets.TOP_LEVEL }}
+jobs:
+  gated:
+    if: vars.TURNTABLE_CI != 'true'
+    runs-on: ubuntu-latest
+    env:
+      KEY: \${{ secrets.GATED_ONLY }}
+    steps:
+      - run: echo hi
+  build:
+    runs-on: ubuntu-latest
+    env:
+      A: \${{ secrets.JOB_ENV }}
+    steps:
+      - uses: some/action@v1
+        with:
+          token: \${{ secrets.STEP_WITH }}
+        env:
+          B: \${{ secrets['STEP_ENV'] }}
+      - if: \${{ secrets.STEP_IF != '' && vars.SOME_VAR == 'x' }}
+        run: echo \${{ secrets.GITHUB_TOKEN }}
+`;
+  const go = async () => {
+    const r = await dispatch(
+      env({ repoReader: async () => reader({ ".github/workflows/ci.yml": wf }) }),
+      asPrincipal(session("viewer")),
+      "preview_workflows",
+      { project: "web" },
+    );
+    expect(r.ok).toBe(true);
+    return (r as { output: unknown }).output as Out;
+  };
+
+  test("a job gated off by vars.TURNTABLE_CI lists its refs, won't run, and is left out of the summary", async () => {
+    const o = await go();
+    const gated = o.workflows[0]!.jobs.find((j) => j.job_id === "gated")!;
+    expect(gated.will_run).toBe(false);
+    expect(gated.refs.map((r) => r.name)).toContain("GATED_ONLY");
+    expect(o.needs_summary.needed).not.toContain("GATED_ONLY");
+  });
+
+  test("refs in env, with and if at job and step level are found; GITHUB_TOKEN is provided", async () => {
+    const o = await go();
+    const build = o.workflows[0]!.jobs.find((j) => j.job_id === "build")!;
+    expect(build.will_run).toBe(true);
+    const by = new Map(build.refs.map((r) => [r.name, r]));
+    expect(by.get("JOB_ENV")!.where).toEqual(["job env"]);
+    expect(by.get("STEP_WITH")!.where).toEqual(["step with"]);
+    expect(by.get("STEP_ENV")!.where).toEqual(["step env"]);
+    expect(by.get("STEP_IF")!.where).toEqual(["step if"]);
+    expect(by.get("SOME_VAR")).toMatchObject({ kind: "var" });
+    expect(by.get("GITHUB_TOKEN")).toMatchObject({ provided: true });
+    expect(o.needs_summary.needed).toEqual([
+      "JOB_ENV",
+      "STEP_ENV",
+      "STEP_IF",
+      "STEP_WITH",
+      "TOP_LEVEL",
+    ]);
+    expect(o.needs_summary.text).toBe(
+      "5 secrets needed by jobs that will run: JOB_ENV, STEP_ENV, STEP_IF, STEP_WITH, TOP_LEVEL",
+    );
+  });
+
+  test("names only: no value or mapping target is returned", async () => {
+    const o = await go();
+    const keys = new Set<string>();
+    for (const j of o.workflows[0]!.jobs)
+      for (const r of j.refs) Object.keys(r).forEach((k) => keys.add(k));
+    expect([...keys].toSorted()).toEqual(["kind", "name", "provided", "where"]);
+    expect(JSON.stringify(o)).not.toContain("echo hi");
+  });
+
+  test("a workflow with no refs says 0 secrets needed", async () => {
+    const { secretsSummary } = await import("../src/ops/onboarding-schemas");
+    expect(secretsSummary([]).text).toBe("0 secrets needed");
+  });
+});
+
 // ---- run_default_branch ----
 
 describe("run_default_branch", () => {

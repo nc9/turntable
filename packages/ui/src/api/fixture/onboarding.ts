@@ -162,17 +162,31 @@ export function createFixtureOnboarding(): OnboardingApi {
             too_large: false,
             dispatch_inputs: null,
             jobs: [
-              { job_id: "test", name: "test", verdict: "run" },
+              {
+                job_id: "test",
+                name: "test",
+                verdict: "run",
+                will_run: true,
+                refs: [
+                  { kind: "secret", name: "GITHUB_TOKEN", where: ["step env"], provided: true },
+                  { kind: "var", name: "TURNTABLE_CI", where: ["job if"], provided: false },
+                ],
+              },
               {
                 job_id: "mac",
                 name: "mac",
                 verdict: "fail",
                 reason: "runs-on macos-latest is not supported",
                 fix: "Use an ubuntu runner for this job.",
+                will_run: false,
+                refs: [
+                  { kind: "secret", name: "DEPLOY_KEY", where: ["step env"], provided: false },
+                ],
               },
             ],
           },
         ],
+        needs_summary: { needed: [], text: "0 secrets needed" },
       };
     },
     async runDispatch({ ref }) {
