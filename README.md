@@ -2,9 +2,10 @@
 
 Secure MCP-first CI runner for cloud containers.
 
-Turntable is an open source CI system. It runs GitHub Actions workflows outside GitHub, on the sandbox or container provider you choose. It ships as a single compiled Bun binary with a built-in web UI. Security is a design goal from the start, not an add-on.
+> [!WARNING]
+> **Early, continuous development.** Turntable runs CI for [squirrelscan](https://github.com/squirrelscan/squirrelscan) today, and changes land daily. Interfaces, settings and the API can change without notice between releases.
 
-It is early and under active development: it runs our own CI, and interfaces can still change.
+Turntable is an open source CI system. It runs GitHub Actions workflows outside GitHub, on the sandbox or container provider you choose. It ships as a single compiled Bun binary with a built-in web UI. Security is a design goal from the start, not an add-on.
 
 ## Core features
 
