@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import { safeFetch, type SafeFetch } from "@turntable/net";
 import type { NetworkProbe, ProbeResult, TargetResult } from "./health";
 
 export type ProbeTarget = {
@@ -16,7 +17,7 @@ export type EgressProbeOptions = {
   /** Read at each probe, so a provider wired later is included. */
   checks?: () => readonly ProbeCheck[];
   timeoutMs?: number;
-  fetch?: typeof fetch;
+  fetch?: SafeFetch;
   lookup?: (host: string) => Promise<unknown>;
 };
 
@@ -35,7 +36,7 @@ const codeOf = (err: unknown): string => {
  */
 export function egressProbe(o: EgressProbeOptions): NetworkProbe {
   const timeoutMs = o.timeoutMs ?? 5_000;
-  const doFetch = o.fetch ?? fetch;
+  const doFetch = o.fetch ?? safeFetch;
   const resolve = o.lookup ?? ((h: string) => lookup(h));
   return async (): Promise<ProbeResult> => {
     const targets = await Promise.all(
