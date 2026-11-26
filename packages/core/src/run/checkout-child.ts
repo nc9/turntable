@@ -59,6 +59,28 @@ export function limitsFor(
   };
 }
 
+/**
+ * The error for a budget the checkout ran over: the value in force (as `limitsFor` gives it, the
+ * multiplied and memory-clamped one) and, when the memory ceiling cut the unpacked budget, that.
+ */
+export function budgetError(
+  limit: BudgetLimit,
+  base: Partial<FetchLimits>,
+  fullHistory: boolean,
+  memoryMb: number,
+): CheckoutLimitError {
+  const l = limitsFor(base, fullHistory, memoryMb);
+  const clamped =
+    limit === "maxInflatedBytes" &&
+    unpackedBudget(
+      { ...DEFAULT_FETCH_LIMITS, ...base }.maxInflatedBytes *
+        (fullHistory ? FULL_HISTORY_FACTOR : 1),
+      l.maxPackBytes,
+      memoryMb,
+    ).clamped;
+  return new CheckoutLimitError(limit, Math.round(l[limit] / MIB), fullHistory, clamped);
+}
+
 /** Memory kept for the child's own code and buffers beyond the pack and the unpacked objects. */
 export const CHECKOUT_MEMORY_OVERHEAD_MIB = 256;
 /** The least the clamp leaves, so a tiny memory ceiling never makes the budget useless. */
@@ -119,15 +141,25 @@ export class CheckoutLimitError extends Error {
   readonly limit: BudgetLimit | "memory";
   readonly mib: number;
   readonly fullHistory: boolean;
-  constructor(limit: BudgetLimit | "memory", mib: number, fullHistory: boolean) {
+  /** The unpacked budget in force was cut down by the memory ceiling, so that is what to raise. */
+  readonly clamped: boolean;
+  constructor(
+    limit: BudgetLimit | "memory",
+    mib: number,
+    fullHistory: boolean,
+    clamped: boolean = false,
+  ) {
     const n = BUDGET_NAMES[limit];
-    const raise =
-      n.project && n.instance
+    const budget = limit !== "memory";
+    const raise = clamped
+      ? `the memory ceiling sets this limit, raise ${BUDGET_NAMES.memory.env}`
+      : n.project && n.instance
         ? `raise the setting ${n.project} for this project, or ${n.instance} (${n.env}) for every project`
         : `raise ${n.env}`;
     super(
-      `the checkout hit the ${n.label} limit of ${mib} MiB${fullHistory ? " (full history: the budget is " + FULL_HISTORY_FACTOR + " times the shallow one)" : ""}: ${raise}`,
+      `the checkout hit the ${n.label} limit of ${mib} MiB${fullHistory && budget ? " (full history: the budget is " + FULL_HISTORY_FACTOR + " times the shallow one)" : ""}: ${raise}`,
     );
+    this.clamped = clamped;
     this.name = "CheckoutLimitError";
     this.limit = limit;
     this.mib = mib;
@@ -329,6 +361,8 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
   }
 }
 
+/** The child's exit status when its own resident memory passed the ceiling. */
+export const EXIT_MEMORY_STOP = 70;
 const MEMORY_KILL = "the checkout used more than its memory ceiling";
 
 async function runChild(r: ChildRequest): Promise<ChildResult> {
@@ -417,7 +451,8 @@ async function runChild(r: ChildRequest): Promise<ChildResult> {
     });
     const res = await Promise.race([finished, gone]);
     if (killedFor) {
-      if (killedFor === MEMORY_KILL) throw new CheckoutLimitError("memory", cfg.memoryMb, false);
+      if (killedFor === MEMORY_KILL)
+        throw new CheckoutLimitError("memory", cfg.memoryMb, r.fullHistory === true);
       throw new Error(killedFor);
     }
     if (res === "abandoned") throw new Error("the checkout did not stop");
@@ -429,10 +464,12 @@ async function runChild(r: ChildRequest): Promise<ChildResult> {
     if (code === EXIT_FETCH_LIMIT) {
       const m = /fetch_limit (maxPackBytes|maxInflatedBytes|maxTarballBytes)/.exec(err);
       if (m) {
-        const key = m[1] as BudgetLimit;
-        throw new CheckoutLimitError(key, Math.round(limits[key] / MIB), r.fullHistory === true);
+        throw budgetError(m[1] as BudgetLimit, cfg.limits, r.fullHistory === true, cfg.memoryMb);
       }
     }
+    // The child stopped itself over the memory ceiling (its own check, as the poll above does).
+    if (code === EXIT_MEMORY_STOP)
+      throw new CheckoutLimitError("memory", cfg.memoryMb, r.fullHistory === true);
     if (code !== 0) {
       const line = err.trim().split("\n").filter(Boolean).at(-1) ?? `exit ${code}`;
       throw new Error(`the checkout failed: ${clean(scrubToken(line, r.token))}`);

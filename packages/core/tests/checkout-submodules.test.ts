@@ -455,6 +455,35 @@ describe("the checkout limits are one budget", () => {
     }
   });
 
+  test("fetch-depth 0 with submodules shares the multiplied budget, and names it when over", async () => {
+    const lib = makeRepo({ "big.bin": "x".repeat(300 * 1024) });
+    const web = makeRepo({ "a.txt": "a\n" }, [
+      { path: "deps/lib", sha: lib.sha, url: "https://github.com/acme/lib.git" },
+    ]);
+    const w = world({ "acme/web": web.dir, "acme/lib": lib.dir });
+    const sub = { submodules: "true", submoduleCredentials: true, fullHistory: true } as const;
+    try {
+      // 100 KiB x4 = 400 KiB: the tree alone passes at 100 KiB, and the module fits the x4 budget
+      await w.src.checkout(run(web.sha), bound, {
+        fullHistory: true,
+        limits: { maxInflatedBytes: 100 * 1024 },
+      });
+      await w.src.checkout(run(web.sha), bound, {
+        ...sub,
+        limits: { maxInflatedBytes: 100 * 1024 },
+      });
+      // 50 KiB x4 = 200 KiB: the module is over, and the error reports the full-history value
+      const err = await w.src
+        .checkout(run(web.sha), bound, { ...sub, limits: { maxInflatedBytes: 50 * 1024 } })
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(CheckoutLimitError);
+      expect(err.limit).toBe("maxInflatedBytes");
+      expect(err.fullHistory).toBe(true);
+    } finally {
+      w.stop();
+    }
+  });
+
   test("more modules than maxSubmodules is refused", async () => {
     const lib = makeRepo({ "l.txt": "lib\n" });
     const web = makeRepo({ "a.txt": "a\n" }, [

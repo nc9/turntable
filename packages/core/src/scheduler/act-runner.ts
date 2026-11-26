@@ -274,6 +274,7 @@ export function gitRepoSource(
             cloneUrl: o.cloneUrl,
             allowHosts: o.allowHosts ?? [],
             config: { ...cfg, limits: base },
+            ...(opts?.fullHistory ? { fullHistory: true } : {}),
             startedAt,
             signal: opts?.signal,
             command: o.command,
@@ -282,6 +283,8 @@ export function gitRepoSource(
           if (left <= 1000) throw new Error("the checkout took too long");
           res = await runCheckoutChild({
             stage: "pack",
+            // The tarball cap is the full-history one when the tree was.
+            ...(opts?.fullHistory ? { fullHistory: true } : {}),
             owner,
             repo,
             sha,

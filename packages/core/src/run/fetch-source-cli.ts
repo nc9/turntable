@@ -14,7 +14,7 @@ import { parseArgs } from "node:util";
 import { readTarGz } from "@turntable/act-runner";
 import { gitRepoSource } from "../scheduler/act-runner";
 import { isRepoPart, packCheckout, performCheckout } from "./checkout";
-import { checkoutConfigFromEnv } from "./checkout-child";
+import { checkoutConfigFromEnv, EXIT_MEMORY_STOP } from "./checkout-child";
 import {
   budgetLimitOf,
   clean,
@@ -144,7 +144,7 @@ export async function fetchSourceCommand(
       maxRssBytes: Number(values["max-memory-mib"] ?? 0) * 1024 * 1024,
       onStop: (why) => {
         console.error(`fetch-source failed: ${why}`);
-        process.exit(70);
+        process.exit(EXIT_MEMORY_STOP);
       },
     });
   let token: string | undefined;

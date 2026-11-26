@@ -42,11 +42,11 @@ export class FetchLimitError extends GitFetchError {
 
 /**
  * The budget an error says the fetch ran over, or undefined for any other error: the pack body
- * (the HTTP client's cap), the unpacked data, or the tarball writer's cap.
+ * (thrown as a `FetchLimitError` where the pack is fetched), the unpacked data, or the tarball
+ * writer's cap. The fixed small caps (a ref list, a per-object size) are not budgets and stay unnamed.
  */
 export function budgetLimitOf(e: unknown): BudgetLimit | undefined {
   if (e instanceof FetchLimitError) return e.limit;
-  if (e instanceof ResponseTooLargeError) return "maxPackBytes";
   if (e instanceof Error && /the tarball is larger than the cap/.test(e.message))
     return "maxTarballBytes";
   return undefined;
@@ -406,6 +406,11 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
     timeoutMs: left(),
     maxBytes: limits.maxPackBytes + 1024 * 1024,
     redirect: "error",
+  }).catch((e: unknown) => {
+    // Only this response's cap is the pack budget; the other responses' caps are fixed and small.
+    if (e instanceof ResponseTooLargeError)
+      throw new FetchLimitError("maxPackBytes", "the pack is larger than its budget");
+    throw e;
   });
   if (refused(res.status))
     throw new GitAuthError(res.status, `the server answered HTTP ${res.status} to the fetch`);
@@ -557,11 +562,16 @@ function inflateAt(buf: Uint8Array, pos: number, size: number): { data: Uint8Arr
 }
 
 /**
- * Applies a delta. The result's declared size is checked against `maxBytes` (the smaller of the
- * per-object cap and what is LEFT of the whole unpack budget) BEFORE it is allocated. Every copy
+ * Applies a delta. The result's declared size is checked against `maxObjectBytes` (unnamed) and
+ * `maxLeftBytes` (what is LEFT of the unpack budget, named) BEFORE it is allocated. Every copy
  * is checked against the base and against the output still to fill.
  */
-function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes: number): Uint8Array {
+function applyDelta(
+  base: Uint8Array,
+  delta: Uint8Array,
+  maxObjectBytes: number,
+  maxLeftBytes: number,
+): Uint8Array {
   let i = 0;
   const varint = (): number => {
     let v = 0;
@@ -577,7 +587,9 @@ function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes: number): Uint
   };
   if (varint() !== base.length) throw new GitFetchError("a delta does not match its base");
   const size = varint();
-  if (size > maxBytes)
+  // The fixed per-object cap first: it is not a budget, so it is unnamed like a plain blob's.
+  if (size > maxObjectBytes) throw new GitFetchError("a packed object is too large");
+  if (size > maxLeftBytes)
     throw new FetchLimitError(
       "maxInflatedBytes",
       "a delta would produce more than the pack may unpack to",
@@ -733,7 +745,8 @@ export function readPack(
         data: applyDelta(
           base.data,
           raw.data,
-          Math.min(limits.maxObjectBytes, limits.maxInflatedBytes - budget),
+          limits.maxObjectBytes,
+          limits.maxInflatedBytes - budget,
         ),
       };
       spend(obj.data.length);
@@ -759,7 +772,8 @@ export function readPack(
         data: applyDelta(
           base.data,
           raw.data,
-          Math.min(limits.maxObjectBytes, limits.maxInflatedBytes - budget),
+          limits.maxObjectBytes,
+          limits.maxInflatedBytes - budget,
         ),
       };
       spend(obj.data.length);

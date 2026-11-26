@@ -10,18 +10,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { isRetryableInfra } from "@turntable/act-runner";
+import { ResponseTooLargeError } from "@turntable/net";
 import { createOrg, createProject, type Db, openDatabase } from "../src/db";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { checkCheckoutBudgets } from "../src/doctor/checks";
 import type { DoctorInputs } from "../src/doctor/types";
-import { CheckoutLimitError, limitsFor, runCheckoutChild } from "../src/run/checkout-child";
+import {
+  budgetError,
+  CheckoutLimitError,
+  limitsFor,
+  runCheckoutChild,
+} from "../src/run/checkout-child";
 import { effectiveCheckoutLimits } from "../src/run/checkout-limits";
 import {
   budgetLimitOf,
   DEFAULT_FETCH_LIMITS,
   EXIT_FETCH_LIMIT,
   FetchLimitError,
+  GitFetchError,
   readPack,
 } from "../src/run/git-fetch";
 import { fetchLimitOutcome } from "../src/scheduler/fetch-limit-outcome";
@@ -346,5 +353,117 @@ describe("the unpacked budget is clamped to the memory ceiling", () => {
   test("doctor passes the defaults", () => {
     const c = checkCheckoutBudgets({ env: {} } as unknown as DoctorInputs);
     expect(c.status).toBe("pass");
+  });
+});
+
+describe("round-4 review fixes", () => {
+  const packOf = (items: Buffer[]): Uint8Array => {
+    const head = Buffer.alloc(12);
+    head.write("PACK", 0);
+    head.writeUInt32BE(2, 4);
+    head.writeUInt32BE(items.length, 8);
+    const body = Buffer.concat([head, ...items]);
+    return new Uint8Array(Buffer.concat([body, createHash("sha1").update(body).digest()]));
+  };
+  const objHeader = (type: number, n: number): Buffer => {
+    const out: number[] = [];
+    let b = (type << 4) | (n & 15);
+    let rest = Math.floor(n / 16);
+    while (rest > 0) {
+      out.push(b | 0x80);
+      b = rest & 0x7f;
+      rest = Math.floor(rest / 128);
+    }
+    out.push(b);
+    return Buffer.from(out);
+  };
+  const varint = (n: number): number[] => {
+    const out: number[] = [];
+    while (n >= 0x80) {
+      out.push((n & 0x7f) | 0x80);
+      n = Math.floor(n / 128);
+    }
+    out.push(n);
+    return out;
+  };
+
+  test("a delta over the fixed per-object cap is the unnamed packed-object error", () => {
+    const base = Buffer.from("hello");
+    const baseOid = createHash("sha1")
+      .update(Buffer.concat([Buffer.from(`blob ${base.length}\0`), base]))
+      .digest();
+    // the delta declares a 5000 byte result: over maxObjectBytes (1000), under maxInflatedBytes
+    const delta = Buffer.from([...varint(base.length), ...varint(5000)]);
+    const pack = packOf([
+      Buffer.concat([objHeader(3, base.length), deflateSync(base)]),
+      Buffer.concat([objHeader(7, delta.length), baseOid, deflateSync(delta)]),
+    ]);
+    const limits = { ...DEFAULT_FETCH_LIMITS, maxObjectBytes: 1000, maxInflatedBytes: 10_000 };
+    const e = (() => {
+      try {
+        readPack(pack, limits);
+      } catch (x) {
+        return x;
+      }
+    })();
+    expect(e).toBeInstanceOf(GitFetchError);
+    expect(e).not.toBeInstanceOf(FetchLimitError);
+    expect((e as Error).message).toBe("a packed object is too large");
+    expect(budgetLimitOf(e)).toBeUndefined();
+    // a result within the object cap but over what is left of the unpack budget IS the named limit
+    const tight = { ...limits, maxObjectBytes: 100_000, maxInflatedBytes: 1000 };
+    const e2 = (() => {
+      try {
+        readPack(pack, tight);
+      } catch (x) {
+        return x;
+      }
+    })();
+    expect(e2).toBeInstanceOf(FetchLimitError);
+    expect((e2 as FetchLimitError).limit).toBe("maxInflatedBytes");
+  });
+
+  test("a clamped unpacked budget names the memory ceiling, not the unpacked settings", () => {
+    // 1536 MiB memory, 128 MiB pack, 256 overhead: the 1152 MiB unpacked budget is cut to 1152
+    const e = budgetError("maxInflatedBytes", { maxInflatedBytes: 2048 * MIB }, false, 1536);
+    expect(e.clamped).toBe(true);
+    expect(e.message).toContain("TURNTABLE_CHECKOUT_MAX_MEMORY_MIB");
+    expect(e.message).not.toContain("checkout_max_unpacked_mib");
+    expect(e.message).not.toContain("TURNTABLE_CHECKOUT_MAX_UNPACKED_MIB");
+    expect(e.mib).toBe(
+      Math.round(limitsFor({ maxInflatedBytes: 2048 * MIB }, false, 1536).maxInflatedBytes / MIB),
+    );
+    // not clamped: the unpacked settings, as before
+    const ok = budgetError("maxInflatedBytes", { maxInflatedBytes: 512 * MIB }, false, 1536);
+    expect(ok.clamped).toBe(false);
+    expect(ok.message).toContain("project_checkout_max_unpacked_mib");
+  });
+
+  test("the child's own memory stop (exit 70) is the memory fetch_limit, full history included", async () => {
+    const f = join(tmp, "rss.ts");
+    writeFileSync(
+      f,
+      'console.error("fetch-source failed: the checkout used more than 10 MiB of memory"); process.exit(70);',
+    );
+    const e = (await runCheckoutChild({
+      owner: "acme",
+      repo: "web",
+      sha: "a".repeat(40),
+      dir: join(tmp, "d"),
+      out: join(tmp, "o.tgz"),
+      command: [process.execPath, f],
+      fullHistory: true,
+      config: { memoryMb: 1536 },
+    }).catch((x: unknown) => x)) as CheckoutLimitError;
+    expect(e).toBeInstanceOf(CheckoutLimitError);
+    expect(e.limit).toBe("memory");
+    expect(e.fullHistory).toBe(true);
+    expect(e.message).toContain("TURNTABLE_CHECKOUT_MAX_MEMORY_MIB");
+    expect(fetchLimitOutcome(e)?.outcome.infraKind).toBe("fetch_limit");
+  });
+
+  test("only the pack response's cap is the pack budget; a fixed small cap stays unnamed", () => {
+    expect(budgetLimitOf(new ResponseTooLargeError(1024))).toBeUndefined();
+    expect(budgetLimitOf(new FetchLimitError("maxPackBytes", "x"))).toBe("maxPackBytes");
   });
 });
