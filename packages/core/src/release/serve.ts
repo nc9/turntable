@@ -7,13 +7,13 @@ import { type Db, ensureInstance, openDatabase } from "../db";
 import { getRunArtifactsByName } from "../db/repos";
 import { SecretVault } from "../secrets/vault";
 import { SigningService } from "../signing";
-import { releaseConfigFromEnv, releaseMasterKey } from "../roles";
+import { type ReleaseConfig, releaseConfigFromEnv, releaseMasterKey } from "../roles";
 import { systemOrgId } from "../audit/failures";
 import { rewrapReleaseKey } from "./rewrap";
 import { AttestationStore } from "./attest";
 import { LaneConfig } from "./config";
 import { dirArtifacts } from "./artifacts";
-import { githubForge } from "./forge";
+import { type ForgeFacts, githubForge } from "./forge";
 import type { PublishWiring } from "./publish/types";
 import { fileKeyVault } from "./key-vault";
 import { startChannel } from "./channel";
@@ -62,10 +62,19 @@ export const signingWiring: WiringFactory = ({ db, masterKey, dataDir, builderId
   };
 };
 
+/** The worker's request key: the value a supervising parent gave, else the key file. */
+function channelKey(c: NonNullable<ReleaseConfig["channel"]>): string {
+  if (c.key) return c.key;
+  if (!c.keyFile) throw new Error("the release channel has no key");
+  return readFileSync(c.keyFile, "utf8").trim();
+}
+
 export async function serveRelease(
   values: { "data-dir": string },
   wiring: WiringFactory = signingWiring,
   env: Record<string, string | undefined> = process.env,
+  /** Test seam: a stand-in forge, so a test of the process wiring needs no network. */
+  deps: { forge?: ForgeFacts } = {},
 ): Promise<{ stop(): void }> {
   const cfg = releaseConfigFromEnv(env);
   // The lane's own master key, in its own file: the main process neither has nor can read it.
@@ -109,7 +118,7 @@ export async function serveRelease(
       },
     },
   };
-  const forge = githubForge({ token: cfg.githubToken });
+  const forge = deps.forge ?? githubForge({ token: cfg.githubToken });
   const lane = new ReleaseLane({
     db,
     forge,
@@ -151,16 +160,22 @@ export async function serveRelease(
     : undefined;
   if (proxy) log(`release proxy listening on ${proxy.host}:${proxy.port}`);
   // How the worker asks for a job's proxy credential: the lane re-verifies each request itself.
+  const configKey = cfg.channel
+    ? (cfg.channel.configKey ??
+      (cfg.channel.configKeyFile
+        ? readFileSync(cfg.channel.configKeyFile, "utf8").trim()
+        : undefined))
+    : undefined;
   const channel =
     proxy && cfg.channel
       ? await startChannel({
           db,
           proxy,
-          key: readFileSync(cfg.channel.keyFile, "utf8").trim(),
-          ...(cfg.channel.configKeyFile
+          key: channelKey(cfg.channel),
+          ...(configKey
             ? {
                 config: {
-                  key: readFileSync(cfg.channel.configKeyFile, "utf8").trim(),
+                  key: configKey,
                   lane: new LaneConfig({
                     attest,
                     vault,

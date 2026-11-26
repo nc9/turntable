@@ -104,6 +104,7 @@ import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { mainRuntime, releaseLaneConfigured, resolveRoles, takeReleaseKeys } from "./roles";
 import {
+  type ChannelClient,
   createChannelClient,
   laneConfigClientFromEnv,
   withReleaseChannel,
@@ -116,6 +117,13 @@ import { countHumanWithAnyKeyPolicy, countHumanWithoutApprover } from "./ops/set
 import { ForwardedObserver } from "./doctor/observe";
 import { readerOf, realInputs } from "./doctor/real";
 import { serveRelease } from "./release/serve";
+import {
+  LANE_CHILD_ENV,
+  LaneSupervisor,
+  type PreparedLane,
+  laneSupervised,
+  prepareSupervisedLane,
+} from "./release/supervisor";
 import { staticPollKey } from "./ops/project-setup";
 import { startServer } from "./server";
 import { enableDevUi, hasUi } from "./ui-assets";
@@ -252,6 +260,8 @@ async function startBackground(
     cache?: CacheService;
     artifacts?: ArtifactService;
     jobOidc?: JobOidc;
+    /** The supervised lane's channel client (no channel files: its keys are made at boot). */
+    laneChannel?: ChannelClient;
   } = {},
 ): Promise<{
   stop(): Promise<void>;
@@ -347,24 +357,29 @@ async function startBackground(
     // Compat publishing: a release-class job may ask the release lane for a release-proxy
     // credential. This process holds only the request key, never a publish credential.
     const channelKey = process.env.TURNTABLE_PUBLISH_CHANNEL_KEY_FILE?.trim();
-    const publishChannel = channelKey
-      ? createChannelClient({
-          key: readFileSync(channelKey, "utf8").trim(),
-          target: process.env.TURNTABLE_PUBLISH_CHANNEL_URL?.trim()
-            ? {
-                url: process.env.TURNTABLE_PUBLISH_CHANNEL_URL.trim(),
-                tls: {
-                  cert: readFileSync(
-                    requiredEnv("TURNTABLE_PUBLISH_CHANNEL_TLS_CERT_FILE"),
-                    "utf8",
-                  ),
-                  key: readFileSync(requiredEnv("TURNTABLE_PUBLISH_CHANNEL_TLS_KEY_FILE"), "utf8"),
-                  ca: readFileSync(requiredEnv("TURNTABLE_PUBLISH_CHANNEL_TLS_CA_FILE"), "utf8"),
-                },
-              }
-            : { unix: requiredEnv("TURNTABLE_PUBLISH_CHANNEL_SOCKET") },
-        })
-      : undefined;
+    const publishChannel = extras.laneChannel
+      ? extras.laneChannel
+      : channelKey
+        ? createChannelClient({
+            key: readFileSync(channelKey, "utf8").trim(),
+            target: process.env.TURNTABLE_PUBLISH_CHANNEL_URL?.trim()
+              ? {
+                  url: process.env.TURNTABLE_PUBLISH_CHANNEL_URL.trim(),
+                  tls: {
+                    cert: readFileSync(
+                      requiredEnv("TURNTABLE_PUBLISH_CHANNEL_TLS_CERT_FILE"),
+                      "utf8",
+                    ),
+                    key: readFileSync(
+                      requiredEnv("TURNTABLE_PUBLISH_CHANNEL_TLS_KEY_FILE"),
+                      "utf8",
+                    ),
+                    ca: readFileSync(requiredEnv("TURNTABLE_PUBLISH_CHANNEL_TLS_CA_FILE"), "utf8"),
+                  },
+                }
+              : { unix: requiredEnv("TURNTABLE_PUBLISH_CHANNEL_SOCKET") },
+          })
+        : undefined;
     // The operator's map from runs-on labels to a sandbox size (none: providers' default size).
     const sandboxSizes = resolveSandboxSizes();
     if (sandboxSizes)
@@ -644,6 +659,17 @@ async function serve(args: string[]): Promise<void> {
     delete process.env.TURNTABLE_MASTER_KEY;
     delete process.env.TURNTABLE_MASTER_KEY_PREVIOUS;
     const lane = await serveRelease(values);
+    // A supervised lane ends with its parent, however the parent ended.
+    if (process.env[LANE_CHILD_ENV] === "1") {
+      delete process.env[LANE_CHILD_ENV];
+      const parent = process.ppid;
+      setInterval(() => {
+        if (process.ppid !== parent) {
+          lane.stop();
+          process.exit(0);
+        }
+      }, 1000).unref();
+    }
     const stopLane = () => {
       lane.stop();
       process.exit(0);
@@ -654,10 +680,14 @@ async function serve(args: string[]): Promise<void> {
   }
   // A process that is not the release lane holds nothing of it: those variables do nothing here.
   const runtime = mainRuntime(roles, process.env);
+  // The lane as this process's supervised child (off by default): its variables are taken after
+  // the privilege drop below, and go to the child alone.
+  const laneChild = laneSupervised(process.env);
   // The lane's keys, if given, are used once for the boot re-wrap and removed: not for a child to inherit.
-  const releaseLaneElsewhere = releaseLaneConfigured(process.env);
-  const releaseKeys = takeReleaseKeys(process.env);
-  if (runtime.ignoredReleaseEnv.length > 0) {
+  const releaseLaneElsewhere = laneChild || releaseLaneConfigured(process.env);
+  // A supervised lane re-wraps its own keys in the child; this process never parses them.
+  const releaseKeys = laneChild ? undefined : takeReleaseKeys(process.env);
+  if (runtime.ignoredReleaseEnv.length > 0 && !laneChild) {
     console.warn(
       `warning: ${runtime.ignoredReleaseEnv.join(", ")} belong to the release lane and are ignored here; run it as its own process (serve --roles release)`,
     );
@@ -669,6 +699,15 @@ async function serve(args: string[]): Promise<void> {
     console.log(`dropped privileges to ${process.env.TURNTABLE_DROP_PRIVILEGES}`);
   if (privilege === "root_allowed")
     console.warn("warning: running as root (TURNTABLE_ALLOW_ROOT=1)");
+  // Before anything else is read or loaded: every release variable leaves process.env here and is
+  // handed to the child alone (supervisor.ts). Made after the drop so the socket directory is ours.
+  let preparedLane: PreparedLane | undefined;
+  if (laneChild) {
+    preparedLane = prepareSupervisedLane({ env: process.env, postgres: DIALECT === "pg" });
+    console.log(
+      "[turntable] release lane: supervised child process (no release variable stays here)",
+    );
+  }
   // A platform with no shell cannot run `keys init`: when asked to, create the key file once, here,
   // before anything reads it. Never overwrites; without the opt-in an absent file stays an error.
   let masterKeyCreated: string | undefined;
@@ -775,6 +814,15 @@ async function serve(args: string[]): Promise<void> {
       },
     );
   }
+
+  // The child opens the same database, so it starts after this process has migrated it.
+  const laneSupervisor = preparedLane
+    ? new LaneSupervisor({
+        prepared: preparedLane,
+        args: ["serve", "--roles", "release", "--data-dir", dataDir],
+      })
+    : undefined;
+  laneSupervisor?.start();
 
   // First-boot access without a shell: see ops/bootstrap.ts.
   const bootstrapHash = process.env.TURNTABLE_BOOTSTRAP_TOKEN_SHA256?.trim();
@@ -1082,7 +1130,7 @@ async function serve(args: string[]): Promise<void> {
   }
   if (sinks.length > 0) auditStops.push(startExporter(db, sinks));
   // The release lane's config channel (#541), when this process is set up for it.
-  const releaseConfig = laneConfigClientFromEnv(process.env);
+  const releaseConfig = preparedLane?.config ?? laneConfigClientFromEnv(process.env);
   const webauthn = relyingPartyFromEnv(
     values["public-url"] ?? process.env.TURNTABLE_PUBLIC_URL?.trim(),
   );
@@ -1109,6 +1157,7 @@ async function serve(args: string[]): Promise<void> {
       observed: forwarded.snapshot(),
       db: readerOf(db),
       masterKeys,
+      ...(laneSupervisor ? { releaseLane: () => laneSupervisor.status() } : {}),
       humanApprovalGaps: () => countHumanWithoutApprover(settings, db),
       humanAnyKeyPolicy: () => countHumanWithAnyKeyPolicy(settings, db),
     });
@@ -1129,6 +1178,7 @@ async function serve(args: string[]): Promise<void> {
         ...(vault ? { vault } : {}),
         ...(webauthn ? { webauthn } : {}),
         ...(releaseConfig ? { releaseConfig } : {}),
+        ...(laneSupervisor ? { releaseLane: laneSupervisor } : {}),
         ...(artifactStore ? { artifactBlobs: artifactStore } : {}),
         operatorOrgSlug: process.env.TURNTABLE_BOOTSTRAP_ORG?.trim() || "local",
         ...(oidc ? { oidc } : {}),
@@ -1213,6 +1263,7 @@ async function serve(args: string[]): Promise<void> {
       ...(cache ? { cache } : {}),
       ...(artifacts ? { artifacts } : {}),
       ...(jobOidc ? { jobOidc } : {}),
+      ...(preparedLane ? { laneChannel: preparedLane.channel } : {}),
     },
   );
 
@@ -1230,6 +1281,8 @@ async function serve(args: string[]): Promise<void> {
     void background
       .stop()
       .then(() => server?.stop())
+      // Last: running release jobs may still be using the lane's proxy while the scheduler drains.
+      .then(() => laneSupervisor?.stop())
       .finally(() => {
         db.close();
         process.exit(0);

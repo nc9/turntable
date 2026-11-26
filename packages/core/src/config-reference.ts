@@ -350,6 +350,19 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
   },
   // ---- Release lane ----
   {
+    name: "TURNTABLE_LANE_SUPERVISED",
+    area: "Release lane",
+    default: "off",
+    description:
+      "Set to `1` to run the release lane as this server's supervised child process (`serve --roles release`, restarted with backoff): one container, two processes. Every `TURNTABLE_RELEASE_*` variable is removed from the server's own environment and goes to the child alone; the channel between them is a unix socket in a 0700 directory under keys made at boot. Not with `TURNTABLE_PUBLISH_CHANNEL_*` or the lane's `TURNTABLE_RELEASE_CHANNEL_*` (the supervisor makes the channel). On Postgres the child also needs `TURNTABLE_RELEASE_DATABASE_URL`. See the release lane page.",
+  },
+  {
+    name: "TURNTABLE_RELEASE_DATABASE_URL",
+    area: "Release lane",
+    description:
+      "The supervised lane's own Postgres URL (a role limited to what the lane reads and writes); the main URL is never passed to the child. Required with `TURNTABLE_LANE_SUPERVISED` on Postgres.",
+  },
+  {
     name: "TURNTABLE_RELEASE_MASTER_KEY_FILE",
     area: "Release lane",
     description:

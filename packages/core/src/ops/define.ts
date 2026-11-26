@@ -4,6 +4,7 @@ import type { Scope } from "../db/repos";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
 import type { LaneConfigClient } from "../release/channel-client";
+import type { LaneAvailability } from "../release/supervisor";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
@@ -75,6 +76,8 @@ export type OpContext = {
   webauthn?: RelyingParty | undefined;
   /** The release lane's config channel (the `release_*` ops); absent when no lane is configured. */
   releaseConfig?: LaneConfigClient | undefined;
+  /** Whether the supervised release lane can take a request now; absent when it is not supervised here. */
+  releaseLane?: { availability(): LaneAvailability } | undefined;
   /** The stored artifact bytes, for the ops that serve them; absent when artifacts are off. */
   artifactBlobs?: ArtifactBlobs | undefined;
   /** Slug of the operator org (the bootstrap org, default `local`): the only org whose owners configure the lane. */
