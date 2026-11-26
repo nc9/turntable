@@ -241,6 +241,29 @@ export const checksModeSetting = defineSetting({
   toml: "checks_mode",
 });
 
+export const prCodeScanningUploadSetting = defineSetting({
+  key: "pr_code_scanning_upload",
+  scope: "project",
+  type: z.boolean(),
+  default: false,
+  // Owner or admin may change it; turning it on is a loosening, so a web session needs a fresh
+  // passkey step-up and no token (org, instance or MCP) may enable it.
+  role: "admin",
+  trust: "tighten_only",
+  strictValue: false,
+  mcpEditable: false,
+  mcpReason: "it lets pull request code write code scanning data, so only a person changes it",
+  description:
+    "Lets a job of a trusted pull request keep `security_events: write` in its GITHUB_TOKEN when its workflow declares it, so a CodeQL analyze step can upload SARIF on pull requests. Only that scope: every other write stays lowered to read. An untrusted pull request never gets it, and a project whose `checks_mode` is not `live` stays read-only.",
+  warning:
+    "Code of a trusted pull request can then write code scanning data for the repository: upload analyses and change alert state. It is limited to trusted authors.",
+  loosens: (before, after) =>
+    after === true && before !== true
+      ? ["a trusted pull request job can now write code scanning data (security_events: write)"]
+      : [],
+  toml: "pr_code_scanning_upload",
+});
+
 /** How long after an org's last approver revocation `bootstrap_approver` stays refused. */
 export const DEFAULT_APPROVER_REBOOTSTRAP_DELAY_HOURS = 24;
 
@@ -644,6 +667,7 @@ export const settingsRegistry = createSettingsRegistry([
   untrustedRunApprovalSetting,
   checksModeSetting,
   prApprovalLabelSetting,
+  prCodeScanningUploadSetting,
   runDispatchAgentsSetting,
   approvalPolicySetting,
   schedulingClassSetting,

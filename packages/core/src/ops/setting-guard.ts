@@ -245,6 +245,22 @@ export async function effectiveChecksMode(
   return r.value === "shadow" || r.value === "live" ? r.value : "off";
 }
 
+/** Whether a project lets a trusted pull request job keep `security_events: write` (default off). */
+export async function effectivePrCodeScanningUpload(
+  rt: SettingsRuntime | undefined,
+  db: Db,
+  orgId: string,
+  projectId: string,
+): Promise<boolean> {
+  const r = await resolveSetting(
+    rt ?? createSettingsRuntime(settingsRegistry),
+    db,
+    "pr_code_scanning_upload",
+    await projectSubject(db, orgId, projectId),
+  );
+  return r.value === true;
+}
+
 /**
  * The effective `run_dispatch_agents` of one project (environment, `turntable.toml`, stored value,
  * default). A value that is not a known policy reads as `none` (fail closed).

@@ -341,3 +341,39 @@ describe("owner and admin sessions (#578)", () => {
     expect(await h.effective()).toBe("human");
   });
 });
+
+describe("pr_code_scanning_upload (#705)", () => {
+  const CS = "pr_code_scanning_upload";
+  const on = { key: CS, value: true, project: "web" };
+
+  test("enabling it is a loosening: step-up for a session, never an org token or MCP, audited", async () => {
+    const h = await harness();
+    const def = settingsRegistry.get(CS)!;
+    expect(def.trust).toBe("tighten_only");
+    expect(def.mcpEditable).toBe(false);
+    expect(loosens(def, false, true)).toBe(true);
+    expect(loosens(def, true, false)).toBe(false);
+    expect(await h.effective(CS)).toBe(false);
+    const without = await h.as("owner", "set_setting", on);
+    expect(reasonOf(without)).toBe("step_up_required");
+    expect(await h.effective(CS)).toBe(false);
+    const ok = await h.as("owner", "set_setting", { ...on, step_up: await h.stepUp(on) });
+    expect(ok.ok).toBe(true);
+    expect(await h.effective(CS)).toBe(true);
+    const row = (await listAudit(h.db, { orgId: h.org.id }, { limit: 20 })).find(
+      (x) => x.op === "setting_changed",
+    );
+    expect(JSON.stringify(row)).toContain("security_events");
+    // switching it off needs no step-up
+    const off = await h.as("owner", "set_setting", { ...on, value: false });
+    expect(off.ok).toBe(true);
+    expect(await h.effective(CS)).toBe(false);
+  });
+
+  test("a member is refused by role", async () => {
+    const h = await harness();
+    const r = await h.as("member", "set_setting", on);
+    expect(!r.ok && r.error.code).toBe("forbidden");
+    expect(await h.effective(CS)).toBe(false);
+  });
+});

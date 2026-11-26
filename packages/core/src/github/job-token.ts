@@ -23,7 +23,9 @@ export interface CappedPermissions {
 /**
  * What the token may carry:
  * - `untrusted_pr`: contents read, whatever the workflow asked for;
- * - `trusted_pr`: what was asked for, but never write;
+ * - `trusted_pr`: what was asked for, but never write, except `security_events: write` when the
+ *   project allows it (`codeScanningUpload`, the `pr_code_scanning_upload` setting) and the
+ *   workflow declared it;
  * - `protected` and `release`: what was asked for;
  * then never more than the installation was granted (`granted`, when known). `metadata: read` is
  * always present, since GitHub grants it with every installation token. There is no id-token
@@ -33,6 +35,7 @@ export function capPermissions(
   declared: Readonly<Record<string, PermissionLevel>>,
   klass: TrustClass,
   granted?: Readonly<Record<string, string>>,
+  opts: { codeScanningUpload?: boolean } = {},
 ): CappedPermissions {
   const notes: string[] = [];
   // Only names an installation token can carry; id_token and the like never get through.
@@ -47,7 +50,9 @@ export function capPermissions(
     want = { contents: "read" };
   } else if (klass === "trusted_pr") {
     for (const [k, v] of Object.entries(want)) {
-      if (v === "write") {
+      if (v === "write" && k === "security_events" && opts.codeScanningUpload === true) {
+        notes.push("security_events: write kept for code scanning (pr_code_scanning_upload)");
+      } else if (v === "write") {
         want[k] = "read";
         notes.push(`${k}: write lowered to read for a pull request`);
       }
@@ -109,6 +114,8 @@ export interface IssueRequest {
    * run can never repeat a write. Read by the caller at issue time from the effective setting.
    */
   readOnly?: boolean;
+  /** The project's `pr_code_scanning_upload`: a trusted PR keeps `security_events: write`. */
+  codeScanningUpload?: boolean;
 }
 
 /** The notice a side-by-side run gets when its declared permissions were lowered. */
@@ -197,6 +204,7 @@ export class JobTokens {
       declared.declared ? declared.permissions : DEFAULT_PERMISSIONS,
       r.klass,
       granted,
+      { codeScanningUpload: r.codeScanningUpload === true },
     );
     let lowered = false;
     if (r.readOnly === true) {
