@@ -128,6 +128,10 @@ export const getRun = defineOp({
         at: z.string(),
         head_sha: z.string(),
         workflow_hash: z.string(),
+        via: z
+          .object({ kind: z.literal("label"), label: z.string(), event_id: z.string() })
+          .optional()
+          .describe("Set when a pull request label approved the run (`approval.label`)."),
       })
       .nullable()
       .describe("Who approved the run and what they approved; null until approved."),
@@ -152,6 +156,7 @@ export const getRun = defineOp({
           at: number;
           head_sha: string;
           workflow_hash: string;
+          via?: { kind: "label"; label: string; event_id: string };
         })
       : undefined;
     return {

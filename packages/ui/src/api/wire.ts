@@ -25,6 +25,15 @@ export type WireRun = {
   trust?: WireTrust | null;
 };
 
+export type WireApproval = {
+  by: string;
+  at: string;
+  head_sha: string;
+  workflow_hash: string;
+  /** Set when a pull request label approved the run. */
+  via?: { kind: "label"; label: string; event_id: string };
+};
+
 export type WireTrust = {
   class: TrustClass;
   reasons: string[];
@@ -97,7 +106,7 @@ export type WireJob = {
   log_path: string | null;
 };
 
-export type WireRunDetail = WireRun & { jobs: WireJob[] };
+export type WireRunDetail = WireRun & { jobs: WireJob[]; approval?: WireApproval | null };
 export type WireRunList = { runs: WireRun[]; next_cursor: string | null };
 
 export type WireLog = {
