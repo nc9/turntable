@@ -4,7 +4,7 @@
 import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
-import { logStoreFor } from "../../logstore/registry";
+import { externalLogStore, logStoreFor } from "../../logstore/registry";
 import { appendEvent } from "./events";
 import { sandboxSeconds } from "./usage";
 
@@ -125,12 +125,52 @@ async function storedBytesIn(
   return Number(arts?.n ?? 0) + Number(cache?.n ?? 0);
 }
 
+const ORG_BYTES_TTL_MS = 30_000;
+const orgBytesSeen = new Map<string, { at: number; n: number; fetching: boolean }>();
+
+/**
+ * The org's external log bytes without waiting on the store: the last known figure (0 before the
+ * first one), refreshed in the background. For the claim transaction, which must not do HTTP, and
+ * which fails open while the store is down.
+ */
+function orgBytesNoWait(store: { orgBytes(o: string): Promise<number> }, orgId: string): number {
+  const hit = orgBytesSeen.get(orgId);
+  const stale = !hit || Date.now() - hit.at >= ORG_BYTES_TTL_MS;
+  if (stale && !hit?.fetching) {
+    const e = hit ?? { at: 0, n: 0, fetching: false };
+    e.fetching = true;
+    orgBytesSeen.set(orgId, e);
+    void store
+      .orgBytes(orgId)
+      .then((n) => {
+        e.n = n;
+        e.at = Date.now();
+      })
+      .catch(() => {
+        // keep the last figure; retry after a short pause
+        e.at = Date.now() - ORG_BYTES_TTL_MS + 5_000;
+      })
+      .finally(() => {
+        e.fetching = false;
+      });
+  }
+  return hit?.n ?? 0;
+}
+
 export async function quotaUsage(
   db: Db,
   orgId: string,
   now: number,
   limits: Pick<OrgQuotas, "maxLogBytes">,
+  opts: { noWait?: boolean } = {},
 ): Promise<QuotaUsage> {
+  // An external store is asked before the transaction opens (or not waited on at all, in the claim
+  // path): no HTTP while the write lock is held.
+  const ext = externalLogStore();
+  let extBytes: number | null | undefined;
+  if (ext && limits.maxLogBytes !== null) {
+    extBytes = opts.noWait ? orgBytesNoWait(ext, orgId) : await ext.orgBytes(orgId);
+  }
   // The same exact figure the Usage page shows: provider create to destroy, finish or now (see usage.ts).
   const sandbox = await sandboxSeconds(db, { orgId }, { from: now - DAY_MS, to: now, now });
   return db.run(async (h) => {
@@ -150,7 +190,12 @@ export async function quotaUsage(
         ),
       );
     // Summing log bytes scans the whole store for the org: only worth it when a limit needs it.
-    const logBytes = limits.maxLogBytes !== null ? await logStoreFor(h).orgBytes(orgId) : null;
+    const logBytes =
+      extBytes !== undefined
+        ? extBytes
+        : limits.maxLogBytes !== null
+          ? await logStoreFor(h).orgBytes(orgId)
+          : null;
     const stored = await storedBytesIn(h, orgId);
     return {
       concurrent: Number(conc?.n ?? 0),

@@ -121,7 +121,7 @@ async function cachedUsage(
   // A limit set since the entry was cached needs the measured figure, not the skipped one.
   const measured = limits.maxLogBytes === null || hit?.usage.logBytes != null;
   if (ttl > 0 && hit && measured && Math.abs(now - hit.at) < ttl) return hit.usage;
-  const usage = await quotaUsage(db, orgId, now, limits);
+  const usage = await quotaUsage(db, orgId, now, limits, { noWait: true });
   m.set(orgId, { at: now, usage });
   return usage;
 }

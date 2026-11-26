@@ -13,21 +13,21 @@ keeps only metadata: cuts, notices and the incomplete flags.
 | Setting | Value |
 | --- | --- |
 | `TURNTABLE_LOG_STORE` | `db` (default) or `clickhouse` |
-| `TURNTABLE_CLICKHOUSE_URL` | Base URL of the HTTP interface, for example `http://clickhouse.railway.internal:8123` |
+| `TURNTABLE_CLICKHOUSE_URL` | Base URL of the HTTP interface, for example `http://clickhouse:8123` |
 | `TURNTABLE_CLICKHOUSE_USER`, `TURNTABLE_CLICKHOUSE_PASSWORD` | Credentials, sent as headers |
 | `TURNTABLE_CLICKHOUSE_DATABASE` | Database for the table (the default database when unset) |
 | `TURNTABLE_LOG_RETENTION_DAYS` | Retention, default 90 |
 | `TURNTABLE_LOG_QUEUE_MIB` | Write queue memory, default 64 |
 
-The server talks to ClickHouse over HTTP through the same outbound client as every other
-request, so it adds no dependency. That client refuses private addresses and plain http unless the
-host is listed: add the ClickHouse host to `TURNTABLE_NET_ALLOW_HOSTS`. A wrong setting stops the
-boot with a message; it never falls back to the database silently.
+The server talks to ClickHouse over HTTP through the outbound client, so it adds no dependency.
+The store gets its own client that lets only the ClickHouse host be private or plain http. You do
+not add it to `TURNTABLE_NET_ALLOW_HOSTS`, so org webhooks cannot reach it. A wrong setting stops
+the boot with a message; it never falls back to the database silently.
 
 ## The table
 
-The server creates this table at boot when it is missing, and applies the retention to it each
-boot:
+The server creates this table at boot when it is missing, and applies the retention to it at boot
+when it changed:
 
 ```sql
 CREATE TABLE IF NOT EXISTS log_chunks (
@@ -50,6 +50,11 @@ retried batch) is read once: the first copy at an offset wins, as in the databas
 - **Writes never block.** An append puts the chunk in a bounded in-memory queue and returns. A
   timer sends batches over HTTP with a deadline per request. Nothing waits on ClickHouse in the
   request path, in a database transaction or on the event loop.
+- **Reads call the store outside the database gate**, and the claim path uses the last known org
+  log size (refreshed in the background, 0 before the first one) so a down store never stops
+  scheduling.
+- **Deleting a project** removes its logs from the store after the database commit; if the store
+  is down the retention TTL removes them.
 - **Reads include queued chunks**, so a live tail does not wait for a flush.
 - **Tail** reads only the last bytes asked for. **Size** is the end of the highest chunk.
 - **Grep** has a server-side prefilter (`positionCaseInsensitiveUTF8` or `match`) that returns the

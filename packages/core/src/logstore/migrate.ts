@@ -1,6 +1,6 @@
 // Copies recent logs from `log_chunks` into the configured external store (#717). Safe to run
 // again: an attempt whose store copy already has the same chunk count and size is skipped, and a
-// partly copied one is copied again (the store ignores a second write at the same offset).
+// partly copied one is completed: only the offsets the store lacks are written.
 // Verification compares chunk count and size per attempt after the copy is flushed.
 import type { Db } from "../db";
 import { listLoggedAttempts, readLogChunkPage } from "../db/repos/log-migrate";
@@ -51,11 +51,16 @@ export async function migrateLogs(
         out.verified += 1;
         continue;
       }
+      // A partly copied attempt skips the offsets the store already has: the table keeps a second
+      // write at an offset as a second row, so copying them again would count them twice.
+      const present = new Set<number>();
+      if (have.chunks > 0) for (const c of await store.read(key)) present.add(c.offset);
       let from = 0;
       for (;;) {
         const chunks = await readLogChunkPage(db, key, from, PAGE_CHUNKS);
         if (chunks.length === 0) break;
         for (const c of chunks) {
+          if (present.has(c.offset)) continue;
           await store.append(key, c.offset, c.bytes);
           out.chunks += 1;
           out.bytes += c.bytes.length;

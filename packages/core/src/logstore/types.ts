@@ -44,6 +44,8 @@ export interface LogStore {
   grep(key: LogKey, q: LogGrepQuery): Promise<LogGrepResult>;
   /** Removes an attempt's log. */
   deleteAttempt(key: LogKey): Promise<void>;
+  /** Removes every log of a project (the project was deleted). */
+  deleteProject(orgId: string, projectId: string): Promise<void>;
   /** Total stored bytes of an org (the log quota). */
   orgBytes(orgId: string): Promise<number>;
   /** Waits until everything accepted so far is durable. Throws when the store is unreachable. */

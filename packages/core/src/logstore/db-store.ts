@@ -117,6 +117,12 @@ export class DbLogStore implements LogStore {
     await this.#db.orm.delete(s.logChunks).where(scopeOf(key));
   }
 
+  async deleteProject(orgId: string, projectId: string): Promise<void> {
+    await this.#db.orm
+      .delete(s.logChunks)
+      .where(and(eq(s.logChunks.orgId, orgId), eq(s.logChunks.projectId, projectId)));
+  }
+
   async orgBytes(orgId: string): Promise<number> {
     const [row] = await this.#db.run((h) =>
       h.orm

@@ -443,10 +443,9 @@ export function jobsForRuns(db: Db, scope: Scope, runIds: readonly string[]): Pr
 
 /** Total bytes of an attempt's log (0 when none or out of scope). */
 export function logSize(db: Db, scope: Scope, attemptId: string): Promise<number> {
-  return db.run(async (h) => {
-    const key = await readableLogKey(h, scope, attemptId);
-    return key ? (await logStoreFor(h).stat(key)).size : 0;
-  });
+  return db
+    .run((h) => readableLogKey(h, scope, attemptId))
+    .then(async (key) => (key ? (await logStoreFor(db).stat(key)).size : 0));
 }
 
 /**
@@ -460,11 +459,10 @@ export function readLogRange(
   from: number,
   to: number,
 ): Promise<Buffer> {
-  return db.run(async (h) => {
-    if (to <= from) return Buffer.alloc(0);
-    const key = await readableLogKey(h, scope, attemptId);
-    return key ? logStoreFor(h).range(key, from, to) : Buffer.alloc(0);
-  });
+  if (to <= from) return Promise.resolve(Buffer.alloc(0));
+  return db
+    .run((h) => readableLogKey(h, scope, attemptId))
+    .then((key) => (key ? logStoreFor(db).range(key, from, to) : Buffer.alloc(0)));
 }
 
 // ---- projects ----

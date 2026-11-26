@@ -24,6 +24,8 @@ export type FakeClickHouse = {
   /** While true, requests never answer (until the caller's deadline). */
   hang: boolean;
   inserts: number;
+  /** The TTL the table was last given, in days. */
+  ttlDays: number | undefined;
 };
 
 export function fakeClickHouse(): FakeClickHouse {
@@ -35,6 +37,7 @@ export function fakeClickHouse(): FakeClickHouse {
     down: undefined,
     hang: false,
     inserts: 0,
+    ttlDays: undefined,
     fetch: async (input, init) => {
       const url = new URL(String(input));
       const body = String(init?.body ?? "");
@@ -91,7 +94,21 @@ export function fakeClickHouse(): FakeClickHouse {
       }
       const sql = body.replace(/ FORMAT JSONEachRow$/, "");
       f.statements.push(sql);
-      if (sql.startsWith("CREATE TABLE") || sql.includes("MODIFY TTL")) return ok();
+      if (sql.startsWith("CREATE TABLE") || sql.includes("MODIFY TTL")) {
+        const m = /INTERVAL (\d+) DAY/.exec(sql);
+        if (m && (f.ttlDays === undefined || sql.includes("MODIFY TTL"))) f.ttlDays = Number(m[1]);
+        return ok();
+      }
+      if (sql.includes("FROM system.tables")) {
+        return lines(f.ttlDays === undefined ? [] : [{ q: `TTL x + INTERVAL ${f.ttlDays} DAY` }]);
+      }
+      if (
+        sql.startsWith("ALTER TABLE") &&
+        sql.includes(" DELETE WHERE org_id = {o:String} AND project_id")
+      ) {
+        f.rows = f.rows.filter((r) => !(r.org === p("o") && r.project === p("p")));
+        return ok();
+      }
       if (sql.startsWith("ALTER TABLE") && sql.includes(" DELETE WHERE")) {
         const k = rowsOf();
         f.rows = f.rows.filter((r) => !k.includes(r));

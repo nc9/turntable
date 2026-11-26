@@ -8,7 +8,7 @@
 // so a live tail does not wait for a flush.
 //
 // Every DateTime64 column is DateTime64(3, 'UTC'); a test pins that.
-import { safeFetch, type SafeFetch } from "@turntable/net";
+import { createHttpClient, type SafeFetch } from "@turntable/net";
 import {
   assembleRange,
   type LogChunk,
@@ -52,7 +52,7 @@ export class ClickHouseError extends Error {
   }
 }
 
-type Entry = { key: LogKey; offset: number; bytes: Uint8Array; ms: number };
+type Entry = { key: LogKey; offset: number; bytes: Uint8Array; ms: number; dead?: boolean };
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 const attemptKey = (k: LogKey): string => `${k.orgId}\u0000${k.projectId}\u0000${k.attemptId}`;
@@ -119,16 +119,28 @@ export class ClickHouseLogStore implements LogStore {
     this.#maxBatch = o.maxBatchBytes ?? 4 * 1024 * 1024;
     this.#interval = o.flushIntervalMs ?? 200;
     this.#timeout = o.requestTimeoutMs ?? 10_000;
-    this.#fetch = o.fetch ?? safeFetch;
+    // The default client allows only the store's own host to be private or plain http, so the
+    // store needs no entry in the global allow list (which org webhooks would share).
+    this.#fetch =
+      o.fetch ??
+      createHttpClient({ allowHosts: [u.hostname.replace(/^\[|\]$/g, "")], userAgent: "turntable" })
+        .fetch;
     this.#now = o.now ?? Date.now;
   }
 
   /** Creates the table when missing and applies the retention. Call once at boot. */
   async ensureSchema(): Promise<void> {
     await this.#post(createTableSql(this.#table, this.#retention));
-    await this.#post(
-      `ALTER TABLE ${this.#table} MODIFY TTL toDateTime(received_at, 'UTC') + INTERVAL ${this.#retention} DAY`,
+    // Changing the TTL rewrites parts, so it is applied only when the stored one differs.
+    const [row] = await this.#select(
+      "SELECT create_table_query AS q FROM system.tables WHERE database = currentDatabase() AND name = {t:String}",
+      { t: this.#table },
     );
+    if (!row?.q?.includes(`INTERVAL ${this.#retention} DAY`)) {
+      await this.#post(
+        `ALTER TABLE ${this.#table} MODIFY TTL toDateTime(received_at, 'UTC') + INTERVAL ${this.#retention} DAY`,
+      );
+    }
   }
 
   /** Bytes waiting to be sent, and whether the last send failed. For the doctor and tests. */
@@ -198,7 +210,10 @@ export class ClickHouseLogStore implements LogStore {
             await this.#insert(batch);
           } catch (err) {
             // Keep the batch at the head, in order, and back off.
-            this.#queue.unshift(...batch);
+            // A chunk deleted while on the wire is not sent again.
+            const live = batch.filter((e) => !e.dead);
+            this.#queueBytes -= batch.reduce((n, e) => n + (e.dead ? e.bytes.length : 0), 0);
+            this.#queue.unshift(...live);
             this.#inflight = [];
             this.#failures += 1;
             this.#lastError = err instanceof Error ? err.message : String(err);
@@ -441,7 +456,10 @@ export class ClickHouseLogStore implements LogStore {
         if (drop) this.#queueBytes -= e.bytes.length;
         return !drop;
       });
-      for (const e of [...m.values()]) if (!this.#inflight.includes(e)) m.delete(e.offset);
+      for (const e of [...m.values()]) {
+        if (this.#inflight.includes(e)) e.dead = true;
+        else m.delete(e.offset);
+      }
       if (m.size === 0) this.#index.delete(ak);
     }
     if (this.#sending) await this.#sending.catch(() => {});
@@ -449,6 +467,34 @@ export class ClickHouseLogStore implements LogStore {
     const q: Record<string, string> = { mutations_sync: "1" };
     for (const [k, v] of Object.entries(w.params)) q[`param_${k}`] = v;
     await this.#post(`ALTER TABLE ${this.#table} DELETE WHERE ${w.sql}`, q);
+  }
+
+  async deleteProject(orgId: string, projectId: string): Promise<void> {
+    // Same order as deleteAttempt: drop what is queued, let an insert on the wire finish, delete.
+    const dropAll = (e: Entry): boolean => e.key.orgId === orgId && e.key.projectId === projectId;
+    const gone = this.#queue.filter(dropAll);
+    this.#queue = this.#queue.filter((e) => !dropAll(e));
+    for (const e of gone) this.#queueBytes -= e.bytes.length;
+    for (const e of this.#inflight) if (dropAll(e)) e.dead = true;
+    for (const [ak, m] of [...this.#index]) {
+      for (const e of [...m.values()]) {
+        if (!dropAll(e)) continue;
+        if (this.#inflight.includes(e)) e.dead = true;
+        else m.delete(e.offset);
+      }
+      if (m.size === 0) this.#index.delete(ak);
+    }
+    if (this.#sending) await this.#sending.catch(() => {});
+    await this.#post(
+      "ALTER TABLE " +
+        this.#table +
+        " DELETE WHERE org_id = {o:String} AND project_id = {p:String}",
+      {
+        mutations_sync: "1",
+        param_o: orgId,
+        param_p: projectId,
+      },
+    );
   }
 
   async orgBytes(orgId: string): Promise<number> {

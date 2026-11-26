@@ -773,10 +773,11 @@ export function readLog(
   attemptId: string,
   fromOffset = 0,
 ): Promise<{ offset: number; bytes: Buffer }[]> {
-  return db.run(async (h) => {
-    const key = await readableLogKey(h, scope, attemptId);
-    return key ? logStoreFor(h).read(key, fromOffset) : [];
-  });
+  // The key is resolved in the database; the store is called after, so a slow store never holds
+  // the database gate.
+  return db
+    .run((h) => readableLogKey(h, scope, attemptId))
+    .then((key) => (key ? logStoreFor(db).read(key, fromOffset) : []));
 }
 
 export * from "./webhooks";

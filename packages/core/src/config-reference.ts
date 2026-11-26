@@ -978,7 +978,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Server",
     default: "db",
     description:
-      "Where job logs are stored: `db` (the main database, one binary) or `clickhouse` (a ClickHouse service, over HTTP). `clickhouse` needs `TURNTABLE_CLICKHOUSE_URL`, and the URL's host must be in `TURNTABLE_NET_ALLOW_HOSTS` when it is private or plain http. See [Log store](/log-store).",
+      "Where job logs are stored: `db` (the main database, one binary) or `clickhouse` (a ClickHouse service, over HTTP). `clickhouse` needs `TURNTABLE_CLICKHOUSE_URL`; its host may be private or plain http without an allow-list entry. See [Log store](/log-store).",
   },
   {
     name: "TURNTABLE_CLICKHOUSE_URL",

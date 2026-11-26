@@ -12,6 +12,8 @@ import {
   logSize,
   openDatabase,
   readLog,
+  deleteProjectCascade,
+  quotaUsage,
   readLogRange,
   resetAttemptOutput,
 } from "../src/db";
@@ -450,7 +452,7 @@ describe("log_store_migrate", () => {
     expect(
       (await store.read({ orgId: t.orgId, projectId: t.projectId, attemptId: t.attemptId })).length,
     ).toBe(5);
-    expect(fake.rows.length).toBeGreaterThanOrEqual(5);
+    expect(fake.rows.length).toBe(5);
   });
 
   test("a store that loses a chunk is reported as a mismatch", async () => {
@@ -478,5 +480,96 @@ describe("log_store_migrate", () => {
     const { db, store } = await world();
     const r = await migrateLogs(db, store, { days: 1, now: Date.now() + 3 * 86_400_000 });
     expect(r.attempts).toBe(0);
+  });
+});
+
+describe("review fixes (#719)", () => {
+  function hungWorld() {
+    const fake = fakeClickHouse();
+    const store = new ClickHouseLogStore({
+      url: "http://ch.test",
+      fetch: fake.fetch,
+      requestTimeoutMs: 400,
+      flushIntervalMs: 1,
+    });
+    return { fake, store };
+  }
+
+  test("log reads wait on the store outside the database gate", async () => {
+    const db = openDatabase(":memory:");
+    const t = await seedTenant(db, "org-a");
+    const { fake, store } = hungWorld();
+    setLogStore(store);
+    fake.hang = true;
+    const reads = [
+      readLog(db, t.scope, t.attemptId),
+      logSize(db, t.scope, t.attemptId),
+      readLogRange(db, t.scope, t.attemptId, 0, 10),
+    ].map((p) => p.catch(() => undefined));
+    await Bun.sleep(20);
+    const t0 = performance.now();
+    await db.transaction(async (tx) => {
+      await listCuts(tx, t.scope, t.attemptId);
+    });
+    expect(performance.now() - t0).toBeLessThan(150);
+    await Promise.all(reads);
+  });
+
+  test("quota usage in the claim path does not wait on the store and fails open", async () => {
+    const db = openDatabase(":memory:");
+    const t = await seedTenant(db, "org-quota");
+    const { fake, store } = hungWorld();
+    setLogStore(store);
+    fake.hang = true;
+    const t0 = performance.now();
+    const u = await quotaUsage(db, t.orgId, Date.now(), { maxLogBytes: 1000 }, { noWait: true });
+    expect(performance.now() - t0).toBeLessThan(150);
+    expect(u.logBytes).toBe(0);
+    await Bun.sleep(450);
+  });
+
+  test("deleting a project removes its logs from the external store", async () => {
+    const db = openDatabase(":memory:");
+    const t = await seedTenant(db, "org-del");
+    const { fake, store } = hungWorld();
+    setLogStore(store);
+    await appendLog(db, t.scope, t.attemptId, 0, enc("keep me not\n"));
+    await store.flush();
+    expect(fake.rows.length).toBe(1);
+    expect(await deleteProjectCascade(db, { orgId: t.orgId }, t.projectId)).toBe(true);
+    expect(fake.rows.length).toBe(0);
+    expect(await store.orgBytes(t.orgId)).toBe(0);
+  });
+
+  test("a chunk deleted while on the wire is not sent again after a failed send", async () => {
+    const fake = fakeClickHouse();
+    const store = new ClickHouseLogStore({
+      url: "http://ch.test",
+      fetch: fake.fetch,
+      flushIntervalMs: 1,
+      backoffMs: 1,
+    });
+    const key = { orgId: "o", projectId: "p", attemptId: "a" };
+    fake.down = new Error("down");
+    await store.append(key, 0, enc("x\n"));
+    await Bun.sleep(30);
+    await store.deleteAttempt(key).catch(() => {});
+    fake.down = undefined;
+    await store.flush().catch(() => {});
+    await store.flush();
+    expect(fake.rows.length).toBe(0);
+  });
+
+  test("the retention is applied at boot only when it changed", async () => {
+    const fake = fakeClickHouse();
+    const mk = (days: number) =>
+      new ClickHouseLogStore({ url: "http://ch.test", fetch: fake.fetch, retentionDays: days });
+    await mk(30).ensureSchema();
+    const alters = () => fake.statements.filter((s) => s.includes("MODIFY TTL")).length;
+    expect(alters()).toBe(0);
+    await mk(30).ensureSchema();
+    expect(alters()).toBe(0);
+    await mk(60).ensureSchema();
+    expect(alters()).toBe(1);
   });
 });
