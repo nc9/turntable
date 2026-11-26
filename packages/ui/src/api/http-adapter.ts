@@ -34,6 +34,7 @@ import type {
   LaneKey,
   LaneCosignKey,
   LaneSecretStatus,
+  ApprovalPolicy,
   StepUpChallenge,
   Whoami,
   JobAttempt,
@@ -42,6 +43,7 @@ import type {
   Org,
   Project,
   Run,
+  RunApproval,
   RunDetail,
   StepEvent,
   Artifact,
@@ -79,6 +81,7 @@ import type {
   WireProjects,
   WireRerun,
   WireRun,
+  WireApproval,
   WireRunDetail,
   WireRunList,
   WireSetting,
@@ -211,6 +214,16 @@ export function mapRun(w: WireRun, org: string): Run {
     createdAt: ms(w.created_at) ?? 0,
     startedAt: ms(w.started_at),
     finishedAt: ms(w.finished_at),
+  };
+}
+
+function mapApproval(a: WireApproval): RunApproval {
+  return {
+    by: a.by,
+    at: ms(a.at),
+    ...(a.via
+      ? { via: { kind: "label" as const, label: a.via.label, eventId: a.via.event_id } }
+      : {}),
   };
 }
 
@@ -446,7 +459,9 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
           attempts.set(a.id, { jobId: j.id, attempt: a.attempt, state: a.state });
         }
       }
-      return { run: mapRun(w, slug), jobs, attempts: atts };
+      const run = mapRun(w, slug);
+      if (w.approval) run.approval = mapApproval(w.approval);
+      return { run, jobs, attempts: atts };
     },
 
     async jobLog({ attemptId, offset, limit }): Promise<LogSlice> {
@@ -816,6 +831,36 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       );
     },
 
+    async getApprovalPolicy(): Promise<ApprovalPolicy> {
+      return mapApprovalPolicy(
+        await call<WireApprovalPolicy>("GET", "/approval-policy", { org: org() }),
+      );
+    },
+
+    async setApprovalPolicy({
+      environment,
+      required,
+      allowAuthorApproval,
+      keyPolicy,
+      stepUp,
+    }): Promise<ApprovalPolicy> {
+      return mapApprovalPolicy(
+        await call<WireApprovalPolicy>(
+          "POST",
+          "/approval-policy",
+          {},
+          {
+            org: org(),
+            environment,
+            required,
+            allow_author_approval: allowAuthorApproval,
+            key_policy: keyPolicy,
+            ...(stepUp ? { step_up: stepUp } : {}),
+          },
+        ),
+      );
+    },
+
     async incidentStatus(args): Promise<IncidentStatus> {
       const w = await call<WireIncident>("GET", "/incident", {
         org: org(),
@@ -1070,6 +1115,13 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
           source: p.source,
         })),
         warnings: w.warnings,
+        defaultMode: w.default_mode,
+        instanceLoosenings: w.instance_loosenings.map((l) => ({
+          at: ms(l.at) ?? 0,
+          by: l.by,
+          reason: l.reason,
+          loosened: l.loosened,
+        })),
       };
     },
 
@@ -1293,4 +1345,36 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
     },
   };
   return api;
+}
+
+type WireApprovalPolicy = {
+  environments: {
+    environment: string;
+    required: number;
+    allow_author_approval: boolean;
+    key_policy: "any" | "hardware";
+    gated: boolean;
+    source: "configured" | "default";
+  }[];
+  source: ApprovalPolicy["source"];
+  locked: boolean;
+  locked_by: string | null;
+  approvers: number;
+};
+
+export function mapApprovalPolicy(w: WireApprovalPolicy): ApprovalPolicy {
+  return {
+    environments: w.environments.map((e) => ({
+      environment: e.environment,
+      required: e.required,
+      allowAuthorApproval: e.allow_author_approval,
+      keyPolicy: e.key_policy,
+      gated: e.gated,
+      source: e.source,
+    })),
+    source: w.source,
+    locked: w.locked,
+    lockedBy: w.locked_by,
+    approvers: w.approvers,
+  };
 }

@@ -3,6 +3,7 @@ import { EmptyState } from "@/components/empty-state";
 import { SettingsSection } from "@/features/settings/settings-section";
 import { useScope } from "@/features/shell/scope";
 import { useWhoami } from "@/lib/directory";
+import { ProjectSecretsSection } from "./project-secrets-section";
 import { RemoveProject } from "./remove-project";
 
 export function SettingsPage() {
@@ -37,6 +38,13 @@ export function SettingsPage() {
           <h2 className="mb-3 text-sm font-semibold">Settings</h2>
           <SettingsSection key={scope.project.id} project={scope.project.slug} />
         </div>
+      ) : null}
+      {scope.project && scope.orgSlug ? (
+        <ProjectSecretsSection
+          key={`secrets-${scope.project.id}`}
+          org={scope.orgSlug}
+          project={scope.project.slug}
+        />
       ) : null}
       {scope.project && scope.orgSlug ? (
         <RemoveProject

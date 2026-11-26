@@ -522,6 +522,8 @@ test("human approvals: status, approvers, challenges, enrolment and the signatur
       pending_enrolments: true,
       policies: true,
       warnings: true,
+      default_mode: true,
+      instance_loosenings: true,
     }),
   );
   expectKeys(approvers.properties!.approvers!.items!, [

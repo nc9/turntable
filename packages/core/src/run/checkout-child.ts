@@ -27,9 +27,10 @@ import { scrubToken, tokenMessage } from "./scrub-token";
 /** The forge answered 401 or 403 (or 404 to a request that carried a token). Never retried. */
 export class CheckoutAuthError extends Error {
   readonly status: number;
-  constructor(status: number) {
+  constructor(status: number, message?: string) {
     super(
-      `the checkout was refused by GitHub (HTTP ${status}): check that the Turntable CI App installation can read this repository`,
+      message ??
+        `the checkout was refused by GitHub (HTTP ${status}): check that the Turntable CI App installation can read this repository`,
     );
     this.name = "CheckoutAuthError";
     this.status = status;
@@ -269,7 +270,17 @@ export interface ChildRequest {
   /** Deliver the full history, tags and default branch (a job asked for `fetch-depth: 0`). */
   fullHistory?: boolean;
   dir: string;
-  out: string;
+  /** The tarball to write (required by the `full` and `pack` stages). */
+  out?: string;
+  /**
+   * Which part of a checkout this child does. `full` (default): fetch, write and pack, as before.
+   * With submodules the parent runs `tree` (fetch and write, and list the submodules to
+   * `manifest`), one `module` per submodule (fetch into a scratch `dir`, scan it, move its `.git`
+   * to `moduleGitDir`) and a last `pack` over the finished tree.
+   */
+  stage?: "full" | "tree" | "module" | "pack";
+  manifest?: string;
+  moduleGitDir?: string;
   allowHosts?: readonly string[];
   config?: Partial<CheckoutConfig>;
   signal?: AbortSignal | undefined;
@@ -288,6 +299,8 @@ export interface ChildResult {
   sha: string;
   files: number;
   tarballBytes: number;
+  /** What the fetch spent of the limits (absent for the `pack` stage). */
+  usage?: { files: number; packBytes: number; inflatedBytes: number; objects: number };
 }
 
 async function readCapped(stream: ReadableStream<Uint8Array> | null, cap: number): Promise<string> {
@@ -328,13 +341,16 @@ async function runChild(r: ChildRequest): Promise<ChildResult> {
   if (!/^[0-9a-f]{40}$/.test(r.sha))
     throw new Error("the commit must be a 40 character lower-case sha");
   const log = r.log ?? ((m: string) => console.warn(`[turntable] ${m}`));
+  const stage = r.stage ?? "full";
   const argv = [
     ...(r.command ?? selfCommand()),
     "fetch-source",
     "--dir",
     r.dir,
-    "--out",
-    r.out,
+    ...(stage === "full" || stage === "pack" ? ["--out", r.out ?? ""] : []),
+    ...(stage === "pack" ? ["--pack"] : []),
+    ...(r.manifest ? ["--manifest", r.manifest] : []),
+    ...(r.moduleGitDir ? ["--module-git-dir", r.moduleGitDir] : []),
     "--limits",
     JSON.stringify(limits),
     "--max-memory-mib",
@@ -421,9 +437,26 @@ async function runChild(r: ChildRequest): Promise<ChildResult> {
       const line = err.trim().split("\n").filter(Boolean).at(-1) ?? `exit ${code}`;
       throw new Error(`the checkout failed: ${clean(scrubToken(line, r.token))}`);
     }
-    const m = /^ok ([0-9a-f]{40}) files=(\d+) tarball=(\d+)$/m.exec(out);
+    const m =
+      /^ok ([0-9a-f]{40}) files=(\d+) tarball=(\d+)(?: pack=(\d+) unpacked=(\d+) objects=(\d+))?$/m.exec(
+        out,
+      );
     if (!m) throw new Error("the checkout gave no result");
-    return { sha: m[1] as string, files: Number(m[2]), tarballBytes: Number(m[3]) };
+    return {
+      sha: m[1] as string,
+      files: Number(m[2]),
+      tarballBytes: Number(m[3]),
+      ...(m[4] !== undefined
+        ? {
+            usage: {
+              files: Number(m[2]),
+              packBytes: Number(m[4]),
+              inflatedBytes: Number(m[5]),
+              objects: Number(m[6]),
+            },
+          }
+        : {}),
+    };
   } finally {
     clearInterval(timer);
     r.signal?.removeEventListener("abort", onAbort);

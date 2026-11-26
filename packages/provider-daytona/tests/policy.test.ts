@@ -16,7 +16,7 @@ import {
 describe("customer-account rules", () => {
   test("the constants are what the account owner agreed to", () => {
     expect(DEFAULT_MAX_LIVE).toBe(2);
-    expect(HARD_MAX_LIVE).toBe(10);
+    expect(HARD_MAX_LIVE).toBe(500);
     expect(MAX_TTL_SECONDS).toBe(1800);
     expect(NAME_PREFIX).toBe("longshore-dev-");
   });
@@ -25,8 +25,9 @@ describe("customer-account rules", () => {
     expect(clampMaxLive(undefined)).toBe(2);
     expect(clampMaxLive(1)).toBe(1);
     expect(clampMaxLive(3)).toBe(3);
-    expect(clampMaxLive(10)).toBe(10);
-    expect(() => clampMaxLive(11)).toThrow(/ceiling/);
+    expect(clampMaxLive(50)).toBe(50);
+    expect(clampMaxLive(500)).toBe(500);
+    expect(() => clampMaxLive(501)).toThrow(/ceiling/);
     expect(() => clampMaxLive(0)).toThrow();
     expect(() => clampMaxLive(1.5)).toThrow();
   });

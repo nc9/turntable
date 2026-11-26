@@ -21,22 +21,43 @@ export const approvalPolicyMap = z.record(z.string().min(1).max(100), envPolicyE
 export type EnvPolicyEntry = z.infer<typeof envPolicyEntry>;
 export type ApprovalPolicyMap = z.infer<typeof approvalPolicyMap>;
 
-/** What an environment with no entry has: protected ones need two people, the rest need none. */
-export function defaultEnvEntry(environment: string): { entry: EnvPolicyEntry; gated: boolean } {
+/**
+ * Which built-in default an org without an explicit entry is under (#663). `solo`: at most one
+ * person could approve, so a protected environment needs one approver and lets the author be it.
+ * `strict`: two people, author excluded. An org moves to strict when a second eligible person
+ * exists and never back on its own.
+ */
+export type DefaultMode = "solo" | "strict";
+
+/**
+ * What an environment with no entry has: protected ones need two people (one in `solo` mode), the
+ * rest need none. `mode` only ever relaxes the protected environments of an org that has no one
+ * else to ask.
+ */
+export function defaultEnvEntry(
+  environment: string,
+  mode: DefaultMode = "strict",
+): { entry: EnvPolicyEntry; gated: boolean } {
   const gated = PROTECTED_ENVIRONMENTS.includes(environment);
+  const solo = gated && mode === "solo";
   return {
     entry: {
-      required: gated ? 2 : 1,
-      allow_author_approval: false,
+      required: gated && !solo ? 2 : 1,
+      allow_author_approval: solo,
       key_policy: "any",
     },
     gated,
   };
 }
 
-const effective = (map: ApprovalPolicyMap, environment: string) => {
+/** One environment's effective entry in a map: its own, or the built-in default. */
+export const effective = (
+  map: ApprovalPolicyMap,
+  environment: string,
+  mode: DefaultMode = "strict",
+) => {
   const e = map[environment];
-  return e ? { entry: e, gated: true } : defaultEnvEntry(environment);
+  return e ? { entry: e, gated: true } : defaultEnvEntry(environment, mode);
 };
 
 /**

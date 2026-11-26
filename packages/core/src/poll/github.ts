@@ -104,6 +104,23 @@ export interface TagRuleset {
   updatedAt?: number | undefined;
 }
 
+/** Pages of 100 timeline events read for one pull request. */
+const MAX_TIMELINE_PAGES = 10;
+
+/** One `labeled` event of a pull request. `actor.type` is GitHub's `User`, `Bot` and so on. */
+export type LabeledEvent = {
+  id: string;
+  at: number;
+  actor: { login: string; type: string } | null;
+  label: string;
+};
+
+export type PrTimeline = {
+  labeled: LabeledEvent[];
+  /** Epoch ms of the latest `committed` or `head_ref_force_pushed` event, if any was listed. */
+  lastPush: number | undefined;
+};
+
 export class GithubClient {
   readonly #fetch: FetchLike;
   readonly #base: string;
@@ -635,6 +652,60 @@ export class GithubClient {
         if (err.status === 404) return "none";
         if (err.status === 401 || err.status === 403) return "unknown";
       }
+      throw err;
+    }
+  }
+
+  /**
+   * The facts of a pull request's timeline that a label approval is judged on, from
+   * `GET /repos/{o}/{r}/issues/{n}/timeline`: every `labeled` event (id, time, who, which label)
+   * and the time of the latest `committed` or `head_ref_force_pushed` event. Undefined when the
+   * timeline is longer than the pages read (the latest events would be missing), or when the
+   * API cannot be read (401, 403, 404): the caller must then not approve.
+   */
+  async prTimeline(repo: string, pr: number): Promise<PrTimeline | undefined> {
+    const labeled: LabeledEvent[] = [];
+    let lastPush: number | undefined;
+    const at = (v: unknown): number | undefined => {
+      const t = typeof v === "string" ? Date.parse(v) : Number.NaN;
+      return Number.isFinite(t) ? t : undefined;
+    };
+    try {
+      for (let page = 1; page <= MAX_TIMELINE_PAGES; page++) {
+        const body = (await this.#get(
+          `/repos/${repo}/issues/${pr}/timeline?per_page=100&page=${page}`,
+        )) as unknown;
+        if (!Array.isArray(body)) return undefined;
+        for (const e of body as Record<string, unknown>[]) {
+          const kind = e.event;
+          if (kind === "labeled") {
+            const actor = e.actor as { login?: unknown; type?: unknown } | null | undefined;
+            const label = e.label as { name?: unknown } | undefined;
+            const time = at(e.created_at);
+            if (typeof label?.name !== "string" || time === undefined) continue;
+            labeled.push({
+              id: String(e.id ?? ""),
+              at: time,
+              actor:
+                typeof actor?.login === "string"
+                  ? { login: actor.login, type: typeof actor.type === "string" ? actor.type : "" }
+                  : null,
+              label: label.name,
+            });
+          } else if (kind === "head_ref_force_pushed" || kind === "committed") {
+            const c = e.committer as { date?: unknown } | undefined;
+            const a = e.author as { date?: unknown } | undefined;
+            const time = kind === "committed" ? (at(c?.date) ?? at(a?.date)) : at(e.created_at);
+            // A commit with no date cannot be placed before the label: fail closed.
+            if (time === undefined) return undefined;
+            lastPush = Math.max(lastPush ?? 0, time);
+          }
+        }
+        if (body.length < 100) return { labeled, lastPush };
+      }
+      return undefined;
+    } catch (err) {
+      if (err instanceof GithubError && [401, 403, 404].includes(err.status)) return undefined;
       throw err;
     }
   }

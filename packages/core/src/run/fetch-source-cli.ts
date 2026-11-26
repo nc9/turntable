@@ -13,7 +13,7 @@
 import { parseArgs } from "node:util";
 import { readTarGz } from "@turntable/act-runner";
 import { gitRepoSource } from "../scheduler/act-runner";
-import { isRepoPart, performCheckout } from "./checkout";
+import { isRepoPart, packCheckout, performCheckout } from "./checkout";
 import { checkoutConfigFromEnv } from "./checkout-child";
 import {
   budgetLimitOf,
@@ -42,6 +42,7 @@ const NUMERIC_LIMITS = [
   "maxTreeBytes",
   "maxTarballBytes",
   "maxRefs",
+  "maxSubmodules",
   "timeoutMs",
 ] as const;
 
@@ -108,6 +109,9 @@ export async function fetchSourceCommand(
       "max-memory-mib": { type: "string" },
       "token-stdin": { type: "boolean", default: false },
       "full-history": { type: "boolean", default: false },
+      manifest: { type: "string" },
+      "module-git-dir": { type: "string" },
+      pack: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -131,31 +135,60 @@ export async function fetchSourceCommand(
   const owner = m[1] as string;
   const name = m[2] as string;
   const allowHosts = values["allow-host"] ?? [];
+  // Stops the process when its parent is gone or its memory is over the ceiling.
+  const newStop = (): (() => void) =>
+    makeCheckpoint({
+      parentPid: process.ppid,
+      getParentPid: () => process.ppid,
+      rss: () => process.memoryUsage.rss(),
+      maxRssBytes: Number(values["max-memory-mib"] ?? 0) * 1024 * 1024,
+      onStop: (why) => {
+        console.error(`fetch-source failed: ${why}`);
+        process.exit(70);
+      },
+    });
   let token: string | undefined;
   try {
     // The credential, when there is one, arrives on stdin and nowhere else (never argv, never env).
     if (values["token-stdin"]) token = parseTokenMessage(await Bun.stdin.text());
-    if (values.out !== undefined) {
+    if (values.pack) {
+      // Only packs a tree the earlier stages wrote (the main checkout and its modules).
+      if (values.out === undefined || values.dir === undefined) {
+        console.error(FETCH_SOURCE_USAGE);
+        return 2;
+      }
+      const stop = newStop();
+      const watchdog = setInterval(stop, 1000);
+      const r = await packCheckout({
+        dir: values.dir,
+        out: values.out,
+        limits: parseLimits(values.limits),
+        checkpoint: stop,
+      });
+      clearInterval(watchdog);
+      out(`ok ${sha.toLowerCase()} files=0 tarball=${r.tarballBytes}`);
+      return 0;
+    }
+    if (
+      values.out !== undefined ||
+      values.manifest !== undefined ||
+      values["module-git-dir"] !== undefined
+    ) {
       // The checkout itself, as the worker's child process. It stops, without a word, when its
       // parent is gone (an orphan holding a directory and a socket for nobody), and when its own
       // memory passes the ceiling, whichever it notices first: at the checkpoints of its loops and
       // on a timer while it waits on the network.
-      const stop = makeCheckpoint({
-        parentPid: process.ppid,
-        getParentPid: () => process.ppid,
-        rss: () => process.memoryUsage.rss(),
-        maxRssBytes: Number(values["max-memory-mib"] ?? 0) * 1024 * 1024,
-        onStop: (why) => {
-          console.error(`fetch-source failed: ${why}`);
-          process.exit(70);
-        },
-      });
+      const stop = newStop();
       const watchdog = setInterval(stop, 1000);
       const r = await performCheckout({
         owner,
         repo: name,
         sha,
-        out: values.out,
+        ...(values.out !== undefined ? { out: values.out } : {}),
+        ...(values.manifest !== undefined ? { manifest: values.manifest } : {}),
+        ...(values["module-git-dir"] !== undefined
+          ? { moduleGitDir: values["module-git-dir"] }
+          : {}),
         ...(values.dir ? { dir: values.dir } : {}),
         ...(values.url ? { url: values.url } : {}),
         limits: parseLimits(values.limits),
@@ -165,7 +198,9 @@ export async function fetchSourceCommand(
         ...(values["full-history"] ? { fullHistory: true } : {}),
       });
       clearInterval(watchdog);
-      out(`ok ${r.sha} files=${r.files} tarball=${r.tarballBytes}`);
+      out(
+        `ok ${r.sha} files=${r.files} tarball=${r.tarballBytes} pack=${r.usage.packBytes} unpacked=${r.usage.inflatedBytes} objects=${r.usage.objects}`,
+      );
       return 0;
     }
     const co = await gitRepoSource({ allowHosts, config: checkoutConfigFromEnv() }).checkout(

@@ -65,7 +65,12 @@ const DOCKER_KEYS = new Set(["docker", "maxFileBytes", "runtime"]);
 export function createProvider(
   name: string,
   config: Record<string, unknown> = {},
-  opts: { hosted?: boolean; pins?: readonly PluginPin[] } = {},
+  opts: {
+    hosted?: boolean;
+    pins?: readonly PluginPin[];
+    /** Limits read at each sandbox create (#661); the Daytona provider uses them. */
+    limits?: () => { maxLive?: number | undefined; cpuLimit?: number | undefined };
+  } = {},
 ): Provider {
   if (!isProviderName(name)) {
     // Not built in: gated by hosted mode and a digest pin, and no external loader exists yet.
@@ -77,13 +82,17 @@ export function createProvider(
       `plugin ${name} (${path}) matches its pinned digest, but this build has no external provider loader; use one of: ${PROVIDER_NAMES.join(", ")}`,
     );
   }
-  const provider = build(name, config);
+  const provider = build(name, config, opts.limits);
   // The declaration is checked at registration, before the scheduler relies on it.
   checkProviderInfo(name, provider.info, BUILTIN_CEILINGS[name]);
   return provider;
 }
 
-function build(name: ProviderName, config: Record<string, unknown>): Provider {
+function build(
+  name: ProviderName,
+  config: Record<string, unknown>,
+  limits?: () => { maxLive?: number | undefined; cpuLimit?: number | undefined },
+): Provider {
   switch (name) {
     case "docker": {
       const unknown = Object.keys(config).filter((k) => !DOCKER_KEYS.has(k));
@@ -100,7 +109,7 @@ function build(name: ProviderName, config: Record<string, unknown>): Provider {
       });
     }
     case "daytona":
-      return createDaytona(config);
+      return createDaytona(config, limits);
   }
 }
 
@@ -223,7 +232,10 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
  * prefix come from `fleet` (default `longshore-dev`), the 30 minute backstops, the owner-CI preflight and the ceiling of 10 live
  * sandboxes (the default is 2) are fixed in the provider and cannot be configured away.
  */
-function createDaytona(config: Record<string, unknown>): Provider {
+function createDaytona(
+  config: Record<string, unknown>,
+  limits?: () => { maxLive?: number | undefined; cpuLimit?: number | undefined },
+): Provider {
   const unknown = Object.keys(config).filter((k) => !DAYTONA_KEYS.has(k));
   if (unknown.length > 0) {
     throw new Error(
@@ -273,6 +285,7 @@ function createDaytona(config: Record<string, unknown>): Provider {
     ...(quotaMode ? { quotaMode } : {}),
     ...(labels ? { ownerCiLabels: labels } : {}),
     ...(labelWaitAt !== undefined ? { ownerCiLabelWaitAt: labelWaitAt } : {}),
+    ...(limits ? { limits } : {}),
     clampTtl: true,
     ...(ttl !== undefined ? { maxTtlSeconds: ttl } : {}),
   });

@@ -634,6 +634,7 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
     "listDir",
     "openPulls",
     "peelTag",
+    "prTimeline",
     "pullState",
     "pushEvents",
     "queueBranches",

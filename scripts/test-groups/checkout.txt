@@ -4,3 +4,4 @@ packages/core/tests/git-fetch.test.ts
 packages/core/tests/checkout-token.test.ts
 packages/core/tests/checkout-full-history.test.ts
 packages/core/tests/checkout-limits.test.ts
+packages/core/tests/checkout-submodules.test.ts

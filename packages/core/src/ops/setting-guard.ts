@@ -15,6 +15,7 @@ import {
 import { loosens, type SettingDef } from "../settings/define";
 import { type Resolved, resolveSetting, type SettingSubject } from "../settings/resolve";
 import { createSettingsRuntime, type SettingsRuntime } from "../settings/resolve";
+import { ambientSettings } from "../settings/ambient";
 import { OpError } from "./errors";
 import type { Principal } from "./principal";
 import { roleSatisfies } from "./roles";
@@ -209,6 +210,26 @@ export async function effectiveApproval(
     await projectSubject(db, orgId, projectId),
   );
   return r.value as UntrustedRunApproval;
+}
+
+/**
+ * The effective `pr_approval_label` of one project, or "" when it is off. Read through the
+ * process's ambient runtime by the poller, which has no op context. A value that is not a valid
+ * label reads as off (fail closed): the resolver already refuses to use one.
+ */
+export async function effectivePrApprovalLabel(
+  rt: SettingsRuntime | undefined,
+  db: Db,
+  orgId: string,
+  projectId: string,
+): Promise<string> {
+  const r = await resolveSetting(
+    rt ?? ambientSettings(),
+    db,
+    "pr_approval_label",
+    await projectSubject(db, orgId, projectId),
+  );
+  return typeof r.value === "string" ? r.value : "";
 }
 
 /**

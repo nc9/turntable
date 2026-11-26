@@ -597,8 +597,26 @@ describe("checks mode policy", () => {
     expect(
       registry.ops
         .map((o) => o.name)
-        .filter((n) => /checks_mode|check_run|policy/.test(n) && !n.includes("key_policy")),
+        .filter(
+          (n) =>
+            /checks_mode|check_run|policy/.test(n) &&
+            !n.includes("key_policy") &&
+            !n.includes("approval_policy"),
+        ),
     ).toEqual([]);
+    // approval_policy is a different setting (#664): an owner edits it from a web session, with
+    // step-up. It never touches checks_mode, and its ops are the only policy ops left.
+    expect(
+      registry.ops
+        .map((o) => o.name)
+        .filter((n) => n.includes("approval_policy"))
+        .toSorted(),
+    ).toEqual([
+      "approval_policy_challenge",
+      "approve_approval_policy",
+      "get_approval_policy",
+      "set_approval_policy",
+    ]);
   });
 });
 

@@ -12,9 +12,12 @@ import {
   enrolFirstApprover,
   keyPolicyChallenge,
   approveKeyPolicy,
+  approvalPolicyChallenge,
+  approveApprovalPolicy,
   requestEnrolment,
   submitApproval,
 } from "./definitions/approvals";
+import { getApprovalPolicyOp, setApprovalPolicyOp } from "./definitions/approval-policy";
 import { dbBackupOp } from "./definitions/db-backup";
 import { approveRunChallengeOp, approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
@@ -35,6 +38,7 @@ import {
   instanceOrgSummaryOp,
   instanceRunActivityOp,
   instanceRunSummaryOp,
+  instanceInfraErrorsOp,
   instanceAuditVerifyOp,
   instanceListOrgs,
   instanceWhoami,
@@ -149,6 +153,8 @@ import {
   getSettingOp,
   instanceGetSettingOp,
   instanceListSettingsOp,
+  instanceSandboxLimitsOp,
+  sandboxLimitsOp,
   instanceSetSettingOp,
   listSettingsOp,
   setSettingOp,
@@ -221,6 +227,7 @@ export const registry = createRegistry([
   instanceOrgSummaryOp,
   instanceRunActivityOp,
   instanceRunSummaryOp,
+  instanceInfraErrorsOp,
   instanceIngestStatusOp,
   instanceAuditVerifyOp,
   setQuotas,
@@ -252,6 +259,10 @@ export const registry = createRegistry([
   enrolFirstApprover,
   keyPolicyChallenge,
   approveKeyPolicy,
+  approvalPolicyChallenge,
+  approveApprovalPolicy,
+  getApprovalPolicyOp,
+  setApprovalPolicyOp,
   requestEnrolment,
   submitApproval,
   approveEnvironment,
@@ -304,5 +315,7 @@ export const registry = createRegistry([
   setSettingOp,
   instanceGetSettingOp,
   instanceListSettingsOp,
+  instanceSandboxLimitsOp,
+  sandboxLimitsOp,
   instanceSetSettingOp,
 ]);

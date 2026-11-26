@@ -13,6 +13,7 @@ import { createPasskey, signWithPasskey, webauthnAvailable } from "@/lib/webauth
 import { LOGIN_PATH, useSession } from "@/lib/session";
 import { sanitize } from "@/log/parser";
 import { ApiError } from "@/api/http-adapter";
+import { ApprovalDefaultNotice } from "./approval-default-notice";
 
 /** Approver keys, the approval policy, and enrolling a new passkey (which needs a quorum). */
 export function ApproversPage() {
@@ -181,6 +182,8 @@ export function ApproversPage() {
         author cannot approve it.
       </p>
 
+      <ApprovalDefaultNotice mode={d.defaultMode} policies={d.policies} />
+
       {d.warnings.length > 0 ? (
         <div
           role="note"
@@ -193,6 +196,28 @@ export function ApproversPage() {
           ))}
         </div>
       ) : null}
+
+      {d.instanceLoosenings.length > 0 ? (
+        <div
+          role="note"
+          data-instance-loosenings
+          className="mt-5 rounded-lg border border-st-failure/40 bg-st-failure-bg p-3.5 text-sm"
+        >
+          <p className="font-medium">
+            The instance administrator loosened this org's approval policy.
+          </p>
+          {d.instanceLoosenings.map((l) => (
+            <p key={`${l.at}-${l.by}`} className="mt-1 text-foreground">
+              {new Date(l.at).toISOString().slice(0, 16).replace("T", " ")} UTC, by {sanitize(l.by)}
+              : {l.loosened.map(sanitize).join("; ")}. Reason: {sanitize(l.reason)}
+            </p>
+          ))}
+        </div>
+      ) : null}
+
+      <p className="mt-3 text-sm text-dim">
+        Owners change the approval policy under Org settings, then Approvals.
+      </p>
 
       <section aria-labelledby="keys-h" className="mt-6">
         <h2 id="keys-h" className="mb-2 text-sm font-semibold">

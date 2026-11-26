@@ -74,6 +74,8 @@ export interface FetchLimits {
   maxTarballBytes: number;
   /** Most tags a full-history delivery takes. Default 10 000. */
   maxRefs: number;
+  /** Most submodules (nested ones included) one checkout fetches. Default 64. */
+  maxSubmodules: number;
   /** Wall clock for the whole fetch: the requests, and the parsing and writing after them. */
   timeoutMs: number;
 }
@@ -88,6 +90,7 @@ export const DEFAULT_FETCH_LIMITS: FetchLimits = {
   maxTreeBytes: 32 * 1024 * 1024,
   maxTarballBytes: 256 * 1024 * 1024,
   maxRefs: 10_000,
+  maxSubmodules: 64,
   timeoutMs: 300_000,
 };
 
@@ -221,6 +224,8 @@ export interface FetchedCommit {
   refs: { name: string; oid: string }[];
   /** With `full`: every object reachable from the wants, all verified present. */
   reachable?: Set<string>;
+  /** What the fetch used, so a caller that fetches more can share one budget. */
+  usage: { packBytes: number; inflatedBytes: number; objects: number };
 }
 
 export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
@@ -430,7 +435,11 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
       "the server sent no packfile (is the commit reachable, and the repository public?)",
     );
   left();
-  const objects = readPack(concat(pack), limits, deadline, o.checkpoint);
+  const packBytes = concat(pack);
+  const objects = readPack(packBytes, limits, deadline, o.checkpoint);
+  let inflatedBytes = 0;
+  for (const obj of objects.values()) inflatedBytes += obj.data.length;
+  const usage = { packBytes: packBytes.length, inflatedBytes, objects: objects.size };
 
   // 4. The commit asked for must be in it, with its own sha.
   const commit = objects.get(o.sha);
@@ -448,11 +457,12 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   if (!objects.has(tree)) throw new GitFetchError("the pack does not contain the commit's tree");
   const sep = text.indexOf("\n\n");
   const subject = sep < 0 ? "" : (text.slice(sep + 2).split("\n", 1)[0] ?? "");
-  if (!o.fullHistory) return { sha: o.sha, objects, parents, tree, subject, full: false, refs: [] };
+  if (!o.fullHistory)
+    return { sha: o.sha, objects, parents, tree, subject, full: false, refs: [], usage };
   // A full delivery is complete or it is nothing: every commit, tree and blob the wants reach
   // must be in the pack, or the history would look whole to git and not be.
   const reachable = assertConnected(objects, [...wants], limits, o.checkpoint);
-  return { sha: o.sha, objects, parents, tree, subject, full: true, refs, reachable };
+  return { sha: o.sha, objects, parents, tree, subject, full: true, refs, reachable, usage };
 }
 
 /** A ref name git accepts (git-check-ref-format), and nothing that could break a packed-refs line. */
@@ -828,7 +838,7 @@ function* treeEntries(data: Uint8Array): Generator<TreeEntry> {
   }
 }
 
-function safeName(name: string): boolean {
+export function safeName(name: string): boolean {
   return (
     name !== "" &&
     name !== "." &&
@@ -907,7 +917,12 @@ export function materialize(
   c: FetchedCommit,
   remoteUrl: string,
   limits: Partial<FetchLimits> = {},
-  hooks: { beforeWrite?: (path: string) => void; checkpoint?: () => void } = {},
+  hooks: {
+    beforeWrite?: (path: string) => void;
+    checkpoint?: () => void;
+    /** Receives each submodule (gitlink) the tree holds: its path and pinned commit. */
+    gitlinks?: { path: string; sha: string }[];
+  } = {},
 ): Materialized {
   const max = { ...DEFAULT_FETCH_LIMITS, ...limits };
   const deadline = Date.now() + max.timeoutMs;
@@ -980,6 +995,7 @@ export function materialize(
       } else if (e.mode === "160000") {
         create(() => mkdirSync(full)); // a submodule: an empty directory, never fetched
         index.push({ path, mode: 0o160000, oid: e.oid });
+        hooks.gitlinks?.push({ path, sha: e.oid });
       } else {
         const blob = c.objects.get(e.oid);
         if (!blob || blob.type !== "blob")

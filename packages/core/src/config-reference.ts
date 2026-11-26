@@ -216,7 +216,8 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Worker and provider",
     flag: "--global-cap",
     default: "4",
-    description: "Most jobs running at once across the instance.",
+    description:
+      "Most jobs running at once across the instance. Also the `scheduler_global_cap` setting (#661): set here it locks the setting; unset, the instance administrator changes it live with `instance_set_setting` or the web UI, with no restart.",
   },
   {
     name: "TURNTABLE_ORG_CAP",
@@ -224,7 +225,21 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     flag: "--org-cap",
     default: "2",
     description:
-      "Most jobs running at once per org. A stored per-org quota (`set_quotas`) replaces it for that org.",
+      "Most jobs running at once per org. A stored per-org quota (`set_quotas`) replaces it for that org, and cannot exceed it. Also the `scheduler_org_cap` setting (#661): set here it locks the setting; unset, it changes live with `instance_set_setting` or the web UI.",
+  },
+  {
+    name: "TURNTABLE_DAYTONA_MAX_LIVE",
+    area: "Worker and provider",
+    default: "2",
+    description:
+      "Most live Daytona sandboxes of this instance's fleet (1 to 500). The `provider_daytona_max_live` setting (#661): set here it locks the setting; unset, it changes live from the instance settings page.",
+  },
+  {
+    name: "TURNTABLE_DAYTONA_CPU_LIMIT",
+    area: "Worker and provider",
+    default: "200",
+    description:
+      "vCPU in use in the Daytona org above which a create waits. The `provider_daytona_cpu_limit` setting (#661): set here it locks the setting; unset, it changes live from the instance settings page.",
   },
   {
     name: "TURNTABLE_LEASE_SECONDS",
@@ -567,6 +582,27 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     description:
       "Build input for the web UI bundle: the commit baked into the UI by `packages/ui/scripts/build-bundle.ts`, compared with the server's `build_sha`. Set by `scripts/build.ts`; never set by hand.",
   },
+  {
+    name: "TURNTABLE_SLOW_SQL_MS",
+    area: "Server",
+    default: "off",
+    description:
+      "Interim diagnostics (10 to 600000 ms): log every SQLite statement that takes at least this long, with its parameterized SQL text (never the bound values). SQLite calls are synchronous, so a slow one stalls the whole server. Unset turns it off.",
+  },
+  {
+    name: "TURNTABLE_EGRESS_PROBE_SECONDS",
+    area: "Server",
+    default: "off",
+    description:
+      "Interim egress diagnostics (10 to 3600 seconds): every period the server resolves each probe host and sends it one unauthenticated HEAD, logging failures and slow calls with DNS and HTTP timings and the error code, and an OK line every ten minutes. The same switch starts an event-loop stall monitor that logs any stall over 1 s with the open file-descriptor count. Unset turns both off.",
+  },
+  {
+    name: "TURNTABLE_EGRESS_PROBE_HOSTS",
+    area: "Server",
+    default: "github.com,app.daytona.io",
+    description:
+      "Comma-separated host names (1 to 5) the egress probe resolves and sends one HEAD. Host names only; the probe never sends a credential. `api.github.com` is refused here (its anonymous requests share the poller's REST budget); it is always probed by DNS lookup only.",
+  },
   // ---- the checkout child (control plane fetches a run's commit without git) ----
   {
     name: "TURNTABLE_CHECKOUT_TIMEOUT_SECONDS",
@@ -685,6 +721,13 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Hours (at least 1) after an org's last approver was revoked before `bootstrap_approver` may enrol a new first approver. The environment name of the `approver_rebootstrap_delay_hours` setting; set here, it applies to every org and locks the setting. See [Instance administration](/instance-admin).",
   },
   {
+    name: "TURNTABLE_DEFAULT_PROJECT_MAX_CONCURRENT",
+    area: "Server",
+    default: "2",
+    description:
+      "How many attempts at once a project gets when it is added (0 to 1000; 0 adds projects paused). The instance's per-org cap still clamps it. Existing projects keep their value. The environment name of the `default_project_max_concurrent` setting, which `turntable.toml` and the settings page also set.",
+  },
+  {
     name: "TURNTABLE_ORG_REMINT_DELAY_HOURS",
     area: "Server",
     default: "24",
@@ -745,6 +788,12 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Server",
     description:
       'The approval policy for every org on the instance (JSON): a map from environment name to `required`, `allow_author_approval` and `key_policy`, for example `{"release":{"required":1,"allow_author_approval":true}}`. The environment name of the `approval_policy` setting, which `turntable.toml` sets per org and `instance_set_setting` sets for one org. A value here locks it: the CLI and the instance op refuse to change it. See [Human approvals](/security#human-approvals).',
+  },
+  {
+    name: "TURNTABLE_PR_APPROVAL_LABEL",
+    area: "Server",
+    description:
+      "A GitHub label (for example `ci:approved`) that releases a pull request run waiting for approval, for a repo in `prMode: approval`. The environment name of the `pr_approval_label` setting. Empty is off. See [Human approvals](/security#human-approvals).",
   },
   {
     name: "TURNTABLE_SANDBOX_SIZES_JSON",

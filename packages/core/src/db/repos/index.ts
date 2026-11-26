@@ -11,6 +11,7 @@ import { canTransition, exitCodeValid, FINISHED_STATES } from "../job-state";
 import * as s from "../schema";
 import type { JobState } from "../schema";
 import { ulid } from "../ulid";
+import { ratchetApprovalDefault } from "./approval-default";
 import { appendEvent, notifyLogAppended } from "./events";
 import { requireProject, type Scope, scoped } from "./scope";
 
@@ -297,8 +298,12 @@ export function addMember(
   scope: Scope,
   input: { userId: string; role: s.MemberRole },
 ): Promise<void> {
-  return db.run(async (h) => {
-    await h.orm.insert(s.orgMembers).values({ orgId: scope.orgId, ...input });
+  // The strict ratchet shares the transaction: a second owner or admin is never visible without it.
+  return db.transaction(async (tx) => {
+    await tx.run(async (h) => {
+      await h.orm.insert(s.orgMembers).values({ orgId: scope.orgId, ...input });
+    });
+    await ratchetApprovalDefault(tx, scope.orgId);
   });
 }
 
@@ -652,11 +657,14 @@ export function updateAttempt(
     exitCode?: number | null;
     errorClass?: string | null;
     infraKind?: string | null;
+    /** Not a column: the underlying error's name and code, kept on the `infra.error` event. */
+    errorDetail?: { name?: string; code?: string };
     sandboxCreatedAt?: number | null;
     sandboxDestroyedAt?: number | null;
     sandboxTtlSeconds?: number | null;
   },
 ): Promise<JobAttempt | undefined> {
+  const { errorDetail, ...cols } = patch;
   return db.transaction(async (h) => {
     const cur = await getAttempt(h, scope, id);
     if (!cur) return undefined;
@@ -672,7 +680,7 @@ export function updateAttempt(
     const rows = await h.orm
       .update(s.jobAttempts)
       .set({
-        ...patch,
+        ...cols,
         startedAt: patch.state === "running" ? t : undefined,
         finishedAt: patch.state && FINISHED_STATES.includes(patch.state) ? t : undefined,
       })
@@ -712,7 +720,11 @@ export function updateAttempt(
           type: "infra.error",
           jobId: cur.jobId,
           attemptId: id,
-          payload: { error_class: patch.errorClass ?? null },
+          payload: {
+            error_class: patch.errorClass ?? null,
+            ...(errorDetail?.name ? { error_name: errorDetail.name } : {}),
+            ...(errorDetail?.code ? { error_code: errorDetail.code } : {}),
+          },
         });
       }
     }

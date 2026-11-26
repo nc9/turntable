@@ -54,7 +54,7 @@ const asInstance = (settings: SettingsRuntime, input: Record<string, unknown>) =
     { registry, db, settings, allowInstance: true } as DispatchEnv,
     { kind: "bearer", token: instanceSecret },
     "instance_set_setting",
-    { key: KEY, target_org: "org-a", ...input },
+    { key: KEY, target_org: "org-a", reason: "test", ...input },
   );
 
 async function asToken(

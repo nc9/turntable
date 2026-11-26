@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isRetryableInfra, retryableAfterSteps } from "@turntable/act-runner";
+import { type InfraKind, isRetryableInfra, retryableAfterSteps } from "@turntable/act-runner";
 import { type Db, onAttemptsCancelled } from "../db";
 import {
   addCut,
@@ -25,7 +25,9 @@ import {
 import { effectiveChecksMode } from "../ops/setting-guard";
 import { ambientSettings } from "../settings/ambient";
 import { preemptMaxPerJobSetting, preemptWindowMinutesSetting } from "../settings/definitions";
+import { LiveLimits } from "./live-limits";
 import { resolveSetting, type SettingsRuntime } from "../settings/resolve";
+import { type ErrorDetail, errorDetailOf } from "./error-detail";
 import { type DrainState, processDrain } from "./drain";
 import { workflowReadiness } from "./workflow-readiness";
 import type {
@@ -49,8 +51,12 @@ export type SchedulerOptions = {
   heartbeatMs?: number;
   /** How often an idle scheduler looks for work. Default 1 s. */
   pollMs?: number;
+  /** Fixes the global cap (`turntable run`, tests). Default: the live `scheduler_global_cap` setting (#661). */
   globalCap?: number;
+  /** Fixes the per-org cap. Default: the live `scheduler_org_cap` setting. */
   perOrgCap?: number;
+  /** The live limits, shared with the provider's create-time hook. Default: its own. */
+  limits?: LiveLimits;
   /** Decides when a queued job may run and what becomes of dependents of a failed one. */
   readiness?: Readiness;
   /** Told when attempts start and finish (check runs). Never awaited; its errors are logged. */
@@ -74,7 +80,26 @@ export const MAX_RETRY_AFTER_MS = 3_600_000;
 export const INFRA_RETRY_BACKOFF_MS = 10_000;
 
 /** What the scheduler records when a runner throws or returns nonsense. */
-const infra = (reason: string): AttemptOutcome => ({ state: "infra_error", reason });
+const infra = (reason: string, infraKind?: InfraKind, cause?: unknown): AttemptOutcome => {
+  const d = errorDetailOf(cause);
+  return {
+    state: "infra_error",
+    reason,
+    ...(infraKind ? { infraKind } : {}),
+    ...(d.name ? { errorName: d.name } : {}),
+    ...(d.code ? { errorCode: d.code } : {}),
+  };
+};
+
+const detailOf = (o: AttemptOutcome): { errorDetail?: ErrorDetail } =>
+  o.errorName || o.errorCode
+    ? {
+        errorDetail: {
+          ...(o.errorName ? { name: o.errorName } : {}),
+          ...(o.errorCode ? { code: o.errorCode } : {}),
+        },
+      }
+    : {};
 
 /**
  * Claims queued attempts and runs them through the runner, within the global and per-org caps.
@@ -86,9 +111,21 @@ export class Scheduler {
   readonly #o: Required<
     Omit<
       SchedulerOptions,
-      "owner" | "log" | "readiness" | "onlyRun" | "observer" | "settings" | "drain"
+      | "owner"
+      | "log"
+      | "readiness"
+      | "onlyRun"
+      | "observer"
+      | "settings"
+      | "drain"
+      | "globalCap"
+      | "perOrgCap"
+      | "limits"
     >
   > & {
+    globalCap?: number | undefined;
+    perOrgCap?: number | undefined;
+    limits: LiveLimits;
     observer?: AttemptObserver | undefined;
     onlyRun?: string | undefined;
     settings?: SettingsRuntime | undefined;
@@ -119,8 +156,9 @@ export class Scheduler {
       leaseMs,
       heartbeatMs: o.heartbeatMs ?? Math.max(1, Math.floor(leaseMs / 3)),
       pollMs: o.pollMs ?? 1000,
-      globalCap: o.globalCap ?? 4,
-      perOrgCap: o.perOrgCap ?? 2,
+      globalCap: o.globalCap,
+      perOrgCap: o.perOrgCap,
+      limits: o.limits ?? new LiveLimits(o.db, () => o.settings ?? ambientSettings()),
       readiness: o.readiness ?? workflowReadiness,
       onlyRun: o.onlyRun,
       settings: o.settings,
@@ -197,13 +235,16 @@ export class Scheduler {
       // Draining: nothing new starts. Queued work stays queued; running attempts carry on.
       if (this.#o.drain.draining) return started;
       const now = this.#o.now();
+      // Read at every claim (cached for seconds): a raised cap applies to the next one, a lowered
+      // one holds new claims and never touches what is running.
+      const live = await this.#o.limits.read(now);
       const claim = await claimNextAttempt(this.#o.db, {
         owner: this.owner,
         leaseMs: this.#o.leaseMs,
         now,
         preemptLimit: await this.#preemptLimit(now),
-        globalCap: this.#o.globalCap,
-        perOrgCap: this.#o.perOrgCap,
+        globalCap: this.#o.globalCap ?? live.globalCap,
+        perOrgCap: this.#o.perOrgCap ?? live.orgCap,
         quotaCacheMs: 5_000,
         readiness: this.#o.readiness,
         ...(this.#o.onlyRun ? { onlyRun: this.#o.onlyRun } : {}),
@@ -397,7 +438,8 @@ export class Scheduler {
           outcome = await this.#o.runner(ctx);
         }
       } catch (err) {
-        outcome = infra(err instanceof Error ? err.message : String(err));
+        // An exception the runner did not classify: kind `unknown`, retried once (#670).
+        outcome = infra(err instanceof Error ? err.message : String(err), "unknown", err);
       }
       // A transient infra failure waits out the backoff while the lease is still held (the
       // heartbeat runs, a cancel still lands), then retries below. The sandbox is already gone.
@@ -465,6 +507,7 @@ export class Scheduler {
             owner,
             kind: outcome.infraKind,
             reason: outcome.reason,
+            ...detailOf(outcome),
             now: this.#o.now(),
           }).catch((err) => {
             this.#o.log(`could not retry ${attempt.id} after an infra error: ${String(err)}`);
@@ -497,6 +540,7 @@ export class Scheduler {
           ...(outcome.state === "infra_error" && outcome.infraKind
             ? { infraKind: outcome.infraKind }
             : {}),
+          ...(outcome.state === "infra_error" ? detailOf(outcome) : {}),
           readiness: this.#o.readiness,
           ...(outcome.outputs ? { outputs: outcome.outputs } : {}),
         });

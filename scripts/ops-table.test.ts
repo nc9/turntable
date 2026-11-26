@@ -47,6 +47,12 @@ const MCP_OFF: Record<string, string> = {
   approve_release:
     "signature op: a human-signed statement over the release manifest, never a token",
   approve_enrolment: "signature op: a human-signed statement, never a token",
+  approval_policy_challenge:
+    "loosening the approval policy is a human act: an agent never creates the statement approvers sign",
+  get_approval_policy:
+    "the approval policy is an owner's to read and change: a person in a browser",
+  set_approval_policy:
+    "it decides how many people must approve a release: an owner's web session only, never an agent",
   key_policy_challenge: "changing which approver keys count is a human act, like enrolment",
   instance_whoami:
     "instance administrator ops are REST only: that token is never given to an agent",
@@ -122,6 +128,8 @@ const MCP_OFF: Record<string, string> = {
   instance_run_activity:
     "instance administrator ops are REST only: cross-tenant run counts are the operator's deploy check, never an agent's",
   instance_run_summary: "instance operator view; not an agent's decision",
+  instance_infra_errors:
+    "instance administrator ops are REST only: sanitized cross-tenant error text is the operator's diagnosis, never an agent's",
   instance_bind_github_login:
     "instance administrator ops are REST only: granting an org's first admin or owner is the operator's act, never an agent's",
   invite_member:
@@ -136,6 +144,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: instance settings (and where a locked one is set) are the operator's",
   instance_list_settings:
     "instance administrator ops are REST only: instance settings (and where a locked one is set) are the operator's",
+  instance_sandbox_limits:
+    "instance administrator ops are REST only: the read for the instance settings page; agents read sandbox_limits",
   instance_set_setting:
     "instance administrator ops are REST only: instance settings are the operator's, never changed from an agent's context",
 };

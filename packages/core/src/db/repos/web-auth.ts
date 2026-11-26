@@ -6,6 +6,7 @@ import type { Db } from "..";
 import * as s from "../schema";
 import type { MemberRole } from "../schema";
 import { ulid } from "../ulid";
+import { ratchetApprovalDefault } from "./approval-default";
 import { appendAudit } from "./audit";
 import { appendEvent } from "./events";
 import { type Scope, scoped } from "./scope";
@@ -316,6 +317,7 @@ export function completeSignIn(
       await tx.orm
         .insert(s.orgMembers)
         .values({ orgId: invite.orgId, userId: uid, role: invite.role });
+      await ratchetApprovalDefault(tx, invite.orgId);
       joined.push({
         orgId: invite.orgId,
         slug,
