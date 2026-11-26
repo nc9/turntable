@@ -583,6 +583,13 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Build input for the web UI bundle: the commit baked into the UI by `packages/ui/scripts/build-bundle.ts`, compared with the server's `build_sha`. Set by `scripts/build.ts`; never set by hand.",
   },
   {
+    name: "TURNTABLE_SLOW_SQL_MS",
+    area: "Server",
+    default: "off",
+    description:
+      "Interim diagnostics (10 to 600000 ms): log every SQLite statement that takes at least this long, with its parameterized SQL text (never the bound values). SQLite calls are synchronous, so a slow one stalls the whole server. Unset turns it off.",
+  },
+  {
     name: "TURNTABLE_EGRESS_PROBE_SECONDS",
     area: "Server",
     default: "off",
