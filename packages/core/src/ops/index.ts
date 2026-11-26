@@ -149,6 +149,8 @@ import {
   getSettingOp,
   instanceGetSettingOp,
   instanceListSettingsOp,
+  instanceSandboxLimitsOp,
+  sandboxLimitsOp,
   instanceSetSettingOp,
   listSettingsOp,
   setSettingOp,
@@ -304,5 +306,7 @@ export const registry = createRegistry([
   setSettingOp,
   instanceGetSettingOp,
   instanceListSettingsOp,
+  instanceSandboxLimitsOp,
+  sandboxLimitsOp,
   instanceSetSettingOp,
 ]);

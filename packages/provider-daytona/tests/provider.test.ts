@@ -1462,7 +1462,7 @@ describe("live limits (#661)", () => {
   });
 
   test("a live max_live is still clamped to the hard ceiling", async () => {
-    const p = make({ limits: () => ({ maxLive: 11 }) });
+    const p = make({ limits: () => ({ maxLive: 501 }) });
     await expect(p.create(spec())).rejects.toBeInstanceOf(RangeError);
   });
 

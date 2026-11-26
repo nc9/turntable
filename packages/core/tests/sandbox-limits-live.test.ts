@@ -237,7 +237,77 @@ describe("surfaces and audit", () => {
 
   test("values outside the range are refused", async () => {
     expect((await setKey("scheduler_global_cap", 0)).ok).toBe(false);
-    expect((await setKey("provider_daytona_max_live", 11)).ok).toBe(false);
+    expect((await setKey("provider_daytona_max_live", 501)).ok).toBe(false);
+    expect((await setKey("provider_daytona_max_live", 50)).ok).toBe(true);
     expect((await setKey("provider_daytona_cpu_limit", "many")).ok).toBe(false);
+  });
+});
+
+describe("effective concurrency and the read-only MCP listing (#661)", () => {
+  type Limits = {
+    limits: { key: string; value: number; source: string; locked: boolean }[];
+    effective_concurrency: {
+      value: number;
+      bounded_by: string;
+      org_cap: number;
+      cpu_limit: number;
+    };
+  };
+
+  test("the instance read is the lower of the global cap and max_live, and follows a change", async () => {
+    await setKey("scheduler_global_cap", 40);
+    await setKey("provider_daytona_max_live", 50);
+    const r = await asInstance("instance_sandbox_limits", {});
+    const out = r.ok ? (r.output as Limits) : undefined;
+    expect(out?.effective_concurrency).toMatchObject({
+      value: 40,
+      bounded_by: "scheduler_global_cap",
+    });
+    expect(out?.limits.map((l) => l.key).sort()).toEqual([
+      "provider_daytona_cpu_limit",
+      "provider_daytona_max_live",
+      "scheduler_global_cap",
+      "scheduler_org_cap",
+    ]);
+    await setKey("provider_daytona_max_live", 6);
+    const r2 = await asInstance("instance_sandbox_limits", {});
+    expect(r2.ok && (r2.output as Limits).effective_concurrency).toMatchObject({
+      value: 6,
+      bounded_by: "provider_daytona_max_live",
+    });
+  });
+
+  test("an env lock shows in the read, and the MCP listing is read-only", async () => {
+    const e: DispatchEnv = {
+      ...env,
+      settings: createSettingsRuntime(settingsRegistry, { TURNTABLE_GLOBAL_CAP: "3" }),
+    };
+    const r = await asInstance("instance_sandbox_limits", {}, e);
+    const g = r.ok ? (r.output as Limits).limits.find((l) => l.key === "scheduler_global_cap") : 0;
+    expect(g).toMatchObject({ value: 3, source: "env", locked: true });
+    const names = mcpTools(registry).map((t) => t.name);
+    expect(names).toContain("sandbox_limits");
+    expect(names).not.toContain("instance_sandbox_limits");
+    expect(names).not.toContain("instance_set_setting");
+    const op = registry.get("sandbox_limits")!;
+    expect(op.effect).toBe("read");
+  });
+
+  test("a database value is validated when it is written, so boot never meets a bad one", async () => {
+    for (const bad of [0, 501, 1.5, "50"]) {
+      expect((await setKey("provider_daytona_max_live", bad)).ok).toBe(false);
+    }
+    expect((await setKey("provider_daytona_max_live", 500)).ok).toBe(true);
+    expect((await resolveSetting(env.settings!, db, "provider_daytona_max_live")).value).toBe(500);
+  });
+
+  test("a locked max_live of 50 in the config document resolves and the provider accepts it", async () => {
+    const e = createSettingsRuntime(settingsRegistry, {
+      TURNTABLE_PROVIDER_CONFIG_JSON: JSON.stringify({ maxLive: 50 }),
+    });
+    expect(await resolveSetting(e, db, "provider_daytona_max_live")).toMatchObject({
+      value: 50,
+      locked: true,
+    });
   });
 });

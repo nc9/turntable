@@ -232,7 +232,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Worker and provider",
     default: "2",
     description:
-      "Most live Daytona sandboxes of this instance's fleet (1 to 10). The `provider_daytona_max_live` setting (#661): set here it locks the setting; unset, it changes live from the instance settings page.",
+      "Most live Daytona sandboxes of this instance's fleet (1 to 500). The `provider_daytona_max_live` setting (#661): set here it locks the setting; unset, it changes live from the instance settings page.",
   },
   {
     name: "TURNTABLE_DAYTONA_CPU_LIMIT",
