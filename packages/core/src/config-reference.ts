@@ -350,6 +350,19 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
   },
   // ---- Release lane ----
   {
+    name: "TURNTABLE_LANE_SUPERVISED",
+    area: "Release lane",
+    default: "off",
+    description:
+      "Set to `1` to run the release lane as this server's supervised child process (`serve --roles release`, restarted with backoff): one container, two processes. Every `TURNTABLE_RELEASE_*` variable is removed from the server's own environment and goes to the child alone; the channel between them is a unix socket in a 0700 directory under keys made at boot. Not with `TURNTABLE_PUBLISH_CHANNEL_*` or the lane's `TURNTABLE_RELEASE_CHANNEL_*` (the supervisor makes the channel). On Postgres the child also needs `TURNTABLE_RELEASE_DATABASE_URL`. See the release lane page.",
+  },
+  {
+    name: "TURNTABLE_RELEASE_DATABASE_URL",
+    area: "Release lane",
+    description:
+      "The supervised lane's own Postgres URL (a role limited to what the lane reads and writes); the main URL is never passed to the child. Required with `TURNTABLE_LANE_SUPERVISED` on Postgres.",
+  },
+  {
     name: "TURNTABLE_RELEASE_MASTER_KEY_FILE",
     area: "Release lane",
     description:
@@ -985,6 +998,11 @@ export const NOT_CONFIGURATION: readonly string[] = [
   "TURNTABLE_STEP_IO", // set by the step shim for the processes it starts
   "TURNTABLE_RELEASE", // the prefix of the release lane variables
   "TURNTABLE_CHECKOUT", // the prefix of the checkout variables
+  "TURNTABLE_LANE_CHILD", // set by the supervisor on the release lane child it starts, never by an operator
+  "TURNTABLE_RELEASE_CHANNEL_KEY", // the inline form of the documented _KEY_FILE variable; the supervisor sets it for its child
+  "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY", // the inline form of the documented _CONFIG_KEY_FILE variable
+  "TURNTABLE_RELEASE_CHANNEL", // the prefix of the release channel variables
+  "TURNTABLE_PUBLISH_CHANNEL", // the prefix of the publish channel variables
   "TURNTABLE_CI", // an example project var name in the `policy set --var` help text
   "TURNTABLE_TEST_DB", // the test harness: run the suites against Postgres
   "TURNTABLE_TEST_PGLITE_ISOLATED", // the test harness

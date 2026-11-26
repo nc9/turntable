@@ -17,6 +17,9 @@ export type Role = (typeof ROLES)[number];
 /** The release lane's key variables: read once by the lane, never left in an environment. */
 export const RELEASE_KEY_ENV = "TURNTABLE_RELEASE_MASTER_KEY";
 export const RELEASE_KEY_PREVIOUS_ENV = "TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS";
+/** The channel's keys by value, for a supervised lane: its parent makes them per boot and they never touch disk. */
+export const RELEASE_CHANNEL_KEY_ENV = "TURNTABLE_RELEASE_CHANNEL_KEY";
+export const RELEASE_CHANNEL_CONFIG_KEY_ENV = "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY";
 export const MAIN_ROLES: readonly Role[] = ["web", "worker", "poller"];
 
 /** Every environment variable that belongs to the release lane and to nothing else. */
@@ -104,7 +107,12 @@ export interface ReleaseConfig {
    */
   channel?:
     | {
-        keyFile: string;
+        /** The worker's request key, from a file. Absent when `key` carries it (a supervised lane). */
+        keyFile?: string | undefined;
+        /** The worker's request key itself (TURNTABLE_RELEASE_CHANNEL_KEY), removed from the environment. */
+        key?: string | undefined;
+        /** The config key itself (TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY), removed from the environment. */
+        configKey?: string | undefined;
         /**
          * The key under which the main process may change the lane's configuration over the
          * channel (#541), a different file from `keyFile`: the worker never holds it. Absent, the
@@ -121,9 +129,10 @@ export interface ReleaseConfig {
 
 function channelConfig(
   env: Record<string, string | undefined>,
-  keyFile: string,
+  key: { keyFile: string | undefined; key: string | undefined; configKey: string | undefined },
   need: (name: string) => string,
 ): NonNullable<ReleaseConfig["channel"]> {
+  const keyFile = key.keyFile;
   const tcp = env.TURNTABLE_RELEASE_CHANNEL_TCP?.trim();
   let parsed: NonNullable<ReleaseConfig["channel"]>["tcp"];
   if (tcp) {
@@ -139,13 +148,25 @@ function channelConfig(
     };
   }
   const configKeyFile = env.TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE?.trim() || undefined;
-  if (configKeyFile === keyFile) {
+  if (configKeyFile !== undefined && key.configKey !== undefined) {
+    throw new Error(
+      "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY and TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE are both set: use one",
+    );
+  }
+  if (configKeyFile !== undefined && configKeyFile === keyFile) {
     throw new Error(
       "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE must be a different file from the worker's channel key",
     );
   }
+  if (key.configKey !== undefined && key.configKey === key.key) {
+    throw new Error(
+      "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY must differ from the worker's channel key",
+    );
+  }
   return {
     keyFile,
+    key: key.key,
+    configKey: key.configKey,
     configKeyFile,
     socket: env.TURNTABLE_RELEASE_CHANNEL_SOCKET?.trim() || "",
     tcp: parsed,
@@ -160,8 +181,12 @@ export function releaseConfigFromEnv(env: Record<string, string | undefined>): R
   // First, before anything can fail or start: the key variables are read and removed.
   const keyValue = env[RELEASE_KEY_ENV]?.trim();
   const prevValue = env[RELEASE_KEY_PREVIOUS_ENV]?.trim();
+  const channelKeyValue = env[RELEASE_CHANNEL_KEY_ENV]?.trim() || undefined;
+  const channelConfigKeyValue = env[RELEASE_CHANNEL_CONFIG_KEY_ENV]?.trim() || undefined;
   delete env[RELEASE_KEY_ENV];
   delete env[RELEASE_KEY_PREVIOUS_ENV];
+  delete env[RELEASE_CHANNEL_KEY_ENV];
+  delete env[RELEASE_CHANNEL_CONFIG_KEY_ENV];
   const keyFile = env.TURNTABLE_RELEASE_MASTER_KEY_FILE?.trim();
   if (keyValue && keyFile) {
     throw new Error(
@@ -187,10 +212,16 @@ export function releaseConfigFromEnv(env: Record<string, string | undefined>): R
       "TURNTABLE_RELEASE_POLL_MS must be a whole number of milliseconds, at least 100",
     );
   }
-  const channelKeyFile = env.TURNTABLE_RELEASE_CHANNEL_KEY_FILE?.trim();
-  if (channelKeyFile && !env.TURNTABLE_RELEASE_PROXY_PORT?.trim()) {
+  const channelKeyFile = env.TURNTABLE_RELEASE_CHANNEL_KEY_FILE?.trim() || undefined;
+  if (channelKeyFile && channelKeyValue) {
     throw new Error(
-      "TURNTABLE_RELEASE_CHANNEL_KEY_FILE needs the release proxy (TURNTABLE_RELEASE_PROXY_PORT)",
+      "TURNTABLE_RELEASE_CHANNEL_KEY and TURNTABLE_RELEASE_CHANNEL_KEY_FILE are both set: use one",
+    );
+  }
+  const hasChannel = Boolean(channelKeyFile || channelKeyValue);
+  if (hasChannel && !env.TURNTABLE_RELEASE_PROXY_PORT?.trim()) {
+    throw new Error(
+      "the release channel key needs the release proxy (TURNTABLE_RELEASE_PROXY_PORT)",
     );
   }
   const proxyPort = env.TURNTABLE_RELEASE_PROXY_PORT?.trim();
@@ -228,9 +259,32 @@ export function releaseConfigFromEnv(env: Record<string, string | undefined>): R
           },
         }
       : {}),
-    ...(channelKeyFile ? { channel: channelConfig(env, channelKeyFile, need) } : {}),
+    ...(hasChannel
+      ? {
+          channel: channelConfig(
+            env,
+            { keyFile: channelKeyFile, key: channelKeyValue, configKey: channelConfigKeyValue },
+            need,
+          ),
+        }
+      : {}),
     pollMs,
   };
+}
+
+/**
+ * Removes every release-lane variable from an environment and returns them. The supervising
+ * process (`TURNTABLE_LANE_SUPERVISED`) does this once, before it loads anything else, and hands
+ * them to the lane's child process and to nothing else.
+ */
+export function takeReleaseEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of releaseEnvPresent(env)) {
+    const v = env[k];
+    delete env[k];
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
 }
 
 /** Release-lane variables present in an environment: for a warning in a process that is not the lane. */

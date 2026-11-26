@@ -674,6 +674,29 @@ export async function checkConfigChannel(i: DoctorInputs): Promise<DoctorCheck> 
       );
 }
 
+/** The supervised release lane: running and answering, or restarting. Only the running server knows. */
+export function checkReleaseLane(i: DoctorInputs): DoctorCheck {
+  const area = "release";
+  const id = "release_lane_process";
+  if (!i.releaseLane) return pass(id, area, "the release lane is not supervised by this process");
+  const s = i.releaseLane();
+  const exit = s.lastExit
+    ? ` Last exit: code ${s.lastExit.code ?? "none"}, signal ${s.lastExit.signal ?? "none"}.`
+    : "";
+  if (s.state === "ready")
+    return pass(
+      id,
+      area,
+      `the release lane child is running and answers on its channel (${s.restarts} restart(s))`,
+    );
+  return fail(
+    id,
+    area,
+    `the release lane child is ${s.state}: release requests are refused with release_lane_unavailable.${exit}`,
+    "Read the lane's own log lines (`[turntable release]`) for why it exited; a bad key, data dir or token is the usual cause. It restarts by itself with backoff.",
+  );
+}
+
 export async function checkQuotas(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "limits";
   if (!i.db)
@@ -899,6 +922,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("https_redirect", "network", () => checkHttpsRedirect(i))),
     ...(await safe("release_channel", "release", () => checkChannel(i))),
     ...(await safe("release_config_channel", "release", () => checkConfigChannel(i))),
+    ...(await safe("release_lane_process", "release", () => checkReleaseLane(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
     ...(await safe("limit_locks", "limits", () => checkLimitLocks(i))),
     ...(await safe("incomplete_logs", "logs", () => checkIncompleteLogs(i))),

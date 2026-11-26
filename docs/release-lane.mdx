@@ -174,6 +174,45 @@ The same operations are plain REST for any client that holds an owner's web sess
 
 **What is audited.** Each change is audited in the operator org's chain with the operation, the org and project slugs, the person who made it (their session) and the fields of the input. A secret's value is `[redacted]` there and appears in no output, event or log. A refused step-up is audited too, and so is a refusal of any other credential.
 
+## Hosted: the lane as a supervised child process
+
+A single hosted service (one container, one volume, no shell) runs the lane as a **supervised child process**: two processes in one container. The maintainers chose this ("option D" in the hosted release lane design, `docs/design/release-lane-hosted.mdx`, #629) for hosted instances. It is off by default. Other deployments keep the [separate service](#deployment).
+
+**Turn it on.** Set `TURNTABLE_LANE_SUPERVISED=1` on the main service (`serve --roles all`), together with the lane's own `TURNTABLE_RELEASE_*` variables from the table below. The release lane page, `request_release` and the release approval challenge then work from that one service.
+
+| Variable | Notes |
+| --- | --- |
+| `TURNTABLE_LANE_SUPERVISED` | `1` to run the lane as a child. |
+| `TURNTABLE_RELEASE_MASTER_KEY` | The release master key (base64 or hex, 32 bytes), from the platform's variable store. Generate it yourself (`openssl rand -base64 32`) and keep a copy in your secrets manager. No key is ever in the repository, the image or a backup. It is not the main `TURNTABLE_MASTER_KEY`. |
+| `TURNTABLE_RELEASE_DATA_DIR` | The lane's own directory on the volume, for example `/data/release`. |
+| `TURNTABLE_RELEASE_GITHUB_TOKEN`, `TURNTABLE_RELEASE_GITHUB_PUBLISH_TOKEN` | As in [Deployment](#deployment). |
+| `TURNTABLE_RELEASE_ARTIFACT_DIR` | The artifact store's directory, `<data dir>/artifacts`. |
+| `TURNTABLE_RELEASE_BUILDER_ID` | The instance's public URL. |
+| `TURNTABLE_RELEASE_DATABASE_URL` | Postgres only: the lane's own database URL. The main URL is never passed to the child. |
+
+Do not set `TURNTABLE_PUBLISH_CHANNEL_*` or the lane's own `TURNTABLE_RELEASE_CHANNEL_*` variables: the server makes the channel, and refuses to start if you set them. Rotation works as in [the release lane's key](/hosted#the-release-lanes-key): set `TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS` and the child re-wraps its own state at boot.
+
+**What the server does.**
+
+1. It reads the release variables first and **removes every `TURNTABLE_RELEASE_*` and `LONGSHORE_RELEASE_*` variable from its own environment** (`prepareSupervisedLane`). A bad lane configuration stops the boot with the missing name.
+2. After it has opened and migrated the database, it starts the same binary as `serve --roles release`. The child's environment is an explicit list, not a copy: `PATH`, `TZ`, `TURNTABLE_DROP_PRIVILEGES`, `TURNTABLE_ALLOW_ROOT`, the release variables, and the channel's socket and keys. The main master key, the GitHub App credentials, the provider settings and the main database URL are not passed.
+3. The channel between the two is a unix socket in a new directory with mode 0700. Its two keys (the request key and the config key, which differ) are made by the server at each boot from a random source, held in memory and handed to the child at spawn. They are never read from the operator's environment or the variable store, and never written to disk, so there is nothing to set, back up or rotate. A restart of the child reuses the same keys until the server itself restarts. Nothing in the parent can sign: the keys only authenticate requests to a lane that re-checks everything.
+4. `request_release` takes its request through the database, as ever. The child claims it, asks the forge itself, recomputes the digests from the bytes and signs or refuses.
+
+**Supervision.** The child restarts with backoff (1 second, doubling to 30; the count resets after a minute of steady running). While it is down, starting or restarting, `request_release` fails with HTTP 503 and `release_lane_unavailable` instead of queuing a request nothing will claim. Requests already queued wait and are processed when the lane is back. A crashed lane never takes the server down. `turntable doctor` reports `release_lane_process`: the state, the restart count and the last exit. On shutdown the server drains running jobs first (they may still use the lane's proxy), then stops the child (SIGTERM, then SIGKILL after 10 seconds). A child that finds its parent gone exits.
+
+**The boundary, stated plainly.**
+
+- The server never holds signing material and has no signer to call. The child never serves the web app, the API, the UI or a webhook. It has exactly two listeners: the unix socket for the channel, and the release proxy on loopback for compat publishing (an unset `TURNTABLE_RELEASE_PROXY_PORT` means any free loopback port).
+- **The loopback proxy authenticates every request.** Other processes in the container, the server included, can reach the port, so loopback is not a credential. A request needs a per-attempt proxy credential that the lane registered after re-checking the approval, the tag and the artifact bytes. A request with none, or a wrong, expired or revoked one, gets `407 Proxy Authentication Required` and nothing is sent upstream (tested in `release-lane-supervisor.test.ts`).
+- `release` still cannot share one process with another role: `serve --roles web,release` is refused. Only the supervised child path starts a release process from `serve`.
+- **The boundary is the process, not the user.** The child runs as the same uid as the server. The separation protects against bugs that do not give code execution in the server process, and against reads of the server's `process.env`, config and logs. It does not stop code that runs in the server process.
+- **Residual risk.** The server keeps the release values in memory so it can restart the child: they are in a closure held by the supervisor. The kernel's copy of the boot-time environment block (`/proc/<server pid>/environ`) still lists the values the platform gave it, and a process cannot rewrite that. Code execution in the server process can therefore read the release master key and tokens from either place, and as the same uid it can read `/proc/<child pid>/environ` and may ptrace the child if the platform allows it. Removing the variables from `process.env` narrows accidental exposure only.
+- **Full separation** needs either [a separate service](#deployment) (the target before 0.1.0) or a launcher that starts the child as a different uid with a non-dumpable process, so the server never holds the values at all. The launcher is a planned follow-up and is not part of this option.
+- A compromised server can write the shared artifact directory and request rows. The lane re-verifies against its private attestations; it cannot prevent a denial of service.
+- A container restart restarts both processes. The lane has no independent deploy.
+- The key stays in the platform's variable store, so the platform operator's access is unchanged.
+
 ## Deployment
 
 Run the release lane as its own service, with its own volume or directory and its own secrets. On Railway that is two services from the same image:
