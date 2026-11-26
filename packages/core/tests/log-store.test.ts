@@ -13,8 +13,13 @@ import {
   openDatabase,
   readLog,
   deleteProjectCascade,
+  claimNextAttempt,
+  createAttempt,
+  createJob,
+  createRun,
   quotaUsage,
   readLogRange,
+  setOrgQuotas,
   resetAttemptOutput,
 } from "../src/db";
 import { ClickHouseLogStore, createTableSql } from "../src/logstore/clickhouse-store";
@@ -525,6 +530,35 @@ describe("review fixes (#719)", () => {
     const u = await quotaUsage(db, t.orgId, Date.now(), { maxLogBytes: 1000 }, { noWait: true });
     expect(performance.now() - t0).toBeLessThan(150);
     expect(u.logBytes).toBe(0);
+    await Bun.sleep(450);
+  });
+
+  test("claims proceed while the store is down, with a log-bytes limit set", async () => {
+    const db = openDatabase(":memory:");
+    const t = await seedTenant(db, "org-claim");
+    await setOrgQuotas(db, t.orgId, { maxLogBytes: 1000 }, "test", Date.now());
+    const { fake, store } = hungWorld();
+    setLogStore(store);
+    fake.hang = true;
+    const run = await createRun(db, t.scope, {
+      workflowPath: "w.yml",
+      event: "push",
+      ref: "main",
+      sha: "b".repeat(40),
+    });
+    const job = (await createJob(db, t.scope, { runId: run.id, jobKey: "j", name: "j" }))!;
+    await createAttempt(db, t.scope, { jobId: job.id, provider: "fake" });
+    const t0 = performance.now();
+    for (let i = 0; i < 3; i++) {
+      await claimNextAttempt(db, {
+        owner: "w",
+        leaseMs: 1000,
+        now: Date.now(),
+        globalCap: 100,
+        perOrgCap: 100,
+      });
+    }
+    expect(performance.now() - t0).toBeLessThan(150);
     await Bun.sleep(450);
   });
 

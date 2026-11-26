@@ -11,6 +11,7 @@ import type { Db } from "..";
 import { DIALECT } from "../dialect";
 import * as s from "../schema";
 import { externalLogStore } from "../../logstore/registry";
+import { forgetOrgBytes } from "./quotas";
 import type { Scope } from "./scope";
 
 type Fk = { cols: string[]; parent: string; parentCols: string[] };
@@ -158,7 +159,10 @@ export function deleteProjectCascade(db: Db, scope: Scope, projectId: string): P
   // An external store's logs go after the commit (no HTTP under the write lock). The project is
   // already gone, so an unreachable store does not undo it: the retention TTL removes the rest.
   return done.then(async (ok) => {
-    if (ok && ext) await ext.deleteProject(scope.orgId, projectId).catch(() => {});
+    if (ok && ext) {
+      await ext.deleteProject(scope.orgId, projectId).catch(() => {});
+      forgetOrgBytes(scope.orgId);
+    }
     return ok;
   });
 }
