@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { controlPost, type ControlTarget } from "@turntable/net";
 import { DIALECT } from "../db/dialect";
 import { embeddedMigrationTags, openReadOnly } from "../db/read-only";
+import { procRssReadable } from "../run/checkout-child";
 import { loadMasterKey } from "../secrets/crypto";
 import { releaseKeyLocation } from "../roles";
 import { AuditAnchor } from "../audit/anchor";
@@ -369,6 +370,7 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
       channel: channelProbe(o.env),
       configChannel: configChannelProbe(o.env),
       observed: o.observed,
+      rssReadable: procRssReadable,
       now: Date.now,
     },
     close,

@@ -13,6 +13,7 @@ import { SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../src/github
 import { SecretStore } from "../src/secrets/store";
 import {
   checkChannel,
+  checkCheckoutMemory,
   checkConfigChannel,
   checkDatabase,
   checkForwarded,
@@ -834,5 +835,24 @@ describe("the operation and the command", () => {
     expect(text).toContain("PASS  keys: fine");
     expect(text).toContain("FAIL  database: broken\n      fix: mend it");
     expect(text).toContain("1 passed, 0 warning(s), 1 failed");
+  });
+});
+
+describe("checkout memory ceiling", () => {
+  const at = (env: Record<string, string>, readable: boolean) =>
+    checkCheckoutMemory({ env, rssReadable: () => readable } as never);
+  test("says the ceiling is enforced where /proc can be read", () => {
+    const c = at({}, true);
+    expect(c.status).toBe("pass");
+    expect(c.summary).toContain("is enforced on this host");
+  });
+  test("warns that it is NOT enforced where /proc cannot be read", () => {
+    const c = at({ TURNTABLE_CHECKOUT_MAX_MEMORY_MIB: "800" }, false);
+    expect(c.status).toBe("warn");
+    expect(c.summary).toContain("800 MiB");
+    expect(c.summary).toContain("NOT enforced");
+  });
+  test("warns when the ceiling is switched off", () => {
+    expect(at({ TURNTABLE_CHECKOUT_MAX_MEMORY_MIB: "0" }, true).status).toBe("warn");
   });
 });

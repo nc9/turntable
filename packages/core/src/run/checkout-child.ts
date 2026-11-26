@@ -66,6 +66,10 @@ export const CHILD_ENV_PASSTHROUGH: readonly string[] = [
 ];
 
 let warnedNoRss = false;
+/** Test seam: lets a test see the once-only warning again. */
+export function resetNoRssWarning(): void {
+  warnedNoRss = false;
+}
 /** Says once, when the ceiling is on but the system gives no way to read the child's memory. */
 function warnNoRssOnce(log: (m: string) => void): void {
   if (warnedNoRss) return;
@@ -138,13 +142,22 @@ export class Semaphore {
 }
 
 /** Resident set size of a process in bytes, from /proc (Linux); undefined where there is none. */
-export function readRss(pid: number): number | undefined {
+export function readRss(pid: number | "self"): number | undefined {
   try {
     const m = /^VmRSS:\s+(\d+)\s+kB/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"));
     return m ? Number(m[1]) * 1024 : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Whether this system gives a process's resident memory at all: this process's own
+ * `/proc/self/status` carries a VmRSS line. A failed read of a CHILD's status is then a child that
+ * has already exited, not a missing /proc. Doctor reports the same probe.
+ */
+export function procRssReadable(): boolean {
+  return readRss("self") !== undefined;
 }
 
 /** The command that runs this program again: the compiled binary itself, or bun with the entry file. */
@@ -171,6 +184,8 @@ export interface ChildRequest {
   command?: string[];
   /** Test seams. */
   rss?: (pid: number) => number | undefined;
+  /** Whether the system can read resident memory at all (checked once per checkout). */
+  procReadable?: () => boolean;
   pollMs?: number;
   /** How long to wait for a killed child to be gone before giving up on it. Default 5 s. */
   killWaitMs?: number;
@@ -269,13 +284,17 @@ async function runChild(r: ChildRequest): Promise<ChildResult> {
   };
   const started = Date.now();
   const rss = r.rss ?? readRss;
+  // Checked once, up front: "no /proc here" is told apart from "this child already exited".
+  const procOk = cfg.memoryMb > 0 ? (r.procReadable ?? procRssReadable)() : true;
   const timer = setInterval(() => {
     if (r.signal?.aborted) kill("the checkout was cancelled");
     else if (Date.now() - started > cfg.timeoutMs) kill("the checkout took too long");
     else if (cfg.memoryMb > 0) {
       const used = rss(child.pid);
-      if (used === undefined) warnNoRssOnce(log);
-      else if (used > cfg.memoryMb * MIB)
+      if (used === undefined) {
+        // An exited child (a fast one, before this poll) is not a missing /proc: say nothing.
+        if (!procOk) warnNoRssOnce(log);
+      } else if (used > cfg.memoryMb * MIB)
         kill(`the checkout used more than ${cfg.memoryMb} MiB of memory`);
     }
   }, r.pollMs ?? 200);

@@ -9,7 +9,9 @@ import { assertCloneHost, isRepoPart } from "../src/run/checkout";
 import {
   checkoutConfigFromEnv,
   DEFAULT_CHECKOUT_CONFIG,
+  procRssReadable,
   readRss,
+  resetNoRssWarning,
   runCheckoutChild,
   Semaphore,
 } from "../src/run/checkout-child";
@@ -158,6 +160,90 @@ process.exit(1);`,
     else expect(rss).toBeUndefined();
     expect(readRss(2 ** 30)).toBeUndefined();
   });
+});
+
+describe("the memory reading is missing or the child is gone", () => {
+  const okLine = `console.log("ok ${SHA} files=1 tarball=1");`;
+  test("a child that exits before the first poll gives no warning where /proc works", async () => {
+    resetNoRssWarning();
+    const logs: string[] = [];
+    // the reader fails (the child is gone) but the system can read memory: not a missing /proc
+    await runCheckoutChild(
+      req(stub("fast", okLine), {
+        config: { memoryMb: 100 },
+        pollMs: 400,
+        rss: () => undefined,
+        procReadable: () => true,
+        log: (m) => logs.push(m),
+      }),
+    );
+    // and a poll that lands after the exit is the same
+    await runCheckoutChild(
+      req(stub("fast2", `await Bun.sleep(150);${okLine}`), {
+        config: { memoryMb: 100 },
+        pollMs: 30,
+        rss: () => undefined,
+        procReadable: () => true,
+        log: (m) => logs.push(m),
+      }),
+    );
+    expect(logs).toEqual([]);
+  });
+
+  test("an unreadable /proc warns, once, however many checkouts and polls", async () => {
+    resetNoRssWarning();
+    const logs: string[] = [];
+    for (const n of ["a", "b"]) {
+      await runCheckoutChild(
+        req(stub(`noproc-${n}`, `await Bun.sleep(200);${okLine}`), {
+          config: { memoryMb: 100 },
+          pollMs: 30,
+          rss: () => undefined,
+          procReadable: () => false,
+          log: (m) => logs.push(m),
+        }),
+      );
+    }
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/no \/proc/);
+    // a ceiling of 0 never asks, so never warns
+    resetNoRssWarning();
+    const quiet: string[] = [];
+    await runCheckoutChild(
+      req(stub("noproc-off", okLine), {
+        config: { memoryMb: 0 },
+        pollMs: 30,
+        procReadable: () => false,
+        log: (m) => quiet.push(m),
+      }),
+    );
+    expect(quiet).toEqual([]);
+  });
+
+  test("procRssReadable tells whether this system has /proc", () => {
+    expect(procRssReadable()).toBe(process.platform === "linux");
+  });
+
+  // Linux only: the real reader against a real child that holds well over the ceiling.
+  test.skipIf(process.platform !== "linux" || !procRssReadable())(
+    "a real child over the ceiling is killed by the real /proc reader (skipped without a readable /proc)",
+    async () => {
+      resetNoRssWarning();
+      const logs: string[] = [];
+      const hog = stub(
+        "realhog",
+        `const b = Buffer.alloc(400 * 1024 * 1024, 1); console.log(b.length); await Bun.sleep(60_000);`,
+      );
+      const t0 = Date.now();
+      await expect(
+        runCheckoutChild(
+          req(hog, { config: { memoryMb: 200 }, pollMs: 50, log: (m) => logs.push(m) }),
+        ),
+      ).rejects.toThrow(/more than 200 MiB/);
+      expect(Date.now() - t0).toBeLessThan(20_000);
+      expect(logs).toEqual([]);
+    },
+  );
 });
 
 describe("concurrency", () => {

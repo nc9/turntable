@@ -595,7 +595,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Worker and provider",
     default: "1536",
     description:
-      "Resident-memory ceiling of the checkout child, read from `/proc` on Linux (0 turns it off; other systems log once that it is not enforced).",
+      "Resident-memory ceiling of the checkout child, read from `/proc` on Linux (0 turns it off; other systems log once that it is not enforced; `turntable doctor` says whether it is enforced on this host).",
   },
   {
     name: "TURNTABLE_CHECKOUT_CONCURRENCY",
