@@ -417,6 +417,91 @@ test("rerun: the infra streak is bounded at 5 per job per commit", async () => {
   expect(await listAttempts(db, a.scope, id)).toHaveLength(6);
 });
 
+async function finishWithDependent(sha: string, upstream: "failure" | "infra_error") {
+  const first = await finishRun(a, [{ key: "build", state: upstream }], sha);
+  const dep = (await createJob(db, a.scope, {
+    runId: first.run.id,
+    jobKey: "deploy",
+    name: "deploy",
+    needs: ["build"],
+  }))!;
+  const at = (await createAttempt(db, a.scope, { jobId: dep.id, provider: "docker" }))!;
+  await updateAttempt(db, a.scope, at.id, {
+    state: "skipped",
+    errorClass: `dependency:${upstream}`,
+  });
+  await transitionJob(db, a.scope, dep.id, "skipped");
+  return { run: first.run, build: first.ids.build!, deploy: dep.id };
+}
+
+test("rerun: a dependent skipped by an infra_error upstream uses the infra budget", async () => {
+  const f = await finishWithDependent("3".repeat(40), "infra_error");
+  // three upstream infra failures, the dependent rerun each time; the 4th rerun is accepted
+  for (let i = 0; i < 3; i++) {
+    const out = await run(operator, "rerun", {
+      run_id: f.run.id,
+      jobs: ["deploy"],
+      reason: `i${i}`,
+    });
+    expect(out.reruns[0].reruns_used).toBe(0);
+    const att = (await listAttempts(db, a.scope, f.deploy)).at(-1)!;
+    await updateAttempt(db, a.scope, att.id, {
+      state: "skipped",
+      errorClass: "dependency:infra_error",
+    });
+    await transitionJob(db, a.scope, f.deploy, "skipped");
+  }
+  const fourth = await call(operator, "rerun", {
+    run_id: f.run.id,
+    jobs: ["deploy"],
+    reason: "i3",
+  });
+  expect(fourth.ok).toBe(true);
+});
+
+test("rerun: the refusal for a dependency-skipped job reports both budgets", async () => {
+  const f = await finishWithDependent("4".repeat(40), "infra_error");
+  for (let i = 0; i < 5; i++) {
+    await run(operator, "rerun", { run_id: f.run.id, jobs: ["deploy"], reason: `i${i}` });
+    const att = (await listAttempts(db, a.scope, f.deploy)).at(-1)!;
+    await updateAttempt(db, a.scope, att.id, {
+      state: "skipped",
+      errorClass: "dependency:infra_error",
+    });
+    await transitionJob(db, a.scope, f.deploy, "skipped");
+  }
+  const refused = await call(operator, "rerun", {
+    run_id: f.run.id,
+    jobs: ["deploy"],
+    reason: "x",
+  });
+  expect(!refused.ok && refused.error.message).toMatch(
+    /after infra errors.*infra limit 5.*2 of 2 job-outcome reruns and 0 of 5 infra-error reruns remain/,
+  );
+});
+
+test("rerun: a dependent skipped by a real failure is charged to the job-outcome budget", async () => {
+  const f = await finishWithDependent("5".repeat(40), "failure");
+  const one = await run(operator, "rerun", { run_id: f.run.id, jobs: ["deploy"], reason: "u1" });
+  expect(one.reruns[0].reruns_used).toBe(1);
+  const att = (await listAttempts(db, a.scope, f.deploy)).at(-1)!;
+  await updateAttempt(db, a.scope, att.id, { state: "skipped", errorClass: "dependency:failure" });
+  await transitionJob(db, a.scope, f.deploy, "skipped");
+  const two = await run(operator, "rerun", { run_id: f.run.id, jobs: ["deploy"], reason: "u2" });
+  expect(two.reruns[0].reruns_used).toBe(2);
+  const att2 = (await listAttempts(db, a.scope, f.deploy)).at(-1)!;
+  await updateAttempt(db, a.scope, att2.id, { state: "skipped", errorClass: "dependency:failure" });
+  await transitionJob(db, a.scope, f.deploy, "skipped");
+  const refused = await call(operator, "rerun", {
+    run_id: f.run.id,
+    jobs: ["deploy"],
+    reason: "u3",
+  });
+  expect(!refused.ok && refused.error.message).toMatch(
+    /already rerun 2 times.*limit 2.*0 of 2 job-outcome reruns and 5 of 5 infra-error reruns remain/,
+  );
+});
+
 test("rerun: cross-tenant denial", async () => {
   const bRun = await finishRun(b, [{ key: "test", state: "failure" }]);
   const res = await call(operator, "rerun", { run_id: bRun.run.id, reason: "x" });

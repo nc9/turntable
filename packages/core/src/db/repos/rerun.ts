@@ -48,8 +48,26 @@ export type RerunResult = {
 type RerunCounts = { user: number; infra: number };
 
 /**
- * A rerun counts against the infra budget when the attempt it replaced ended in `infra_error`
- * (the instance's fault), and against the user budget otherwise.
+ * An attempt is infra-caused when it ended in `infra_error`, or it never started (skipped or
+ * cancelled) because a dependency ended in `infra_error`. Neither is the user's fault, so a rerun
+ * that replaces one uses the infra budget.
+ */
+export function isInfraCaused(a: {
+  state: string;
+  errorClass: string | null;
+  startedAt: number | null;
+}): boolean {
+  if (a.state === "infra_error") return true;
+  return (
+    (a.state === "skipped" || a.state === "cancelled") &&
+    a.startedAt === null &&
+    a.errorClass === `${DEPENDENCY_SKIP_PREFIX}infra_error`
+  );
+}
+
+/**
+ * A rerun counts against the infra budget when the attempt it replaced was infra-caused (the
+ * instance's fault), and against the user budget otherwise.
  */
 async function rerunsUsed(db: Db, scope: Scope, run: Run, jobKey: string): Promise<RerunCounts> {
   const rows = await db.orm
@@ -57,6 +75,8 @@ async function rerunsUsed(db: Db, scope: Scope, run: Run, jobKey: string): Promi
       jobId: s.jobAttempts.jobId,
       attempt: s.jobAttempts.attempt,
       state: s.jobAttempts.state,
+      errorClass: s.jobAttempts.errorClass,
+      startedAt: s.jobAttempts.startedAt,
       rerunReason: s.jobAttempts.rerunReason,
     })
     .from(s.jobAttempts)
@@ -70,12 +90,13 @@ async function rerunsUsed(db: Db, scope: Scope, run: Run, jobKey: string): Promi
         run.sha === null ? eq(s.runs.id, run.id) : eq(s.runs.sha, run.sha),
       ),
     );
-  const prevState = new Map<string, string>();
-  for (const r of rows) prevState.set(`${r.jobId}:${r.attempt}`, r.state);
+  const prev = new Map<string, (typeof rows)[number]>();
+  for (const r of rows) prev.set(`${r.jobId}:${r.attempt}`, r);
   const counts: RerunCounts = { user: 0, infra: 0 };
   for (const r of rows) {
     if (r.rerunReason === null) continue;
-    if (prevState.get(`${r.jobId}:${r.attempt - 1}`) === "infra_error") counts.infra++;
+    const replaced = prev.get(`${r.jobId}:${r.attempt - 1}`);
+    if (replaced && isInfraCaused(replaced)) counts.infra++;
     else counts.user++;
   }
   return counts;
@@ -155,7 +176,11 @@ export function rerunJobs(
     const used = new Map<string, number>();
     for (const job of selected) {
       const n = await rerunsUsed(h, scope, run, job.jobKey);
-      const infra = job.state === "infra_error";
+      const infra = isInfraCaused({
+        state: job.state,
+        errorClass: latestClass(job.id),
+        startedAt: job.startedAt,
+      });
       const left = `${Math.max(0, MAX_RERUNS_PER_JOB_PER_SHA - n.user)} of ${MAX_RERUNS_PER_JOB_PER_SHA} job-outcome reruns and ${Math.max(0, MAX_INFRA_RERUNS_PER_JOB_PER_SHA - n.infra)} of ${MAX_INFRA_RERUNS_PER_JOB_PER_SHA} infra-error reruns remain`;
       if (
         infra ? n.infra >= MAX_INFRA_RERUNS_PER_JOB_PER_SHA : n.user >= MAX_RERUNS_PER_JOB_PER_SHA
