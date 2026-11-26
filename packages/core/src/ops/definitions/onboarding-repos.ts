@@ -40,7 +40,7 @@ import {
 } from "../onboarding-schemas";
 import { describeDispatchInputs } from "../../poll/dispatch-inputs";
 import { effectiveChecksMode } from "../setting-guard";
-import { addProjectFor } from "./projects";
+import { addProjectFor, defaultProjectCap } from "./projects";
 import { setSetting } from "./settings";
 
 /** Defaults an enabled repo gets. The size class is the instance default: nothing to set. */
@@ -258,6 +258,13 @@ export const onboardRepos = defineOp({
         : undefined;
     const by = { id: ctx.principal.id, now: ctx.now() };
     const cap = ctx.instanceOrgCap;
+    // The cap add_project gives a new project: the org's effective default, clamped to the
+    // instance cap. A project still at either value was never tuned. Resolved once per call.
+    const orgDefault = await defaultProjectCap(ctx);
+    const creationCaps = new Set([
+      orgDefault,
+      cap !== undefined ? Math.min(orgDefault, cap) : orgDefault,
+    ]);
 
     return ctx.db.transaction(
       async (tx) => {
@@ -298,8 +305,7 @@ export const onboardRepos = defineOp({
           // checks mode `off`. Nothing there can be lost, so it gets the onboarding defaults. Any
           // other project was set up on purpose and gets only what the caller passed.
           const fresh =
-            (project.maxConcurrent === null ||
-              project.maxConcurrent === DEFAULT_PROJECT_MAX_CONCURRENT) &&
+            (project.maxConcurrent === null || creationCaps.has(project.maxConcurrent)) &&
             project.ingestConfig === null &&
             project.sandboxSnapshot === null &&
             project.checksMode === "off";

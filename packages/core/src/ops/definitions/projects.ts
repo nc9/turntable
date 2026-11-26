@@ -182,7 +182,7 @@ export async function addProjectFor(
 }
 
 /** The org's effective `default_project_max_concurrent` (environment, file, stored value, 2). */
-async function defaultProjectCap(ctx: OpContext): Promise<number> {
+export async function defaultProjectCap(ctx: OpContext): Promise<number> {
   const org = await getOrgById(ctx.db, ctx.scope.orgId);
   const rt = ctx.settings ?? createSettingsRuntime(settingsRegistry);
   const v = (
