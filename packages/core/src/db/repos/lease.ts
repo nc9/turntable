@@ -1236,16 +1236,21 @@ export function ifLeaseHeld<T>(
  * log and write it afresh (chunk boundaries differ between runs, so appending would garble it).
  * Fenced by the lease. Returns false when `owner` does not hold it.
  */
-export function resetAttemptOutput(
+export async function resetAttemptOutput(
   db: Db,
   scope: Scope,
   attemptId: string,
   owner: string,
 ): Promise<boolean> {
   const ext = externalLogStore();
-  const wiped = db.transaction(async (tx) => {
+  // An external store is cleared first and outside the transaction (no HTTP while the write lock is
+  // held). If it is down this throws before anything is wiped, so the reset stays all or nothing
+  // and the caller retries. Only the lease holder may clear it.
+  if (ext && (await db.run((h) => holdsLease(h, scope, attemptId, owner)))) {
+    await ext.deleteAttempt(logKey(scope, attemptId));
+  }
+  return db.transaction(async (tx) => {
     if (!(await holdsLease(tx, scope, attemptId, owner))) return false;
-    // An external store is cleared after the transaction: no HTTP while the write lock is held.
     if (!ext) await logStoreFor(tx).deleteAttempt(logKey(scope, attemptId));
     await tx.orm
       .delete(s.attemptSteps)
@@ -1266,10 +1271,6 @@ export function resetAttemptOutput(
         ),
       );
     return true;
-  });
-  return wiped.then(async (ok) => {
-    if (ok && ext) await ext.deleteAttempt(logKey(scope, attemptId));
-    return ok;
   });
 }
 

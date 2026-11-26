@@ -571,8 +571,59 @@ describe("review fixes (#719)", () => {
     await store.flush();
     expect(fake.rows.length).toBe(1);
     expect(await deleteProjectCascade(db, { orgId: t.orgId }, t.projectId)).toBe(true);
+    // The store is cleared after the commit, in the background.
+    for (let i = 0; i < 100 && fake.rows.length > 0; i++) await Bun.sleep(5);
     expect(fake.rows.length).toBe(0);
     expect(await store.orgBytes(t.orgId)).toBe(0);
+  });
+
+  test("deleting a project inside an op transaction does not hold the write lock on the store", async () => {
+    const db = openDatabase(":memory:");
+    const t = await seedTenant(db, "org-lock");
+    const { fake, store } = hungWorld();
+    setLogStore(store);
+    await appendLog(db, t.scope, t.attemptId, 0, enc("x\n"));
+    await store.flush();
+    fake.hang = true;
+    const t0 = performance.now();
+    await db.transaction(async (tx) => {
+      expect(await deleteProjectCascade(tx, { orgId: t.orgId }, t.projectId)).toBe(true);
+    });
+    expect(performance.now() - t0).toBeLessThan(150);
+    await Bun.sleep(450);
+  });
+
+  test("a chunk deleted while its insert fails is neither read nor blocks a replay", async () => {
+    const fake = fakeClickHouse();
+    const store = new ClickHouseLogStore({
+      url: "http://ch.test",
+      fetch: fake.fetch,
+      flushIntervalMs: 1,
+      backoffMs: 1,
+      requestTimeoutMs: 100,
+    });
+    const key = { orgId: "o", projectId: "p", attemptId: "a" };
+    fake.hang = true;
+    await store.append(key, 0, enc("old\n"));
+    await Bun.sleep(30); // the insert is on the wire
+    const del = store.deleteAttempt(key).catch(() => {});
+    await del; // the insert timed out; the delete then hung too
+    fake.hang = false;
+    await store.append(key, 0, enc("new\n"));
+    await store.flush();
+    const got = await store.read(key);
+    expect(Buffer.concat(got.map((c) => c.bytes)).toString()).toBe("new\n");
+  });
+
+  test("orgBytes counts a chunk once when a retried batch inserted it twice", async () => {
+    const fake = fakeClickHouse();
+    const store = new ClickHouseLogStore({ url: "http://ch.test", fetch: fake.fetch });
+    const key = { orgId: "o", projectId: "p", attemptId: "a" };
+    await store.append(key, 0, enc("abcd"));
+    await store.flush();
+    fake.rows.push({ ...(fake.rows[0] as (typeof fake.rows)[number]), seq: 99 });
+    expect(fake.rows.length).toBe(2);
+    expect(await store.orgBytes("o")).toBe(4);
   });
 
   test("a chunk deleted while on the wire is not sent again after a failed send", async () => {

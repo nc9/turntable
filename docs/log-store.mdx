@@ -53,15 +53,17 @@ retried batch) is read once: the first copy at an offset wins, as in the databas
 - **Reads call the store outside the database gate**, and the claim path uses the last known org
   log size (refreshed in the background, 0 before the first one) so a down store never stops
   scheduling.
-- **Deleting a project** removes its logs from the store after the database commit; if the store
-  is down the retention TTL removes them.
+- **Deleting a project** removes its logs from the store after the outermost database commit, in
+  the background, even when an op's own transaction wraps the delete. If the store is down the
+  retention TTL removes them.
 - **Reads include queued chunks**, so a live tail does not wait for a flush.
 - **Tail** reads only the last bytes asked for. **Size** is the end of the highest chunk.
 - **Grep** has a server-side prefilter (`positionCaseInsensitiveUTF8` or `match`) that returns the
   chunks containing a match, with a cursor. A match that spans two chunks is not found by the
   prefilter, so line matching in `job_log` reads the byte range and stays exact.
 - **Resetting an attempt** (a re-attached worker replaying its log) deletes that attempt's rows
-  and waits for the delete.
+  first and waits for the delete. If the store is down the reset fails before anything is wiped,
+  so it stays all or nothing and the caller retries.
 
 ## When ClickHouse is down
 

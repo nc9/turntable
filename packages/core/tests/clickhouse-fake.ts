@@ -114,8 +114,12 @@ export function fakeClickHouse(): FakeClickHouse {
         f.rows = f.rows.filter((r) => !k.includes(r));
         return ok();
       }
-      if (sql.includes("sum(length(bytes))")) {
-        const n = f.rows.filter((r) => r.org === p("o")).reduce((a, r) => a + r.bytes.length, 0);
+      if (sql.includes("any(length(bytes))")) {
+        const first = new Map<string, Row>();
+        for (const r of f.rows.filter((r) => r.org === p("o")))
+          if (!first.has(`${r.project}/${r.attempt}/${r.offset}`))
+            first.set(`${r.project}/${r.attempt}/${r.offset}`, r);
+        const n = [...first.values()].reduce((a, r) => a + r.bytes.length, 0);
         return lines([{ n: String(n) }]);
       }
       if (sql.includes("uniqExact(offset)")) {

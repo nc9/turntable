@@ -212,6 +212,16 @@ export class ClickHouseLogStore implements LogStore {
             // Keep the batch at the head, in order, and back off.
             // A chunk deleted while on the wire is not sent again.
             const live = batch.filter((e) => !e.dead);
+            // A dead entry leaves the index too, or a rerun's chunk at its offset would be ignored.
+            for (const e of batch) {
+              if (!e.dead) continue;
+              const ak = attemptKey(e.key);
+              const m = this.#index.get(ak);
+              if (m?.get(e.offset) === e) {
+                m.delete(e.offset);
+                if (m.size === 0) this.#index.delete(ak);
+              }
+            }
             this.#queueBytes -= batch.reduce((n, e) => n + (e.dead ? e.bytes.length : 0), 0);
             this.#queue.unshift(...live);
             this.#inflight = [];
@@ -343,7 +353,7 @@ export class ClickHouseLogStore implements LogStore {
   // ---- reads ----
 
   #pendingOf(key: LogKey): Entry[] {
-    return [...(this.#index.get(attemptKey(key))?.values() ?? [])];
+    return [...(this.#index.get(attemptKey(key))?.values() ?? [])].filter((e) => !e.dead);
   }
 
   /** Stored chunks and queued ones merged by offset; the stored copy wins (first write wins). */
@@ -498,9 +508,10 @@ export class ClickHouseLogStore implements LogStore {
   }
 
   async orgBytes(orgId: string): Promise<number> {
-    // A plain sum: a chunk inserted twice by a retried batch counts twice until a merge.
+    // One row per chunk: a chunk inserted twice by a retried batch is counted once.
     const [row] = await this.#select(
-      `SELECT sum(length(bytes)) AS n FROM ${this.#table} WHERE org_id = {o:String}`,
+      "SELECT sum(n) AS n FROM (SELECT any(length(bytes)) AS n FROM " +
+        `${this.#table} WHERE org_id = {o:String} GROUP BY project_id, attempt_id, offset)`,
       { o: orgId },
     );
     return Number(row?.n ?? 0);

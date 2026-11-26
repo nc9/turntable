@@ -128,16 +128,16 @@ async function storedBytesIn(
 const ORG_BYTES_TTL_MS = 30_000;
 const orgBytesSeen = new Map<string, { at: number; n: number; fetching: boolean }>();
 
-/**
- * The org's external log bytes without waiting on the store: the last known figure (0 before the
- * first one), refreshed in the background. For the claim transaction, which must not do HTTP, and
- * which fails open while the store is down.
- */
 /** Forgets the last known figure of an org (its logs were deleted), so the next claim refetches. */
 export function forgetOrgBytes(orgId: string): void {
   orgBytesSeen.delete(orgId);
 }
 
+/**
+ * The org's external log bytes without waiting on the store: the last known figure (0 before the
+ * first one), refreshed in the background. For the claim transaction, which must not do HTTP, and
+ * which fails open while the store is down.
+ */
 function orgBytesNoWait(store: { orgBytes(o: string): Promise<number> }, orgId: string): number {
   const hit = orgBytesSeen.get(orgId);
   const stale = !hit || Date.now() - hit.at >= ORG_BYTES_TTL_MS;

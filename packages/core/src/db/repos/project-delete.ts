@@ -126,7 +126,7 @@ export function countProjectRows(
  */
 export function deleteProjectCascade(db: Db, scope: Scope, projectId: string): Promise<boolean> {
   const ext = externalLogStore();
-  const done = db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
     const deps = new Set(projectDependents());
     const exists = await tx.orm
       .select({ x: sql<number>`1` })
@@ -154,16 +154,18 @@ export function deleteProjectCascade(db: Db, scope: Scope, projectId: string): P
         .where(condition(name, scope.orgId, projectId, deps));
     }
     await tx.orm.delete(s.projects).where(condition("projects", scope.orgId, projectId, deps));
-    return true;
-  });
-  // An external store's logs go after the commit (no HTTP under the write lock). The project is
-  // already gone, so an unreachable store does not undo it: the retention TTL removes the rest.
-  return done.then(async (ok) => {
-    if (ok && ext) {
-      await ext.deleteProject(scope.orgId, projectId).catch(() => {});
-      forgetOrgBytes(scope.orgId);
+    // An external store's logs go after the outermost commit and are not awaited: no HTTP under the
+    // write lock, even when an op's own transaction wraps this call. The project is already gone,
+    // so an unreachable store does not undo it: the retention TTL removes the rest.
+    if (ext) {
+      tx.afterCommit(() => {
+        void ext
+          .deleteProject(scope.orgId, projectId)
+          .catch(() => {})
+          .then(() => forgetOrgBytes(scope.orgId));
+      });
     }
-    return ok;
+    return true;
   });
 }
 
