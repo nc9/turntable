@@ -3,7 +3,7 @@ title: "Design: the release lane on a hosted deployment"
 description: Four ways to run the release lane for a single-tenant hosted deployment, what each costs, what a compromise of the web or worker process reaches, and how to move from one to the next.
 ---
 
-This is a design comparison. Only option A exists today. D was chosen and is being built (#678); B and C are not planned. It extends [the hosted deployment guide](/hosted#running-the-release-lane-on-one-hosted-service), which says what is true now and lists the blockers. The decision is the maintainers'.
+This is a design comparison. Only option A exists today. D was chosen and is being built ([#678](https://github.com/turntable-ci/turntable/issues/678)); B and C are not planned. It extends [the hosted deployment guide](/hosted#running-the-release-lane-on-one-hosted-service), which says what is true now and lists the blockers. The decision is recorded at the end.
 
 ## The problem
 
@@ -78,22 +78,33 @@ Key handling:
 
 1. The parent reads the `TURNTABLE_RELEASE_*` (and pre-rename `LONGSHORE_RELEASE_*`) variables first, passes **only those** to the child, and **deletes them from its own `process.env`** before it loads anything else. Main already has `takeReleaseKeys`, which removes the key variables after the boot re-wrap, and warns that other `TURNTABLE_RELEASE_*` are ignored.
 2. The child keeps its own data directory (`TURNTABLE_RELEASE_DATA_DIR`), signing key files and attestations, and its own forge credentials.
-3. The parent reaches the lane only over the socket, with a config key that is not the worker's.
+3. The parent reaches the lane only over the socket. The parent is `serve --roles all`, so web and worker share one process and hold both the worker's publish channel key and the config channel key. Unlike C, a worker compromise in D therefore has config access to the lane (`pin_repo`, `target_set`, `secret_set`; see `CONFIG_ACTIONS` in `release/channel.ts`). The lane's own checks (forge re-check, digests against its private attestations, the signer's policy) still decide what is signed.
 4. The lane still re-checks tags at the forge, still recomputes digests from the bytes, and never trusts main's rows for what it signs. Main never signs.
 
 - **Security delta:** keeps a process boundary: separate memory, the key lives only in the child after boot, and main has no signer. Versus B it removes the in-process path to the key. Versus C it gives up host separation.
 - **Weakness, stated honestly.**
+  - Web and worker are one process in the parent, so the separation of the config key from the worker's key that `roles.ts` gives across processes does not exist. A compromise reaches the lane's config channel.
   - The parent saw the variables at boot. A compromise of the parent before it deleted them would see them. The window is short and happens before any request is served.
   - Same container and same volume. Without further steps the child runs as the same uid. Same-uid code can read `/proc/<pid>/environ` and may attach with ptrace if the platform allows it. In that case a compromised parent reaches the child's key, and D is only better than B against bugs that do not give code execution as that user.
   - A compromised parent can tamper with the shared artifact directory. The lane catches this where it compares digests against its private attestations; it cannot prevent a denial of service.
   - The key stays in the platform's variable store, so the platform operator's access does not change.
   - A container restart restarts both processes. The lane has no independent availability or deploy.
-- **Mitigations that make the boundary real** (included in the size below): start the child under a different unprivileged user than the parent (the image already starts as root and drops, so the parent can drop the child first and itself second), give that user ownership of the lane's directory and key, set the child non-dumpable, and ask the platform to forbid ptrace between the two users (the default for different users without `CAP_SYS_PTRACE`).
+  - **Supervision costs availability, not security.** To respawn the child, the parent would have to keep the release variables and root (`CAP_SETUID`), which defeats both the key and the user-drop claims. After the privilege drop, `setuid(0)` fails (`privileges.ts`). So the parent does not restart the child: if the lane exits, the parent stops the other roles and exits non-zero, and the platform restarts the whole container, which re-runs the boot steps. A crash loop in the lane is therefore a restart loop of the service, and the platform's restart policy sets the backoff.
+- **Mitigations that make the boundary real** (included in the size below): start the child under a different unprivileged user than the parent (the image already starts as root and drops, so the parent starts the child under its own uid first and then drops itself, and never holds the keys or root afterwards), give that user ownership of the lane's directory and key (see the volume layout below), set the child non-dumpable, and ask the platform to forbid ptrace between the two users (the default for different users without `CAP_SYS_PTRACE`).
 - **Compromise of web or worker:** the main database and master key. With separate users and no ptrace capability, not the lane's key. With the same user, it can reach the key.
-- **Work:** medium. Spawn and supervise in `serve` (restart on exit, stop with the parent), pass the filtered env, per-boot channel keys that never touch disk, the socket path, the shared artifact dir, a user drop for the child, and a test that the parent's `process.env` has no release variable after boot.
+- **Work:** medium. Spawn the child in `serve` (the parent exits when the child exits, and the child stops with the parent), pass the filtered env, per-boot channel keys that never touch disk, the socket path, the shared artifact dir, a user drop for the child, and a test that the parent's `process.env` has no release variable after boot.
 - **Ops cost:** low. One service, one image, the same variables as today. One more process to see in logs.
 - **Railway:** one service, one volume, the usual env. No private networking and no object store.
 - **Path to C:** good, by design. The lane already talks to main over a channel and reads artifacts by `<run id>/<name>`. Moving to C swaps the transport (unix socket to authenticated private-network API) and the artifact backend (directory to object store), and splits the volume. The lane's state and key already live apart from main's. Build the artifact reader against an interface from the start so C adds a backend rather than changing callers.
+
+### Volume layout for D
+
+The data directory is created 0700 and owned by the drop uid (`enforceRootPolicy` and `chownData` in `privileges.ts`), so a child under another uid cannot read it, and a lane directory nested inside it could be renamed or replaced by the parent's uid. D needs this layout instead:
+
+- A volume root owned by root, mode 0755, that no lane or main uid owns, so neither can rename the other's directory.
+- Sibling directories under it: the main data directory (owned by the main uid, 0700, holding the SQLite database) and the lane directory (owned by the lane uid, 0700, holding the keys and attestations).
+- A read path for the lane to the main database and `artifacts/`: a shared group with 0750 on those paths, or an ACL for the lane uid. The lane opens the database read-only and reads artifacts only through the path checks. The lane never gets write access to main's files, and main never gets any access to the lane directory.
+- The boot step creates and chowns these directories as root before the drop, and refuses to start if the layout is wrong.
 
 ## Comparison
 
@@ -105,6 +116,7 @@ Key handling:
 | Web or worker compromise reaches the key | n/a | Yes | No | No with separate users and no ptrace; yes with the same user |
 | Web or worker compromise can tamper with artifacts | n/a | Yes | Yes (lane re-verifies) | Yes (lane re-verifies) |
 | Parent sees lane env at boot | n/a | Yes | No | Yes, briefly |
+| Web or worker compromise reaches the lane's config channel | n/a | Yes | No | Yes (web and worker share the parent) |
 | Independent restart and deploy | n/a | No | Yes | No |
 | Size of work | 0 | Small | Large | Medium |
 | Ops cost | None | Lowest | Highest | Low |

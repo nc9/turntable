@@ -32,7 +32,6 @@
           "releasing",
           "github-app",
           "hosted",
-          "design/release-lane-hosted",
           "tenant-isolation",
           "postgres",
           "instance-admin",
@@ -49,7 +48,8 @@
           "design/daytona-proxy",
           "design/publish-targets",
           "design/microvm-provider",
-          "design/postgres-rls"
+          "design/postgres-rls",
+          "design/release-lane-hosted"
         ]
       }
     ]
