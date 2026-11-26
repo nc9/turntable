@@ -18,6 +18,9 @@ export type RateLimitInfo = {
   observedAt: number;
 };
 
+/** One poll request: the loop must come back to schedule the next poll, so a hung call ends early (#693). */
+const POLL_REQUEST_TIMEOUT_MS = 15_000;
+
 export class RateLimited extends Error {
   /** Epoch ms when the limit resets, when GitHub said. */
   readonly resetAt: number | undefined;
@@ -167,7 +170,11 @@ export class GithubClient {
     const url = `${this.#base}${path}`;
     if (this.#token && url.includes(this.#token))
       throw new Error("refusing to put a token in a URL");
-    const res = await this.#fetch(url, { method: "GET", headers });
+    const res = await this.#fetch(url, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS),
+    });
     this.#observe(res);
     if (res.status === 304 && cached) return cached.body;
     if (res.status === 403 || res.status === 429) {

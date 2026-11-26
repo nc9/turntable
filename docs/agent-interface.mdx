@@ -117,6 +117,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `instance_run_summary` | none | no |  | read | admin | instance | Counts of finished runs by trigger and conclusion, per org and project, for operators. |
 | `instance_infra_errors` | none | no |  | read | admin | instance | Recent infra_error attempts across orgs, with a sanitized error message, for operators. |
 | `instance_ingest_status` | none | no |  | read | admin | instance | Poll health of every org's repos, for the instance administrator. |
+| `instance_runtime_health` | none | no |  | read | admin | instance | Event-loop lag, open outbound calls and log reader lag, for the instance administrator. |
 | `instance_audit_verify` | none | no |  | read | admin | instance | Check orgs' audit chains against exported anchors, for the instance administrator. |
 | `set_quotas` | none | no |  | write | admin | instance | Set an org's quotas (instance administrator only). |
 | `bootstrap_approver` | none | no |  | write | admin | instance | Enrol an org's first approver from an offline ed25519 public key (instance administrator only). |

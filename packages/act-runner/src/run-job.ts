@@ -103,6 +103,8 @@ export interface RunOptions {
    * restarted controller needs `{sandboxId, execId}` to re-attach with `resumeJob`.
    */
   onExec?: (info: { sandboxId: string; execId: string }) => void | Promise<void>;
+  /** Called after every successful log read (even an empty one): the log reader's heartbeat. */
+  onLogRead?: () => void;
 }
 
 /** @deprecated The step environment lives in step-env.ts; kept for importers of the old name. */
@@ -490,6 +492,7 @@ export async function* watchExec(
         maxErr,
         pollMs,
       );
+      opts.onLogRead?.();
       if (r.cut) {
         yield { kind: "cut", offset, omittedBytes: r.cut.omittedBytes };
         // Whatever line was in flight is cut off: finish it, so the tail starts a fresh line.

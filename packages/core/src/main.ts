@@ -107,6 +107,7 @@ import {
 import { DEFAULT_DRAIN_TIMEOUT_SECONDS, drainTimeoutSecondsSetting } from "./settings/definitions";
 import { resolveSetting } from "./settings/resolve";
 import { cachedDoctor } from "./doctor/cache";
+import { runtimeHealth } from "./health/monitor";
 import { runDoctor } from "./doctor/checks";
 import { countHumanWithAnyKeyPolicy, countHumanWithoutApprover } from "./ops/setting-guard";
 import { ForwardedObserver } from "./doctor/observe";
@@ -595,6 +596,8 @@ async function serve(args: string[]): Promise<void> {
   // is fine.
   // The operator's size classes first: the org and project label maps may name only those.
   setOperatorSizes(resolveSandboxSizes());
+  // Event-loop lag, the outbound-call watchdog and the 60 s heartbeat line (#693).
+  runtimeHealth.start();
   const settings = loadSettingsRuntime({ config: values.config });
   // The approval engine and the release lane read the approval policy from the same runtime.
   setAmbientSettings(settings);

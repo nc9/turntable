@@ -8,3 +8,10 @@ export {
   rateLimitDelayMs,
 } from "./rate-limit";
 export { controlPost, type ControlReply, type ControlTarget } from "./ipc";
+export {
+  coarsePath,
+  type InFlightCall,
+  OutboundWatchdog,
+  outboundWatchdog,
+  type WatchdogSnapshot,
+} from "./watchdog";
