@@ -150,7 +150,10 @@ describe("submodules: true", () => {
     ]);
     const w = world({ "acme/web": web.dir, "acme/lib": lib.dir });
     try {
-      const co = await w.src.checkout(run(web.sha), bound, { submodules: "true" });
+      const co = await w.src.checkout(run(web.sha), bound, {
+        submodules: "true",
+        submoduleCredentials: true,
+      });
       const delivered = extract(co.tarball);
       expect(existsSync(join(delivered, ".git/modules/deps/lib/HEAD"))).toBe(true);
       const ws = stub(delivered, "true");
@@ -170,7 +173,10 @@ describe("submodules: true", () => {
     ]);
     const w = world({ "acme/web": web.dir, "acme/lib": lib.dir });
     try {
-      const co = await w.src.checkout(run(web.sha), bound, { submodules: "true" });
+      const co = await w.src.checkout(run(web.sha), bound, {
+        submodules: "true",
+        submoduleCredentials: true,
+      });
       expect(w.minted).toEqual([
         ["inst-1", "web"],
         ["inst-1", "lib"],
@@ -191,7 +197,10 @@ describe("submodules: true", () => {
     ]);
     const w = world({ "acme/web": web.dir, "acme/lib": lib.dir });
     try {
-      const co = await w.src.checkout(run(web.sha), bound, { submodules: "true" });
+      const co = await w.src.checkout(run(web.sha), bound, {
+        submodules: "true",
+        submoduleCredentials: true,
+      });
       stub(extract(co.tarball), "true");
       expect(w.minted.map((m) => m[1])).toEqual(["web", "lib"]);
     } finally {
@@ -206,7 +215,10 @@ describe("submodules: true", () => {
     ]);
     const w = world({ "acme/web": web.dir, "other/lib": lib.dir });
     try {
-      const co = await w.src.checkout(run(web.sha), bound, { submodules: "true" });
+      const co = await w.src.checkout(run(web.sha), bound, {
+        submodules: "true",
+        submoduleCredentials: true,
+      });
       stub(extract(co.tarball), "true");
       expect(w.minted).toEqual([["inst-1", "web"]]);
       for (const r of w.servers["other/lib"]?.requests ?? []) expect(r.authorization).toBeNull();
@@ -222,7 +234,7 @@ describe("submodules: true", () => {
     ]);
     const w = world({ "acme/web": web.dir, "acme/lib": lib.dir }, { mintFails: ["lib"] });
     try {
-      await w.src.checkout(run(web.sha), bound, { submodules: "true" });
+      await w.src.checkout(run(web.sha), bound, { submodules: "true", submoduleCredentials: true });
       for (const r of w.servers["acme/lib"]?.requests ?? []) expect(r.authorization).toBeNull();
     } finally {
       w.stop();
@@ -248,12 +260,71 @@ describe("submodules: true", () => {
           return w.token;
         },
       });
-      const err = await src.checkout(run(web.sha), bound, { submodules: "true" }).catch((e) => e);
+      const err = await src
+        .checkout(run(web.sha), bound, { submodules: "true", submoduleCredentials: true })
+        .catch((e) => e);
       expect(err).toBeInstanceOf(Error);
       expect(String(err.message)).toContain("deps/lib");
       expect(String(err.message)).not.toContain(w.token);
     } finally {
       refusing.stop();
+      w.stop();
+    }
+  });
+});
+
+describe("an untrusted run's submodules", () => {
+  test("a same-owner private module is never minted for, and the failure names the module", async () => {
+    const lib = makeRepo({ "l.txt": "private\n" });
+    const web = makeRepo({ "a.txt": "a\n" }, [
+      { path: "deps/lib", sha: lib.sha, url: "https://github.com/acme/lib.git" },
+    ]);
+    const w = world({ "acme/web": web.dir, "acme/lib": lib.dir });
+    w.servers["acme/lib"]?.stop();
+    const priv = serveGitRepo(lib.dir, { requireAuth: { status: 404 } });
+    try {
+      const src = gitRepoSource({
+        cloneUrl: (_o, repo) =>
+          repo === "lib" ? priv.url : (w.servers["acme/web"] as GitHttpServer).url,
+        allowHosts: ["127.0.0.1"],
+        command: CHECKOUT_COMMAND,
+        installationToken: async (id, repo) => {
+          w.minted.push([id, repo]);
+          return w.token;
+        },
+      });
+      // no submoduleCredentials: the default is anonymous
+      const err = await src.checkout(run(web.sha), bound, { submodules: "true" }).catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(String(err.message)).toContain("deps/lib");
+      expect(w.minted).toEqual([["inst-1", "web"]]);
+      for (const r of priv.requests) expect(r.authorization).toBeNull();
+      const err2 = await src
+        .checkout(run(web.sha), bound, { submodules: "true", submoduleCredentials: false })
+        .catch((e) => e);
+      expect(String(err2.message)).toContain("deps/lib");
+      expect(w.minted.map((m) => m[1])).toEqual(["web", "web"]);
+    } finally {
+      priv.stop();
+      w.stop();
+    }
+  });
+
+  test("a public other-owner module still works anonymously", async () => {
+    const lib = makeRepo({ "l.txt": "lib\n" });
+    const web = makeRepo({ "a.txt": "a\n" }, [
+      { path: "deps/lib", sha: lib.sha, url: "https://github.com/other/lib.git" },
+    ]);
+    const w = world({ "acme/web": web.dir, "other/lib": lib.dir });
+    try {
+      const co = await w.src.checkout(run(web.sha), bound, {
+        submodules: "true",
+        submoduleCredentials: false,
+      });
+      stub(extract(co.tarball), "true");
+      expect(w.minted).toEqual([["inst-1", "web"]]);
+      for (const r of w.servers["other/lib"]?.requests ?? []) expect(r.authorization).toBeNull();
+    } finally {
       w.stop();
     }
   });
@@ -270,13 +341,19 @@ describe("submodules: recursive", () => {
     ]);
     const w = world({ "acme/web": web.dir, "acme/lib": lib.dir, "acme/inner": inner.dir });
     try {
-      const flat = await w.src.checkout(run(web.sha), bound, { submodules: "true" });
+      const flat = await w.src.checkout(run(web.sha), bound, {
+        submodules: "true",
+        submoduleCredentials: true,
+      });
       expect(w.servers["acme/inner"]?.requests.length).toBe(0);
       const ws1 = stub(extract(flat.tarball), "true");
       expect(existsSync(join(ws1, "deps/lib/l.txt"))).toBe(true);
       expect(existsSync(join(ws1, "deps/lib/vendor/inner/i.txt"))).toBe(false);
 
-      const deep = await w.src.checkout(run(web.sha), bound, { submodules: "recursive" });
+      const deep = await w.src.checkout(run(web.sha), bound, {
+        submodules: "recursive",
+        submoduleCredentials: true,
+      });
       const ws2 = stub(extract(deep.tarball), "recursive");
       expect(existsSync(join(ws2, "deps/lib/vendor/inner/i.txt"))).toBe(true);
       expect(w.minted.map((m) => m[1])).toContain("inner");
@@ -314,7 +391,9 @@ describe("a missing pinned commit", () => {
     ]);
     const w = world({ "acme/web": web.dir, "acme/lib": lib.dir });
     try {
-      const err = await w.src.checkout(run(web.sha), bound, { submodules: "true" }).catch((e) => e);
+      const err = await w.src
+        .checkout(run(web.sha), bound, { submodules: "true", submoduleCredentials: true })
+        .catch((e) => e);
       expect(err).toBeInstanceOf(Error);
       expect(String(err.message)).toContain("deps/lib");
     } finally {
@@ -333,9 +412,12 @@ describe("the checkout limits are one budget", () => {
     const ok = world({ "acme/web": web.dir, "acme/lib": lib.dir }, { limits: { maxEntries: 5 } });
     const over = world({ "acme/web": web.dir, "acme/lib": lib.dir }, { limits: { maxEntries: 4 } });
     try {
-      await ok.src.checkout(run(web.sha), bound, { submodules: "true" });
+      await ok.src.checkout(run(web.sha), bound, {
+        submodules: "true",
+        submoduleCredentials: true,
+      });
       const err = await over.src
-        .checkout(run(web.sha), bound, { submodules: "true" })
+        .checkout(run(web.sha), bound, { submodules: "true", submoduleCredentials: true })
         .catch((e) => e);
       expect(err).toBeInstanceOf(Error);
       expect(String(err.message)).toMatch(/too many files/);
@@ -355,7 +437,9 @@ describe("the checkout limits are one budget", () => {
     ]);
     const w = world({ "acme/web": web.dir, "acme/lib": lib.dir }, { limits: { maxSubmodules: 1 } });
     try {
-      const err = await w.src.checkout(run(web.sha), bound, { submodules: "true" }).catch((e) => e);
+      const err = await w.src
+        .checkout(run(web.sha), bound, { submodules: "true", submoduleCredentials: true })
+        .catch((e) => e);
       expect(String(err.message)).toMatch(/more than 1 submodule/);
     } finally {
       w.stop();

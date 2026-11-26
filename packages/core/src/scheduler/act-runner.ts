@@ -104,6 +104,12 @@ export interface RepoSource {
       fullHistory?: boolean | undefined;
       /** Also deliver each submodule at its pinned commit (a job's `submodules:` input). */
       submodules?: "true" | "recursive" | undefined;
+      /**
+       * Whether a same-owner submodule may get an installation token. Only a trusted run does;
+       * absent means no, so every submodule is fetched anonymously (a fork PR's token reads only
+       * its own repository on GitHub, and an untrusted run must not pull in another private repo).
+       */
+      submoduleCredentials?: boolean | undefined;
     },
   ): Promise<Checkout>;
 }
@@ -251,8 +257,9 @@ export function gitRepoSource(
             manifest,
             main: res,
             owner,
-            installationId,
-            mint: o.installationToken,
+            ...(opts?.submoduleCredentials === true
+              ? { installationId, mint: o.installationToken }
+              : {}),
             cloneUrl: o.cloneUrl,
             allowHosts: o.allowHosts ?? [],
             config: cfg,
@@ -371,6 +378,29 @@ export const PROXIED_TOKEN_PLACEHOLDER = "turntable-token-is-added-by-the-proxy"
  * the lease-fenced attempt store. The final state is NOT written here: the scheduler records the
  * outcome (fenced) once the runner returns, so `finishJob` and the run-level calls do nothing.
  */
+/**
+ * Whether this job's submodules may be fetched with the installation token: only when the class
+ * it will run as (the same rule as the job start: the ingest class is a ceiling, the demotion
+ * rule only lowers it) is trusted. Anything else, or anything unreadable, is anonymous.
+ */
+function submoduleCredentialsFor(
+  workflowYaml: string,
+  dbRun: Run,
+  job: { jobKey: string; planned?: string | null },
+): boolean {
+  try {
+    const pj = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
+    const head = workflowHeadCheckouts(workflowYaml)[pj?.id ?? job.jobKey] ?? [];
+    const assessed = assessJob({ event: dbRun.event, ref: dbRun.ref }, head.length > 0);
+    const klass = assessed.demotedFrom
+      ? assessed.klass
+      : (parseTrust(dbRun)?.class ?? assessed.klass);
+    return !untrustedForSize(klass, false);
+  } catch {
+    return false;
+  }
+}
+
 function workerStore(ctx: AttemptContext): RunStore {
   const unused = (name: string) => async (): Promise<never> => {
     throw new Error(`${name} is not used by the worker`);
@@ -690,7 +720,12 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               {
                 signal: ctx.signal,
                 ...(wantsFull ? { fullHistory: true } : {}),
-                ...(wantsSubmodules ? { submodules: wantsSubmodules } : {}),
+                ...(wantsSubmodules
+                  ? {
+                      submodules: wantsSubmodules,
+                      submoduleCredentials: submoduleCredentialsFor(workflowYaml, dbRun, job),
+                    }
+                  : {}),
               },
             );
           } catch (e) {
