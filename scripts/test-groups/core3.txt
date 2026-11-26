@@ -12,3 +12,4 @@ packages/core/tests/approval-policy-migration.test.ts
 packages/core/tests/deploy-gate.test.ts
 packages/core/tests/webhook-format-migration.test.ts
 packages/core/tests/egress-probe.test.ts
+packages/core/tests/loop-lag.test.ts
