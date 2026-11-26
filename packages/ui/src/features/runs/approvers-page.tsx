@@ -13,6 +13,7 @@ import { createPasskey, signWithPasskey, webauthnAvailable } from "@/lib/webauth
 import { LOGIN_PATH, useSession } from "@/lib/session";
 import { sanitize } from "@/log/parser";
 import { ApiError } from "@/api/http-adapter";
+import { ApprovalDefaultNotice } from "./approval-default-notice";
 
 /** Approver keys, the approval policy, and enrolling a new passkey (which needs a quorum). */
 export function ApproversPage() {
@@ -180,6 +181,8 @@ export function ApproversPage() {
         People whose keys can approve a release. A run needs approvals from distinct people, and its
         author cannot approve it.
       </p>
+
+      <ApprovalDefaultNotice mode={d.defaultMode} policies={d.policies} />
 
       {d.warnings.length > 0 ? (
         <div
