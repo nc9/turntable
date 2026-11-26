@@ -2,20 +2,26 @@
 // the audit chain on the target, excluded tables, FK order, non-empty targets, and the op's gates.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createRequire } from "node:module";
-import type { Database } from "bun:sqlite";
-import { appendAudit, appendEvent, type Db } from "../src/db";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { appendAudit, appendEvent, type Db, openDatabase } from "../src/db";
 import {
   type CopyTarget,
   copySqliteToPg,
   CopyRefused,
+  connectCopyTarget,
   fkOrder,
+  openSnapshotSource,
+  toPg,
   setCopyTargetOpener,
 } from "../src/db/copy-to-pg";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { processDrain, resetProcessDrain } from "../src/scheduler/drain";
 import { onPostgres } from "./pg-mode";
-import { addLog, seedWorld, type Tenant } from "./ops-helpers";
+import { addLog, seedTenant, seedWorld, type Tenant } from "./ops-helpers";
 
 const require_ = createRequire(import.meta.url);
 const pglite = "@electric-sql/pglite";
@@ -270,6 +276,18 @@ sqliteDescribe("instance_db_copy op", () => {
     expect(logged).not.toContain("invalid.example");
   });
 
+  test("with TURNTABLE_PG_REQUIRE_TLS and no sslmode the error names the TLS requirement", async () => {
+    setCopyTargetOpener(undefined);
+    process.env.TURNTABLE_PG_REQUIRE_TLS = "1";
+    try {
+      const r = await call({ target_url_env: ENV, dry_run: true });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.message).toMatch(/TURNTABLE_PG_REQUIRE_TLS=1 needs sslmode/);
+    } finally {
+      delete process.env.TURNTABLE_PG_REQUIRE_TLS;
+    }
+  });
+
   test("instance administrators only; the variable name is restricted", async () => {
     const member = await call({ target_url_env: ENV, dry_run: true }, "not-a-token");
     expect(member.ok).toBe(false);
@@ -280,6 +298,110 @@ sqliteDescribe("instance_db_copy op", () => {
     const { mcpTools } = await import("../src/ops/mcp");
     expect(JSON.stringify(mcpTools(registry))).not.toContain("instance_db_copy");
   });
+});
+
+sqliteDescribe("one snapshot of the source", () => {
+  let dir: string;
+  let live: Db;
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "tt-copy-snap-"));
+    live = openDatabase(join(dir, "t.db"));
+    await seedTenant(live, "org-s");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const liveSqlite = () => (live.orm as unknown as { $client: Database }).$client;
+
+  test("a file source copies through a separate read-only connection and verifies", async () => {
+    const snap = openSnapshotSource(liveSqlite());
+    expect(snap.db).not.toBe(liveSqlite());
+    try {
+      const r = await copySqliteToPg(snap.db, await freshTarget(), { dryRun: false, exclude: [] });
+      expect(r.verified).toBe(true);
+    } finally {
+      snap.close();
+    }
+  });
+
+  test("a row updated mid-copy never gives verified: true, and the target is emptied", async () => {
+    const snap = openSnapshotSource(liveSqlite());
+    const target = await freshTarget();
+    let updated = false;
+    try {
+      await expect(
+        copySqliteToPg(snap.db, target, {
+          dryRun: false,
+          exclude: [],
+          batchSize: 1,
+          // runs between batches, i.e. between tables: the live handle changes a copied row
+          yieldNow: async () => {
+            if (updated) return;
+            updated = true;
+            liveSqlite().run("update orgs set name = 'changed mid-copy'");
+          },
+        }),
+      ).rejects.toThrow(/changed in the source during the copy/);
+    } finally {
+      snap.close();
+    }
+    expect(updated).toBe(true);
+    expect((await rows(target, "select count(*)::int as n from orgs"))[0]!.n).toBe(0);
+  });
+});
+
+test("setCopyTargetOpener(undefined) restores the default opener", async () => {
+  let calls = 0;
+  setCopyTargetOpener(async () => {
+    calls++;
+    throw new Error("custom");
+  });
+  await expect(connectCopyTarget("postgres://h/db")).rejects.toThrow("custom");
+  setCopyTargetOpener(undefined);
+  process.env.TURNTABLE_PG_REQUIRE_TLS = "1";
+  try {
+    // the default opener refuses a URL without TLS before it connects anywhere
+    await expect(connectCopyTarget("postgres://h/db")).rejects.toThrow(/TURNTABLE_PG_REQUIRE_TLS/);
+  } finally {
+    delete process.env.TURNTABLE_PG_REQUIRE_TLS;
+  }
+  expect(calls).toBe(1);
+});
+
+const pgUrl = /^postgres(ql)?:\/\//i.test(process.env.TURNTABLE_TEST_DB ?? "")
+  ? process.env.TURNTABLE_TEST_DB!
+  : undefined;
+// The production path (Bun's SQL client), against the postgres job's server only.
+(pgUrl ? test : test.skip)("Bun SQL target: boolean, bytea and bigint round-trip", async () => {
+  const target = await connectCopyTarget(pgUrl!);
+  const c = (
+    target.orm as unknown as {
+      $client: { unsafe(t: string, p?: unknown[]): Promise<Record<string, unknown>[]> };
+    }
+  ).$client;
+  const schema = `tt_copy_716_${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    await c.unsafe(`create schema ${schema}`);
+    await c.unsafe(`create table ${schema}.t (b boolean, y bytea, n bigint)`);
+    const bytes = new Uint8Array([0, 1, 2, 254, 255]);
+    await c.unsafe(`insert into ${schema}.t values ($1, $2, $3)`, [
+      toPg(1, "boolean"),
+      toPg(bytes, "bytea"),
+      Number.MAX_SAFE_INTEGER,
+    ]);
+    await c.unsafe(`insert into ${schema}.t values ($1, $2, $3)`, [
+      toPg(0, "boolean"),
+      toPg(null, "bytea"),
+      0,
+    ]);
+    const out = await c.unsafe(`select b, y, n from ${schema}.t order by n desc`);
+    expect(out[0]!.b).toBe(true);
+    expect(Buffer.from(out[0]!.y as Uint8Array).toString("hex")).toBe("000102feff");
+    expect(String(out[0]!.n)).toBe(String(Number.MAX_SAFE_INTEGER));
+    expect(out[1]!.b).toBe(false);
+    expect(out[1]!.y).toBeNull();
+  } finally {
+    await c.unsafe(`drop schema if exists ${schema} cascade`).catch(() => {});
+    await target.close();
+  }
 });
 
 describe("poolSettings", () => {

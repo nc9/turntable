@@ -4,7 +4,12 @@
 // MCP tool. The SQLite file is only read. A real run needs a drained instance.
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { connectCopyTarget, CopyRefused, copySqliteToPg } from "../../db/copy-to-pg";
+import {
+  connectCopyTarget,
+  CopyRefused,
+  copySqliteToPg,
+  openSnapshotSource,
+} from "../../db/copy-to-pg";
 import { DIALECT } from "../../db/dialect";
 import { processDrain } from "../../scheduler/drain";
 import { appendAudit, countRunning } from "../../db/repos";
@@ -32,15 +37,17 @@ export const instanceDbCopyOp = defineOp({
     "Moves an instance off SQLite. The Postgres URL is read from the environment variable named by " +
     "`target_url_env` (a `TURNTABLE_*_URL` variable other than `TURNTABLE_DATABASE_URL`, which a " +
     "server on SQLite must not set); it is never an input and never in the output. `dry_run` " +
-    "applies the migrations to the target, checks it is empty or already identical to the source, " +
+    "applies the migrations to the target, checks it is empty (a target that holds any row in a copied table is refused), " +
     "and reports per-table row counts; it needs no drain. A real run needs the instance drained " +
     "(`instance_drain`, no running attempts). It copies every table except `exclude_tables` " +
     "(for example the log tables once logs live in the log store) in foreign-key order and in " +
     "batches, yielding between them so the server keeps answering; resets identity sequences so " +
     "the next id is above every copied one; then verifies per-table counts and a checksum over " +
     "primary keys, and walks every org's audit chain on the target (links, hashes, checkpoint " +
-    "positions, head equal to the source). A target that holds any row in a copied table is refused " +
-    "before it is migrated. A failed copy empties the target again; a real run writes its own " +
+    "positions, head equal to the source). The source is read in one read transaction on a " +
+    "separate read-only connection, so every table comes from one snapshot, and the source is " +
+    "re-read at the end: a row that changed during the copy fails the run. A target that holds " +
+    "any row in a copied table is refused before it is migrated. A failed copy empties the target again; a real run writes its own " +
     "audit entry before copying, so the copy carries it. The SQLite " +
     "file is never modified. Only the instance administrator can call it. Not an MCP tool.",
   input: z.object({
@@ -124,11 +131,16 @@ export const instanceDbCopyOp = defineOp({
     let target;
     try {
       target = await connectCopyTarget(url);
-    } catch {
+    } catch (err) {
+      // the TLS refusal is a fixed sentence about configuration (no URL in it): say it
+      const m = err instanceof Error ? err.message : "";
+      if (m.startsWith("TURNTABLE_PG_REQUIRE_TLS")) throw new OpError("invalid_input", m);
       throw new OpError("unavailable", "could not connect to the target database");
     }
+    let snapshot: ReturnType<typeof openSnapshotSource> | undefined;
     try {
-      return await copySqliteToPg(src, target, {
+      snapshot = openSnapshotSource(src);
+      return await copySqliteToPg(snapshot.db, target, {
         dryRun: i.dry_run,
         exclude: i.exclude_tables,
       });
@@ -144,6 +156,7 @@ export const instanceDbCopyOp = defineOp({
         "the copy failed; the target is left empty or untouched. See the server log",
       );
     } finally {
+      snapshot?.close();
       await target.close().catch(() => {});
     }
   },

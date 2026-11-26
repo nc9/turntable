@@ -12,10 +12,15 @@
 //  4. reset identity sequences so the next generated id is above every copied one;
 //  5. verify per-table counts and an order-independent checksum over primary keys, and walk
 //     every audit chain on the target (links, hashes, checkpoint positions, head equal to source).
+// The whole run reads the source inside ONE read transaction, so every table comes from one
+// snapshot (the caller passes a separate read-only connection, see `openSnapshotSource`). A
+// checksum over the full content of every copied row is kept, and once the copy is checked the
+// snapshot is renewed and the source re-read: a row that changed meanwhile fails the run (the
+// target is emptied) instead of giving `verified: true` with stale contents.
 // A failed copy empties what it wrote, which is safe because step 1 proved the target was empty.
 // A target is never judged "identical": a key checksum cannot see changed contents, so a target
 // that holds anything is refused and must be emptied first.
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { walkChainPages } from "../audit/verify";
@@ -40,8 +45,21 @@ let openTarget: (url: string) => Promise<CopyTarget> = async (url) => {
       void (await (orm as unknown as { $client: { close(): Promise<void> } }).$client.close()),
   };
 };
+const defaultOpener = openTarget;
 export function setCopyTargetOpener(fn: ((url: string) => Promise<CopyTarget>) | undefined): void {
-  openTarget = fn ?? openTarget;
+  openTarget = fn ?? defaultOpener;
+}
+
+/**
+ * A separate read-only connection to the SQLite file, for the one-snapshot read. An in-memory
+ * database has no second connection (tests only): the handle itself is used.
+ */
+export function openSnapshotSource(live: Database): { db: Database; close(): void } {
+  const file = live.filename;
+  if (!file || file === ":memory:") return { db: live, close: () => {} };
+  const db = new Database(file, { readonly: true, strict: true });
+  db.run("PRAGMA busy_timeout = 5000");
+  return { db, close: () => db.close() };
 }
 export const connectCopyTarget = (url: string): Promise<CopyTarget> => openTarget(url);
 
@@ -198,7 +216,7 @@ async function describeTables(src: Database, orm: PgOrm, tables: string[]): Prom
 }
 
 /** One stored value, as the target's column type wants it. */
-function toPg(v: unknown, pgType: string): unknown {
+export function toPg(v: unknown, pgType: string): unknown {
   if (v === null || v === undefined) return null;
   if (pgType === "boolean") return v === 1 || v === true || v === "1";
   if (pgType === "bytea") return v instanceof Uint8Array ? v : Buffer.from(String(v));
@@ -217,6 +235,31 @@ class Checksum {
   hex(): string {
     return this.#sum.toString(16).padStart(64, "0");
   }
+}
+
+/** A stable text for every column of one source row, typed so 1 and "1" differ. */
+function contentKey(t: TableInfo, r: Row): string {
+  return t.cols
+    .map((c) => {
+      const v = r[c.name];
+      if (v === null || v === undefined) return "n";
+      if (v instanceof Uint8Array) return `b${Buffer.from(v).toString("hex")}`;
+      return `${typeof v === "bigint" ? "i" : typeof v === "number" ? "d" : "s"}${String(v)}`;
+    })
+    .join("\u0001");
+}
+
+/** Digest of the full content of every row of one source table, as the open snapshot sees it. */
+function sourceContent(src: Database, t: TableInfo): string {
+  const cs = new Checksum();
+  let last = 0;
+  for (;;) {
+    const page = batchRows(src, t, last, 5000);
+    if (page.length === 0) break;
+    for (const r of page) cs.add(contentKey(t, r));
+    last = page.at(-1)!.__rowid as number;
+  }
+  return cs.hex();
 }
 
 function sourceStats(src: Database, t: TableInfo): { rows: number; checksum: string } {
@@ -339,6 +382,23 @@ export async function copySqliteToPg(
   target: CopyTarget,
   opts: CopyOptions,
 ): Promise<CopyReport> {
+  // One read transaction for the whole run (the first read below pins the snapshot). A handle
+  // already inside a transaction is the caller's to manage, and then cannot be renewed.
+  const owns = !src.inTransaction;
+  if (owns) src.run("BEGIN");
+  try {
+    return await copyFromSnapshot(src, target, opts, owns);
+  } finally {
+    if (owns && src.inTransaction) src.run("ROLLBACK");
+  }
+}
+
+async function copyFromSnapshot(
+  src: Database,
+  target: CopyTarget,
+  opts: CopyOptions,
+  owns: boolean,
+): Promise<CopyReport> {
   const { orm } = target;
   const yieldNow = opts.yieldNow ?? (() => new Promise<void>((r) => setImmediate(r)));
   const exclude = new Set(opts.exclude);
@@ -382,6 +442,7 @@ export async function copySqliteToPg(
   if (opts.dryRun) return report;
 
   const size = opts.batchSize ?? 500;
+  const content = new Map<string, Checksum>();
   try {
     {
       for (const [i, t] of infos.entries()) {
@@ -403,6 +464,9 @@ export async function copySqliteToPg(
             `insert into ${q(t.name)} (${t.cols.map((c) => q(c.name)).join(", ")}) ${t.identity ? "overriding system value " : ""}values ${tuples.join(", ")}`,
             params,
           );
+          const cs = content.get(t.name) ?? new Checksum();
+          for (const r of rows) cs.add(contentKey(t, r));
+          content.set(t.name, cs);
           reports[i]!.copied += rows.length;
           after = rows.at(-1)!.__rowid as number;
           await yieldNow();
@@ -434,6 +498,18 @@ export async function copySqliteToPg(
         );
       }
       reports[i]!.checksum = d.checksum;
+    }
+    if (owns) {
+      // Renew the snapshot and re-read the source: what was copied must still be what is there.
+      src.run("ROLLBACK");
+      src.run("BEGIN");
+      for (const t of infos) {
+        if (sourceContent(src, t) !== (content.get(t.name) ?? new Checksum()).hex()) {
+          throw new CopyRefused(
+            `table ${t.name} changed in the source during the copy: drain the instance and run again`,
+          );
+        }
+      }
     }
     if (names.includes("audit_log")) report.audit = await verifyAuditOnTarget(src, orm);
   } catch (err) {
