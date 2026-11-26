@@ -3,8 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/db";
+import { onPostgres } from "./pg-mode";
 
-test("a file database opens in WAL with synchronous NORMAL", async () => {
+// About SQLite itself: under the Postgres suite openDatabase is a Postgres handle.
+test.skipIf(onPostgres)("a file database opens in WAL with synchronous NORMAL", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tt-sync-"));
   try {
     const db = openDatabase(join(dir, "turntable.db"));
