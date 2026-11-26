@@ -1,3 +1,5 @@
+import { VERSION } from "./version";
+
 // Transport policy for the whole HTTP server: plain http is redirected to https, and responses
 // that went over https carry HSTS. Every site we run does both (the proxy in front is the primary
 // control; this keeps a proxy misconfiguration from serving plain http).
@@ -77,6 +79,13 @@ export function withHsts(res: Response, o: TransportOptions): Response {
   if (!v) return res;
   const headers = new Headers(res.headers);
   headers.set("strict-transport-security", v);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+/** The response with the Turntable-Version header. A new Response, as for `withHsts`. */
+export function withVersion(res: Response): Response {
+  const headers = new Headers(res.headers);
+  headers.set("turntable-version", VERSION);
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
