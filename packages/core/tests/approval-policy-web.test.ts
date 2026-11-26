@@ -267,9 +267,11 @@ describe("one approver: session plus step-up", () => {
     expect(g.ok).toBe(true);
     const out = g.ok ? (g.output as any) : undefined;
     expect(out.approvers).toBe(1);
+    // a one-owner org is solo (#663)
+    expect(out.default_mode).toBe("solo");
     expect(out.environments.find((e: any) => e.environment === "production")).toMatchObject({
-      required: 2,
-      allow_author_approval: false,
+      required: 1,
+      allow_author_approval: true,
       source: "default",
       gated: true,
     });

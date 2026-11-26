@@ -1175,6 +1175,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
         },
       ],
       warnings: [],
+      defaultMode: "strict" as const,
       instanceLoosenings: [],
     };
   }

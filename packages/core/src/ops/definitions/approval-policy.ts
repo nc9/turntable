@@ -15,10 +15,11 @@ import {
   approvalPolicyMap,
   effective,
   type ApprovalPolicyMap,
+  type DefaultMode,
 } from "../../approvals/policy-setting";
 import { APPROVAL_POLICY_STATEMENT_TYPE, approvalPolicyDigest } from "../../approvals/statement";
 import { appendAudit, activeIdentities, getKeyPolicy, getOrgById } from "../../db/repos";
-import { resolveApprovalPolicies } from "../../db/repos/approvals";
+import { approvalDefaultMode, resolveApprovalPolicies } from "../../db/repos/approvals";
 import { getStoredSetting, lockSettingKey, putStoredSetting } from "../../db/repos/settings";
 import { approvalPolicySetting } from "../../settings/definitions";
 import { defineOp } from "../define";
@@ -43,12 +44,16 @@ const policyView = z.object({
   source: z.enum(["env", "toml", "db", "default"]),
   locked: z.boolean(),
   locked_by: z.string().nullable().describe("For a locked policy, the variable or file."),
+  default_mode: z
+    .enum(["solo", "strict"])
+    .describe("Which built-in default applies to `production` and `release` without an entry."),
   approvers: z.int().describe("Counted approvers: two or more means a loosening needs a quorum."),
 });
 
 function viewOf(
   r: {
     value: ApprovalPolicyMap;
+    defaultMode: DefaultMode;
     source: "env" | "toml" | "db" | "default";
     locked: boolean;
     origin?: string | undefined;
@@ -58,7 +63,7 @@ function viewOf(
   const names = [...new Set([...Object.keys(r.value), "production", "release"])].toSorted();
   return {
     environments: names.map((environment) => {
-      const e = effective(r.value, environment);
+      const e = effective(r.value, environment, r.defaultMode);
       return {
         environment,
         required: e.entry.required,
@@ -71,6 +76,7 @@ function viewOf(
     source: r.source,
     locked: r.locked,
     locked_by: !r.locked ? null : r.source === "env" ? (r.origin ?? "env") : "turntable.toml",
+    default_mode: r.defaultMode,
     approvers,
   };
 }
@@ -234,6 +240,9 @@ export const setApprovalPolicyOp = defineOp({
       return { value: next.data, source: "db" as const, locked: false };
     });
     const counted = await activeIdentities(ctx.db, orgId, await getKeyPolicy(ctx.db, orgId));
-    return viewOf(done, counted.length);
+    return viewOf(
+      { ...done, defaultMode: await approvalDefaultMode(ctx.db, orgId) },
+      counted.length,
+    );
   },
 });

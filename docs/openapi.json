@@ -7911,6 +7911,11 @@
                       },
                       "description": "Ways the approval setup is weaker than it looks, such as too few approvers."
                     },
+                    "default_mode": {
+                      "type": "string",
+                      "enum": ["solo", "strict"],
+                      "description": "The built-in default for `production` and `release` where no policy entry is set: `solo` (one approver, the author may approve) while the org has at most one owner or admin, `strict` (two people, author excluded) once it has had two. It never goes back to solo."
+                    },
                     "instance_loosenings": {
                       "type": "array",
                       "items": {
@@ -7946,6 +7951,7 @@
                     "pending_enrolments",
                     "policies",
                     "warnings",
+                    "default_mode",
                     "instance_loosenings"
                   ],
                   "additionalProperties": false

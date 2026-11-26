@@ -33,7 +33,7 @@ Each artifact records the class of the attempt that made it. A release build con
 
 ## 5. The release lane
 
-Signing and publishing run in a separate process that holds the signing keys and publish credentials, and the main process does not. The lane re-checks the tag and the artifact digests with the forge, and it needs [human approvals](/security#human-approvals) from enrolled approvers (two people by default for `production` and `release`) before it signs. See [Release lane](/release-lane) and [Signing](/signing).
+Signing and publishing run in a separate process that holds the signing keys and publish credentials, and the main process does not. The lane re-checks the tag and the artifact digests with the forge, and it needs [human approvals](/security#human-approvals) from enrolled approvers (two people by default for `production` and `release`, one while the org has a single owner or admin) before it signs. See [Release lane](/release-lane) and [Signing](/signing).
 
 ## 6. Publishing
 

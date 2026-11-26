@@ -12,6 +12,7 @@ import {
   type ApprovalPolicyMap,
   approvalPolicyMap,
   defaultEnvEntry,
+  type DefaultMode,
   PROTECTED_ENVIRONMENTS,
 } from "../../approvals/policy-setting";
 import { ambientSettings } from "../../settings/ambient";
@@ -22,7 +23,8 @@ import { isUniqueViolation } from "../errors";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
 import { ulid } from "../ulid";
-import { putStoredSetting } from "./settings";
+import { getStoredSetting, putStoredSetting } from "./settings";
+import { appendAudit } from "./audit";
 import {
   getOrgById,
   listAttempts,
@@ -60,6 +62,52 @@ export type EnvPolicy = {
 
 const POLICY_KEY = approvalPolicySetting.key;
 
+/** Internal org marker, not a registry setting: set once the org has had two eligible people. */
+const STRICT_MARKER_KEY = "approval_default_strict";
+
+/** People who could enrol and approve: distinct owners and admins of the org (#663). */
+export function countEligiblePeople(db: Db, orgId: string): Promise<number> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({ userId: s.orgMembers.userId })
+      .from(s.orgMembers)
+      .where(and(eq(s.orgMembers.orgId, orgId), inArray(s.orgMembers.role, ["owner", "admin"])));
+    return new Set(rows.map((r) => r.userId)).size;
+  });
+}
+
+/**
+ * Which built-in default the org is under. Solo while exactly one owner or admin exists (none: strict, nobody to relax it for). The
+ * first time a second one is seen the org ratchets to strict: the marker is written
+ * compare-and-set and the switch audited once. It never goes back, even when the second person
+ * leaves; only an explicit, signed policy entry sets something else.
+ */
+export async function approvalDefaultMode(db: Db, orgId: string): Promise<DefaultMode> {
+  const target = { kind: "org", id: orgId, orgId } as const;
+  if (await getStoredSetting(db, target, STRICT_MARKER_KEY)) return "strict";
+  const eligible = await countEligiblePeople(db, orgId);
+  // Exactly one person is a solo org. An org with no owner or admin has nobody to relax for.
+  if (eligible === 1) return "solo";
+  if (eligible < 2) return "strict";
+  const won = await putStoredSetting(db, target, STRICT_MARKER_KEY, true, "system", Date.now(), {
+    raw: undefined,
+  });
+  if (won)
+    await appendAudit(
+      db,
+      { orgId },
+      {
+        principalKind: "system",
+        principalId: "approvals",
+        op: "approval_default.strict",
+        effect: "write",
+        outcome: "ok",
+        input: { eligible, from: "solo", to: "strict" },
+      },
+    );
+  return "strict";
+}
+
 /**
  * The approval policy map of an org, resolved: environment, `turntable.toml`, the stored value,
  * then the default. The one reader of the setting, so the engine, the ops and the CLI all see
@@ -69,16 +117,25 @@ export async function resolveApprovalPolicies(
   db: Db,
   orgId: string,
   rt: SettingsRuntime = ambientSettings(),
-): Promise<Resolved & { value: ApprovalPolicyMap }> {
+): Promise<Resolved & { value: ApprovalPolicyMap; defaultMode: DefaultMode }> {
   const org = await getOrgById(db, orgId);
   const r = await resolveSetting(rt, db, POLICY_KEY, {
     orgId,
     ...(org ? { orgSlug: org.slug } : {}),
   });
-  return { ...r, value: r.value as ApprovalPolicyMap };
+  return {
+    ...r,
+    value: r.value as ApprovalPolicyMap,
+    defaultMode: await approvalDefaultMode(db, orgId),
+  };
 }
 
-const toPolicy = (environment: string, map: ApprovalPolicyMap, locked: boolean): EnvPolicy => {
+const toPolicy = (
+  environment: string,
+  map: ApprovalPolicyMap,
+  locked: boolean,
+  mode: DefaultMode,
+): EnvPolicy => {
   const e = map[environment];
   if (e) {
     return {
@@ -91,11 +148,11 @@ const toPolicy = (environment: string, map: ApprovalPolicyMap, locked: boolean):
       locked,
     };
   }
-  const d = defaultEnvEntry(environment);
+  const d = defaultEnvEntry(environment, mode);
   return {
     environment,
     required: d.entry.required,
-    allowAuthorApproval: false,
+    allowAuthorApproval: d.entry.allow_author_approval,
     keyPolicy: "any",
     source: "default",
     gated: d.gated,
@@ -110,7 +167,7 @@ export async function getEnvPolicy(
   rt?: SettingsRuntime,
 ): Promise<EnvPolicy> {
   const r = await resolveApprovalPolicies(db, orgId, rt);
-  return toPolicy(environment, r.value, r.locked);
+  return toPolicy(environment, r.value, r.locked, r.defaultMode);
 }
 
 /**
@@ -173,7 +230,7 @@ export async function listEnvPolicies(
   const r = await resolveApprovalPolicies(db, orgId, rt);
   return Object.keys(r.value)
     .toSorted()
-    .map((e) => toPolicy(e, r.value, r.locked));
+    .map((e) => toPolicy(e, r.value, r.locked, r.defaultMode));
 }
 
 /**
