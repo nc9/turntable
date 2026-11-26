@@ -6,18 +6,20 @@
 // driver behind a drizzle pg handle (Bun's SQL client, or PGlite in tests).
 //
 // Shape of a run:
-//  1. migrate the target (idempotent, under the same advisory lock a booting server uses);
-//  2. refuse a target that holds rows unless every copied table already equals the source;
+//  1. refuse a target that already holds rows in any table this copy writes, before it is touched;
+//  2. migrate the target (idempotent, under the same advisory lock a booting server uses);
 //  3. copy table by table in foreign-key order, in batches, yielding between them;
 //  4. reset identity sequences so the next generated id is above every copied one;
 //  5. verify per-table counts and an order-independent checksum over primary keys, and walk
 //     every audit chain on the target (links, hashes, checkpoint positions, head equal to source).
-// A failed copy empties what it wrote, which is safe because step 2 proved the target was empty.
+// A failed copy empties what it wrote, which is safe because step 1 proved the target was empty.
+// A target is never judged "identical": a key checksum cannot see changed contents, so a target
+// that holds anything is refused and must be emptied first.
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { walkChainPages } from "../audit/verify";
-import { applyPgMigrations } from "./pg";
+import { applyPgMigrations, poolSettings } from "./pg";
 import { migrations } from "./migrations.pg.generated";
 import type { AuditRow } from "./repos";
 
@@ -30,7 +32,8 @@ export type CopyTarget = { orm: PgOrm; close(): Promise<void> };
 /** Test hook: how a URL becomes a target. The default connects with Bun's SQL client. */
 let openTarget: (url: string) => Promise<CopyTarget> = async (url) => {
   const { drizzle } = await import("drizzle-orm/bun-sql");
-  const orm = drizzle(url, { connection: { max: 2 } } as never);
+  // the same TLS requirement as the server's own pool, since this target receives the whole database
+  const orm = drizzle({ connection: { url, ...poolSettings(url), max: 2 } } as never);
   return {
     orm: orm as unknown as PgOrm,
     close: async () =>
@@ -74,8 +77,8 @@ export type CopyOptions = {
 
 export type CopyReport = {
   dry_run: boolean;
-  /** `empty`, or `identical` when every copied table already equals the source. */
-  target_state: "empty" | "identical";
+  /** The target held no rows in any copied table (anything else is refused). */
+  target_state: "empty";
   migrations_applied: string[];
   excluded: string[];
   tables: TableReport[];
@@ -85,6 +88,22 @@ export type CopyReport = {
 };
 
 export class CopyRefused extends Error {}
+
+const NOT_EMPTY = "the target already holds rows: use an empty database";
+
+/** Refuses a target that has rows in any of these tables (a table it lacks yet counts as empty). */
+async function refuseNonEmpty(orm: PgOrm, names: readonly string[]): Promise<void> {
+  const present = await query(
+    orm,
+    "select table_name from information_schema.tables where table_schema = current_schema()",
+  );
+  const have = new Set(present.map((r) => String(r.table_name)));
+  for (const t of names) {
+    if (!have.has(t)) continue;
+    const [r] = await query(orm, `select 1 as x from ${q(t)} limit 1`);
+    if (r) throw new CopyRefused(NOT_EMPTY);
+  }
+}
 
 type Col = { name: string; pg: string };
 type TableInfo = { name: string; pk: string[]; cols: Col[]; identity: string | null };
@@ -332,33 +351,27 @@ export async function copySqliteToPg(
     all.filter((t) => !exclude.has(t)),
   );
 
+  // Check before migrating: a wrong or older database that holds rows is refused untouched.
+  await refuseNonEmpty(orm, names);
   const applied = await applyPgMigrations(orm as never, migrations);
   const infos = await describeTables(src, orm, names);
   const reports: TableReport[] = [];
-  let anyRows = false;
-  let identical = true;
   for (const t of infos) {
     const s = sourceStats(src, t);
     const d = await targetStats(orm, t);
-    if (d.rows > 0) anyRows = true;
-    if (d.rows !== s.rows || d.checksum !== s.checksum) identical = false;
+    // the migrations may have seeded rows: they would collide with the copy, so refuse them too
+    if (d.rows > 0) throw new CopyRefused(NOT_EMPTY);
     reports.push({
       table: t.name,
       source_rows: s.rows,
-      target_rows: d.rows,
+      target_rows: 0,
       copied: 0,
       checksum: s.checksum,
     });
   }
-  if (anyRows && !identical) {
-    throw new CopyRefused(
-      "the target already holds rows that differ from the source: use an empty database",
-    );
-  }
-  const state: "empty" | "identical" = anyRows ? "identical" : "empty";
   const report: CopyReport = {
     dry_run: opts.dryRun,
-    target_state: state,
+    target_state: "empty",
     migrations_applied: applied,
     excluded: [...exclude].sort(),
     tables: reports,
@@ -370,7 +383,7 @@ export async function copySqliteToPg(
 
   const size = opts.batchSize ?? 500;
   try {
-    if (state === "empty") {
+    {
       for (const [i, t] of infos.entries()) {
         const per = Math.max(1, Math.min(size, Math.floor(30_000 / t.cols.length)));
         let after = 0;
@@ -425,9 +438,8 @@ export async function copySqliteToPg(
     if (names.includes("audit_log")) report.audit = await verifyAuditOnTarget(src, orm);
   } catch (err) {
     // a failed copy or check: the target was empty when this began, so emptying it restores that
-    if (state === "empty") {
-      for (const t of infos.toReversed())
-        await query(orm, `delete from ${q(t.name)}`).catch(() => {});
+    for (const t of infos.toReversed()) {
+      await query(orm, `delete from ${q(t.name)}`).catch(() => {});
     }
     throw err;
   }

@@ -107,12 +107,21 @@ sqliteDescribe("copySqliteToPg", () => {
       [a.orgId],
     );
     expect(Number(n!.id)).toBeGreaterThan(maxEvent);
-    // booleans and bytes arrive as their Postgres types
-    const col = await rows(
-      target,
-      "select data_type from information_schema.columns where table_name = 'org_quotas' limit 1",
+    // booleans and bytes arrive as their Postgres types, with the source's values
+    const want = (src.query("select local from runs order by id").all() as { local: number }[]).map(
+      (r) => r.local === 1,
     );
-    expect(col.length).toBeGreaterThan(0);
+    expect(want.length).toBeGreaterThan(0);
+    const got = await rows(target, "select local from runs order by id");
+    expect(got.map((r) => r.local)).toEqual(want);
+    const chunks = src.query("select bytes from log_chunks order by attempt_id, offset").all() as {
+      bytes: Uint8Array;
+    }[];
+    expect(chunks.length).toBeGreaterThan(0);
+    const back = await rows(target, 'select bytes from log_chunks order by attempt_id, "offset"');
+    expect(back.map((r) => Buffer.from(r.bytes as Uint8Array).toString("hex"))).toEqual(
+      chunks.map((r) => Buffer.from(r.bytes).toString("hex")),
+    );
   });
 
   test("the SQLite source is not modified", async () => {
@@ -164,22 +173,35 @@ sqliteDescribe("copySqliteToPg", () => {
     expect(() => fkOrder(src, ["jobs"])).toThrow(CopyRefused);
   });
 
-  test("a non-empty target is refused unless identical", async () => {
+  test("a non-empty target is refused, before it is migrated and with nothing deleted", async () => {
     const target = await freshTarget();
     await copySqliteToPg(src, target, { dryRun: false, exclude: [] });
-    // identical: a second dry run and a second real run both succeed and copy nothing
-    const again = await copySqliteToPg(src, target, { dryRun: false, exclude: [] });
-    expect(again.target_state).toBe("identical");
-    expect(again.tables.every((t) => t.copied === 0)).toBe(true);
-    expect(again.verified).toBe(true);
-    // different: refused, and nothing is deleted
-    await rows(target, "delete from log_chunks");
+    // a second run, real or dry, is refused: a key checksum cannot see changed contents
+    for (const dryRun of [true, false]) {
+      await expect(copySqliteToPg(src, target, { dryRun, exclude: [] })).rejects.toThrow(
+        /already holds rows/,
+      );
+    }
+    // the same keys with stale contents (the case an "identical" check would have accepted)
+    src.run("update orgs set name = 'renamed' where id = ?", [a.orgId]);
     await expect(copySqliteToPg(src, target, { dryRun: false, exclude: [] })).rejects.toThrow(
       /already holds rows/,
     );
     expect((await rows(target, "select count(*)::int as n from orgs"))[0]!.n).toBe(
       sourceCount("orgs"),
     );
+    // refused before migrating: a database with rows and no migration bookkeeping stays as it is
+    const bare = await freshTarget();
+    await rows(bare, "create table orgs (id text primary key)");
+    await rows(bare, "insert into orgs values ('x')");
+    await expect(copySqliteToPg(src, bare, { dryRun: true, exclude: [] })).rejects.toThrow(
+      /already holds rows/,
+    );
+    const tables = await rows(
+      bare,
+      "select table_name from information_schema.tables where table_schema = current_schema()",
+    );
+    expect(tables.map((r) => r.table_name)).toEqual(["orgs"]);
   });
 
   test("a tampered audit row is caught on the target", async () => {
@@ -200,12 +222,17 @@ sqliteDescribe("instance_db_copy op", () => {
   const call = (input: Record<string, unknown>, token = secret) =>
     dispatch(env, { kind: "bearer", token }, "instance_db_copy", input);
   const ENV = "TURNTABLE_COPY_TARGET_URL";
+  let lastTarget: CopyTarget;
 
   beforeEach(async () => {
     env = { registry, db, allowInstance: true };
     secret = (await createInstanceTokenFromCli(db, { name: "ops" })).secret;
     process.env[ENV] = "postgres://invalid.example/db";
-    setCopyTargetOpener(async () => freshTarget());
+    setCopyTargetOpener(async () => {
+      // the op closes what it opens: keep the handle readable (the file's afterEach closes it)
+      lastTarget = await freshTarget();
+      return { orm: lastTarget.orm, close: async () => {} };
+    });
   });
   afterEach(() => {
     delete process.env[ENV];
@@ -225,6 +252,12 @@ sqliteDescribe("instance_db_copy op", () => {
     });
     expect(real.ok).toBe(true);
     if (real.ok) expect((real.output as { verified: boolean }).verified).toBe(true);
+    // the op's own audit entry was written before the copy, so it is on the target too
+    const onTarget = await rows(
+      lastTarget,
+      "select outcome from audit_log where op = 'instance_db_copy'",
+    );
+    expect(onTarget.map((r) => r.outcome)).toContain("started");
   });
 
   test("it is audited, and the URL is never in the output or the audit", async () => {

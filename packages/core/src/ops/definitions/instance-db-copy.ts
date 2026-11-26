@@ -7,9 +7,10 @@ import { z } from "zod";
 import { connectCopyTarget, CopyRefused, copySqliteToPg } from "../../db/copy-to-pg";
 import { DIALECT } from "../../db/dialect";
 import { processDrain } from "../../scheduler/drain";
-import { countRunning } from "../../db/repos";
+import { appendAudit, countRunning } from "../../db/repos";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
+import { principalId } from "../principal";
 
 /** Only variables of this shape can name the target, so the op cannot be pointed at a secret. */
 const URL_ENV = /^TURNTABLE_[A-Z0-9_]*_URL$/;
@@ -38,8 +39,9 @@ export const instanceDbCopyOp = defineOp({
     "batches, yielding between them so the server keeps answering; resets identity sequences so " +
     "the next id is above every copied one; then verifies per-table counts and a checksum over " +
     "primary keys, and walks every org's audit chain on the target (links, hashes, checkpoint " +
-    "positions, head equal to the source). A target that holds different rows is refused; one that " +
-    "is already identical is only verified. A failed copy empties the target again. The SQLite " +
+    "positions, head equal to the source). A target that holds any row in a copied table is refused " +
+    "before it is migrated. A failed copy empties the target again; a real run writes its own " +
+    "audit entry before copying, so the copy carries it. The SQLite " +
     "file is never modified. Only the instance administrator can call it. Not an MCP tool.",
   input: z.object({
     target_url_env: z
@@ -56,7 +58,7 @@ export const instanceDbCopyOp = defineOp({
   }),
   output: z.object({
     dry_run: z.boolean(),
-    target_state: z.enum(["empty", "identical"]),
+    target_state: z.literal("empty"),
     migrations_applied: z.array(z.string()),
     excluded: z.array(z.string()),
     tables: z.array(tableReport),
@@ -106,6 +108,18 @@ export const instanceDbCopyOp = defineOp({
         );
       }
     }
+    if (!i.dry_run) {
+      // The dispatcher appends its row after this handler returns, which is after the copy, so it
+      // would never reach the target. Write the entry first: the copy then carries it.
+      await appendAudit(ctx.db, ctx.scope, {
+        principalKind: ctx.principal.kind,
+        principalId: principalId(ctx.principal),
+        op: "instance_db_copy",
+        effect: "write",
+        outcome: "started",
+        input: { target_url_env: i.target_url_env, exclude_tables: i.exclude_tables },
+      });
+    }
     const src = (ctx.db.orm as unknown as { $client: Database }).$client;
     let target;
     try {
@@ -127,7 +141,7 @@ export const instanceDbCopyOp = defineOp({
       );
       throw new OpError(
         "unavailable",
-        "the copy failed; the target was emptied. See the server log",
+        "the copy failed; the target is left empty or untouched. See the server log",
       );
     } finally {
       await target.close().catch(() => {});

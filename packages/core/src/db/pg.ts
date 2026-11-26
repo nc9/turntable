@@ -154,16 +154,18 @@ function connect(target: PgTarget, readOnly = false): { orm: PgOrm; close: () =>
       ...(target.schema ? { search_path: target.schema } : {}),
       ...(readOnly ? { default_transaction_read_only: "on" } : {}),
     };
+    // the TLS requirement and pool settings apply to every handle on a real URL, a read-only one too
+    const pool = target.schema
+      ? // a test database is small and short-lived: few connections, closed when idle
+        { max: 4, idleTimeout: 1 }
+      : poolSettings(target.url);
     const orm =
       target.schema || readOnly
         ? drizzleBunSql({
             connection: {
               url: target.url,
-              ...(target.schema
-                ? // a test database is small and short-lived: few connections, closed when idle
-                  { max: 4, idleTimeout: 1 }
-                : {}),
-              connection: params,
+              ...pool,
+              connection: { ...("connection" in pool ? pool.connection : {}), ...params },
             },
             schema: pgSchema,
           })
