@@ -29,6 +29,7 @@ import {
   getProject,
   getProjectBySlug,
   instanceOrgSummary,
+  instanceInfraErrors,
   instanceRunActivity,
   instanceRunSummary,
   listProjects,
@@ -60,6 +61,7 @@ import { syncInstallation } from "../../github/installations";
 import { staticPollKey } from "../project-setup";
 import { resolveGithubUserId } from "../../approvals/github-id";
 import { OpError } from "../errors";
+import { sanitizeInfraError } from "../../infra-error-text";
 import { rotateInstanceToken } from "../instance-token-cli";
 import { generateToken, hashToken } from "../tokens";
 import { ambientSettings } from "../../settings/ambient";
@@ -1514,6 +1516,131 @@ export const instanceRunSummaryOp = defineOp({
       },
     );
     return { since: new Date(since).toISOString(), until: new Date(now).toISOString(), orgs: rows };
+  },
+});
+
+export { sanitizeInfraError };
+
+export const instanceInfraErrorsOp = defineOp({
+  name: "instance_infra_errors",
+  summary:
+    "Recent infra_error attempts across orgs, with a sanitized error message, for operators.",
+  description:
+    "Recent attempts that ended `infra_error`, newest first, over a window (`since`: an ISO 8601 " +
+    "time or a duration like 24h; default 24 hours, at most 7 days). Each row has the org and " +
+    "project slug, run id, job key, attempt number, infra kind (`unknown` when none was " +
+    "recorded), the error text sanitized (secrets and tokens redacted, URL credentials, query " +
+    "strings and fragments removed, at most 500 characters), the underlying error's name and code " +
+    "when recorded (`error_name`, `error_code`) and timestamps. Never log or job " +
+    "output. Narrow it with `target_org`, `target_project` (needs target_org) and `run_id`. Use " +
+    "it to diagnose an infra error with no tenant token. The read is audited in the system " +
+    "chain. Only the instance administrator can call it. Read-only. Not an MCP tool.",
+  input: z.object({
+    since: z
+      .string()
+      .max(40)
+      .optional()
+      .describe("ISO 8601 time or a duration such as 24h or 2d. Default 24h; at most 7 days back."),
+    target_org: z.string().max(100).optional().describe("Only this org (slug)."),
+    target_project: z
+      .string()
+      .max(100)
+      .optional()
+      .describe("Only this project (slug); needs target_org."),
+    run_id: z.string().max(100).optional().describe("Only this run."),
+    limit: z.int().min(1).max(200).optional().describe("At most this many rows. Default 50."),
+  }),
+  output: z.object({
+    since: z.string(),
+    until: z.string(),
+    errors: z.array(
+      z.object({
+        org: z.string(),
+        project: z.string(),
+        run_id: z.string(),
+        job_key: z.string(),
+        attempt: z.int(),
+        infra_kind: z.string(),
+        error_class: z.string(),
+        error_name: z.string().nullable(),
+        error_code: z.string().nullable(),
+        created_at: z.string(),
+        started_at: z.string().nullable(),
+        finished_at: z.string().nullable(),
+      }),
+    ),
+  }),
+  effect: "read",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: true,
+  scope: "org",
+  http: { method: "GET", path: "/instance/infra-errors" },
+  mcp: false,
+  async handler(ctx, i) {
+    const now = ctx.now();
+    const since = parseSummarySince(i.since, now);
+    if (i.target_project !== undefined && i.target_org === undefined) {
+      throw new OpError("invalid_input", "target_project needs target_org");
+    }
+    const orgs = (await listAllOrgs(ctx.db)).filter((o) => o.slug !== SYSTEM_ORG_SLUG);
+    let orgId: string | undefined;
+    let projectId: string | undefined;
+    if (i.target_org !== undefined) {
+      const o = orgs.find((x) => x.slug === i.target_org);
+      if (!o) throw new OpError("not_found", "no such org");
+      orgId = o.id;
+      if (i.target_project !== undefined) {
+        const p = await getProjectBySlug(ctx.db, { orgId: o.id }, i.target_project);
+        if (!p) throw new OpError("not_found", "no such project");
+        projectId = p.id;
+      }
+    }
+    const rows = await instanceInfraErrors(
+      ctx.db,
+      since,
+      { orgId, projectId, runId: i.run_id },
+      i.limit ?? 50,
+    );
+    const orgSlug = new Map(orgs.map((o) => [o.id, o.slug]));
+    const projectSlugs = new Map<string, string>();
+    for (const id of new Set(rows.map((r) => r.orgId))) {
+      for (const p of await listProjects(ctx.db, { orgId: id })) projectSlugs.set(p.id, p.slug);
+    }
+    const iso = (t: number | null): string | null =>
+      t === null ? null : new Date(t).toISOString();
+    const errors = rows
+      .filter((r) => orgSlug.has(r.orgId))
+      .map((r) => ({
+        org: orgSlug.get(r.orgId)!,
+        project: projectSlugs.get(r.projectId) ?? "",
+        run_id: r.runId,
+        job_key: r.jobKey,
+        attempt: r.attempt,
+        infra_kind: r.infraKind ?? "unknown",
+        error_class: sanitizeInfraError(r.errorClass),
+        error_name: r.errorName === null ? null : sanitizeInfraError(r.errorName).slice(0, 60),
+        error_code: r.errorCode === null ? null : sanitizeInfraError(r.errorCode).slice(0, 60),
+        created_at: new Date(r.createdAt).toISOString(),
+        started_at: iso(r.startedAt),
+        finished_at: iso(r.finishedAt),
+      }));
+    await appendAudit(
+      ctx.db,
+      { orgId: await systemOrgId(ctx.db) },
+      {
+        principalKind: "instance",
+        principalId: ctx.principal.id,
+        op: "instance_infra_errors",
+        effect: "read",
+        outcome: "ok",
+        input: {
+          rows: errors.length,
+          window_ms: now - since,
+          filtered: i.target_org !== undefined || i.run_id !== undefined,
+        },
+      },
+    );
+    return { since: new Date(since).toISOString(), until: new Date(now).toISOString(), errors };
   },
 });
 

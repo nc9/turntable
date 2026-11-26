@@ -265,6 +265,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "instance_drain_status",
       "instance_get_setting",
       "instance_github_app_status",
+      "instance_infra_errors",
       "instance_ingest_status",
       "instance_list_orgs",
       "instance_list_settings",

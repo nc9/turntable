@@ -10,6 +10,7 @@ import {
   samePolicy,
   sortedPolicy,
   type KeyPolicy,
+  type KeyPolicyMode,
 } from "./key-policy";
 import type { Db } from "../db";
 import {
@@ -59,8 +60,23 @@ import {
   type RunStatement,
   type EnvStatement,
   type PolicyStatement,
+  APPROVAL_POLICY_STATEMENT_TYPE,
+  approvalPolicyDigest,
+  type ApprovalPolicyShape,
+  type ApprovalPolicyStatement,
 } from "./statement";
+import { canonicalJson } from "../audit/chain";
 import { systemOrgId } from "../audit/failures";
+import { getStoredSetting } from "../db/repos/settings";
+import type { SettingsRuntime } from "../settings/resolve";
+import { resolveApprovalPolicies } from "../db/repos/approvals";
+import {
+  approvalPolicyLoosening,
+  approvalPolicyMap,
+  effective,
+  type ApprovalPolicyMap,
+  type EnvPolicyEntry,
+} from "./policy-setting";
 import { parseEd25519PublicKey } from "./keys";
 import { dbKeyStore } from "./store";
 import { verifySignature, VerifyError, type SignatureMaterial, type Verified } from "./verify";
@@ -70,7 +86,13 @@ type Ctx = { db: Db; scope: Scope; now: number; rp?: RelyingParty | undefined };
 
 async function verified(
   c: Ctx,
-  statement: EnvStatement | ReleaseStatement | EnrolStatement | PolicyStatement | RunStatement,
+  statement:
+    | EnvStatement
+    | ReleaseStatement
+    | EnrolStatement
+    | PolicyStatement
+    | RunStatement
+    | ApprovalPolicyStatement,
   signature: SignatureMaterial,
 ): Promise<Verified> {
   const key = await dbKeyStore(c.db, c.scope.orgId).lookup(statement.approver);
@@ -961,4 +983,139 @@ export async function setKeyPolicyBootstrap(
   const next = sortedPolicy(parseKeyPolicy(input));
   await setKeyPolicy(db, orgId, next, "cli:bootstrap", now);
   return next;
+}
+
+// ---- approval policy loosening (#664) ----
+
+/** The stored `approval_policy` row's write time: a statement binds it so it cannot be replayed. */
+async function approvalPolicyGeneration(db: Db, orgId: string): Promise<number> {
+  const stored = await getStoredSetting(db, { kind: "org", id: orgId, orgId }, "approval_policy");
+  return stored?.updatedAt ?? 0;
+}
+
+/** The effective policy of one environment as a statement binds it, and the setting's generation. */
+export async function approvalPolicySnapshot(
+  db: Db,
+  orgId: string,
+  environment: string,
+  rt?: SettingsRuntime,
+): Promise<{ generation: number; old: ApprovalPolicyShape; map: ApprovalPolicyMap }> {
+  const cur = await resolveApprovalPolicies(db, orgId, rt);
+  const e = effective(cur.value, environment);
+  return {
+    generation: await approvalPolicyGeneration(db, orgId),
+    old: shapeOf(e.entry, e.gated),
+    map: cur.value,
+  };
+}
+
+const shapeOf = (entry: EnvPolicyEntry, gated: boolean): ApprovalPolicyShape => ({
+  gated,
+  required: entry.required,
+  allow_author_approval: entry.allow_author_approval,
+  key_policy: entry.key_policy,
+});
+
+/** The entry a change sets for one environment: omitted fields keep what the environment has. */
+export function nextEnvEntry(
+  map: ApprovalPolicyMap,
+  environment: string,
+  i: { required: number; allow_author_approval: boolean; key_policy?: KeyPolicyMode | undefined },
+): EnvPolicyEntry {
+  return {
+    required: i.required,
+    allow_author_approval: i.allow_author_approval,
+    key_policy: i.key_policy ?? effective(map, environment).entry.key_policy,
+  };
+}
+
+/** Builds the statement an approver signs to let one environment's approval policy loosen. */
+export async function buildApprovalPolicyStatement(
+  db: Db,
+  orgId: string,
+  orgSlug: string,
+  i: {
+    environment: string;
+    required: number;
+    allow_author_approval: boolean;
+    key_policy?: KeyPolicyMode | undefined;
+  },
+  o: { approver: string; expiresAt: number; nonce: string; rt?: SettingsRuntime | undefined },
+): Promise<ApprovalPolicyStatement> {
+  const snap = await approvalPolicySnapshot(db, orgId, i.environment, o.rt);
+  const entry = nextEnvEntry(snap.map, i.environment, i);
+  if (!approvalPolicyMap.safeParse({ [i.environment]: entry }).success)
+    throw new OpError("invalid_input", "that is not a valid approval policy");
+  const next = { ...snap.map, [i.environment]: entry };
+  if (approvalPolicyLoosening(snap.map, next).length === 0)
+    throw new OpError(
+      "invalid_input",
+      "that change does not loosen the policy: it needs no approvers' signatures",
+    );
+  return {
+    type: APPROVAL_POLICY_STATEMENT_TYPE,
+    org: orgSlug,
+    environment: i.environment,
+    generation: snap.generation,
+    old: snap.old,
+    new: shapeOf(entry, true),
+    approver: o.approver,
+    expires_at: o.expiresAt,
+    nonce: o.nonce,
+  };
+}
+
+export type ApprovalPolicySignatureResult = {
+  approvals: number;
+  required: number;
+  digest: string;
+};
+
+/** The distinct counted people who signed one proposal, and how many must (`policyQuorum`). */
+export async function approvalPolicyQuorumState(
+  db: Db,
+  orgId: string,
+  digest: string,
+  now: number,
+): Promise<{ people: Set<string>; required: number }> {
+  const keyPolicy = await getKeyPolicy(db, orgId);
+  const recs = (await listPolicyRecords(db, orgId, digest)).filter((r) => r.expiresAt > now);
+  return {
+    people: await recordIdentities(db, orgId, recs, keyPolicy),
+    required: await policyQuorum(db, orgId),
+  };
+}
+
+/**
+ * One approver's signature on an approval-policy loosening. It only records the signature: the
+ * change itself is made by the org's owner (`set_approval_policy`), who needs a quorum of these.
+ */
+export async function applyApprovalPolicySignature(
+  c: Ctx,
+  statement: ApprovalPolicyStatement,
+  signature: SignatureMaterial,
+  rt?: SettingsRuntime,
+): Promise<ApprovalPolicySignatureResult> {
+  const v = await verified(c, statement, signature);
+  await checkTenant(c, statement);
+  checkExpiry(statement.expires_at, c.now);
+  if (approverIdentity(v.key) === null)
+    throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
+  const violation = keyPolicyViolation(await getKeyPolicy(c.db, c.scope.orgId), v.key);
+  if (violation !== null) throw new OpError("forbidden", `this key cannot approve: ${violation}`);
+  const snap = await approvalPolicySnapshot(c.db, c.scope.orgId, statement.environment, rt);
+  if (
+    snap.generation !== statement.generation ||
+    canonicalJson(snap.old) !== canonicalJson(statement.old)
+  )
+    throw new OpError("conflict", "the approval policy changed since this statement was issued");
+  const digest = approvalPolicyDigest(statement);
+  await consumeProof(c, v, "policy", statement.nonce);
+  await record(c, v, signature, {
+    kind: "policy",
+    enrolmentId: digest,
+    expiresAt: statement.expires_at,
+  });
+  const q = await approvalPolicyQuorumState(c.db, c.scope.orgId, digest, c.now);
+  return { approvals: q.people.size, required: q.required, digest };
 }

@@ -3,7 +3,7 @@
 // newest run. Instance-level, so it is unscoped like `instanceRunActivity`. One grouped query per
 // table, bounded by `since`. No id, ref, sha, branch or name leaves this file but the org and
 // project ids the caller maps to slugs.
-import { type AnyColumn, and, eq, gte, type SQL, sql } from "drizzle-orm";
+import { type AnyColumn, and, desc, eq, gte, inArray, type SQL, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import { sandboxSpans, spanMs } from "./usage";
@@ -134,5 +134,101 @@ export async function instanceRunSummary(
       c.sandboxMs += spanMs([sp], since, now);
     }
     return [...out.values()];
+  });
+}
+
+export type InfraErrorRow = {
+  orgId: string;
+  projectId: string;
+  runId: string;
+  jobKey: string;
+  attempt: number;
+  infraKind: string | null;
+  errorClass: string | null;
+  /** The underlying error's name and code, from the attempt's `infra.error` event. Not sanitized. */
+  errorName: string | null;
+  errorCode: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+};
+
+/**
+ * Recent `infra_error` attempts across orgs (#670), newest first, for the instance administrator.
+ * `errorClass` is the stored text, NOT sanitized: the op sanitizes it before it leaves.
+ */
+export function instanceInfraErrors(
+  db: Db,
+  since: number,
+  filter: {
+    orgId?: string | undefined;
+    projectId?: string | undefined;
+    runId?: string | undefined;
+  },
+  limit: number,
+): Promise<InfraErrorRow[]> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({
+        orgId: s.jobAttempts.orgId,
+        projectId: s.jobAttempts.projectId,
+        attemptId: s.jobAttempts.id,
+        runId: s.jobs.runId,
+        jobKey: s.jobs.jobKey,
+        attempt: s.jobAttempts.attempt,
+        infraKind: s.jobAttempts.infraKind,
+        errorClass: s.jobAttempts.errorClass,
+        createdAt: s.jobAttempts.createdAt,
+        startedAt: s.jobAttempts.startedAt,
+        finishedAt: s.jobAttempts.finishedAt,
+      })
+      .from(s.jobAttempts)
+      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .where(
+        and(
+          eq(s.jobAttempts.state, "infra_error"),
+          gte(s.jobAttempts.createdAt, since),
+          filter.orgId === undefined ? undefined : eq(s.jobAttempts.orgId, filter.orgId),
+          filter.projectId === undefined
+            ? undefined
+            : eq(s.jobAttempts.projectId, filter.projectId),
+          filter.runId === undefined ? undefined : eq(s.jobs.runId, filter.runId),
+        ),
+      )
+      .orderBy(desc(s.jobAttempts.createdAt), desc(s.jobAttempts.id))
+      .limit(limit);
+    const detail = new Map<string, { name: string | null; code: string | null }>();
+    if (rows.length > 0) {
+      const evs = await h.orm
+        .select({ attemptId: s.events.attemptId, payload: s.events.payload })
+        .from(s.events)
+        .where(
+          and(
+            eq(s.events.type, "infra.error"),
+            inArray(
+              s.events.attemptId,
+              rows.map((r) => r.attemptId),
+            ),
+          ),
+        )
+        .orderBy(s.events.id);
+      for (const e of evs) {
+        if (e.attemptId === null) continue;
+        try {
+          const p = JSON.parse(e.payload) as { error_name?: unknown; error_code?: unknown };
+          detail.set(e.attemptId, {
+            name: typeof p.error_name === "string" ? p.error_name : null,
+            code: typeof p.error_code === "string" ? p.error_code : null,
+          });
+        } catch {
+          // A malformed payload carries no detail.
+        }
+      }
+    }
+    return rows.map(({ attemptId, ...r }) => ({
+      ...r,
+      errorName: detail.get(attemptId)?.name ?? null,
+      errorCode: detail.get(attemptId)?.code ?? null,
+    }));
   });
 }

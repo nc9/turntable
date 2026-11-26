@@ -6,11 +6,17 @@
 // is locked: the set refuses and says where it was set. Secrets are never settings.
 import { z } from "zod";
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
-import { getOrgById, getOrgBySlug, getProject, getProjectBySlug } from "../../db/repos";
+import {
+  appendAudit,
+  getOrgById,
+  getOrgBySlug,
+  getProject,
+  getProjectBySlug,
+} from "../../db/repos";
 import { getStoredSetting, lockSettingKey, putStoredSetting } from "../../db/repos/settings";
 import type { SettingScope } from "../../db/schema";
 import type { SettingDef } from "../../settings/define";
-import { settingsRegistry } from "../../settings/definitions";
+import { approvalPolicySetting, settingsRegistry } from "../../settings/definitions";
 import {
   createSettingsRuntime,
   type Resolved,
@@ -20,7 +26,7 @@ import {
 } from "../../settings/resolve";
 import { defineOp, type OpContext } from "../define";
 import { guardSettingChange } from "../setting-guard";
-import { recordSettingChange } from "../setting-audit";
+import { recordSettingChange, settingLoosening } from "../setting-audit";
 import { OpError } from "../errors";
 import { invalidateSandboxLimits } from "../../scheduler/live-limits";
 
@@ -149,7 +155,7 @@ async function read(
 export async function setSetting(
   ctx: OpContext,
   def: SettingDef,
-  i: { value?: unknown; unset?: boolean | undefined },
+  i: { value?: unknown; unset?: boolean | undefined; reason?: string | undefined },
   showFile: boolean,
   target?: { org: string; project?: string | undefined },
 ): Promise<SettingView> {
@@ -184,6 +190,18 @@ export async function setSetting(
         },
         i,
       );
+      // The instance administrator may still loosen an org's approval policy, for recovery, but
+      // never quietly: it needs a stated reason, and the org's own chain records who, from, to.
+      const byInstance =
+        def.key === approvalPolicySetting.key && ctx.principal.kind === "instance"
+          ? settingLoosening(def, before.value, next === undefined ? def.default : next)
+          : [];
+      if (byInstance.length > 0 && !i.reason) {
+        throw new OpError(
+          "invalid_input",
+          "loosening an org's approval_policy as the instance administrator needs a `reason`",
+        );
+      }
       const written = await putStoredSetting(
         tx,
         store,
@@ -218,6 +236,25 @@ export async function setSetting(
         to: resolved.value,
         source: resolved.source,
       });
+      if (byInstance.length > 0 && subject.orgId) {
+        await appendAudit(
+          tx,
+          { orgId: subject.orgId },
+          {
+            principalKind: ctx.principal.kind,
+            principalId: ctx.principal.id,
+            op: "approval_policy.loosened_by_instance",
+            effect: "write",
+            outcome: "ok",
+            input: {
+              from: before.value,
+              to: resolved.value,
+              loosened: byInstance,
+              reason: i.reason,
+            },
+          },
+        );
+      }
       return resolved;
     }
   });
@@ -334,7 +371,17 @@ const targetFields = {
     .describe("Slug of the project, for a project setting."),
 };
 const instanceKeyInput = keyInput.extend(targetFields);
-const instanceSetInput = setInput.extend(targetFields);
+const instanceSetInput = setInput.extend({
+  ...targetFields,
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe(
+      "Why, for a loosening of an org's `approval_policy` (required then): written into that org's audit chain.",
+    ),
+});
 
 /** The org or project an instance call names for a setting that is not an instance one. */
 function targetOf(
