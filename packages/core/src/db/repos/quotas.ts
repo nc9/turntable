@@ -88,7 +88,8 @@ export type QuotaUsage = {
   sandboxMinutesLastDay: number;
   /** Running attempts in that figure, counted to now (an estimate). */
   sandboxEstimated: number;
-  logBytes: number;
+  /** Null when the org has no `max_log_bytes` limit: not measured (summing log blobs is a full scan). */
+  logBytes: number | null;
   storedBytes: number;
 };
 
@@ -123,7 +124,12 @@ async function storedBytesIn(
   return Number(arts?.n ?? 0) + Number(cache?.n ?? 0);
 }
 
-export async function quotaUsage(db: Db, orgId: string, now: number): Promise<QuotaUsage> {
+export async function quotaUsage(
+  db: Db,
+  orgId: string,
+  now: number,
+  limits: Pick<OrgQuotas, "maxLogBytes">,
+): Promise<QuotaUsage> {
   // The same exact figure the Usage page shows: provider create to destroy, finish or now (see usage.ts).
   const sandbox = await sandboxSeconds(db, { orgId }, { from: now - DAY_MS, to: now, now });
   return db.run(async (h) => {
@@ -142,17 +148,22 @@ export async function quotaUsage(db: Db, orgId: string, now: number): Promise<Qu
           gte(s.jobAttempts.startedAt, now - HOUR_MS),
         ),
       );
-    const [logs] = await h.orm
-      .select({ n: sql<number>`coalesce(sum(length(${s.logChunks.bytes})), 0)`.mapWith(Number) })
-      .from(s.logChunks)
-      .where(eq(s.logChunks.orgId, orgId));
+    // length(blob) reads every stored log blob of the org: only worth it when a limit needs it.
+    let logBytes: number | null = null;
+    if (limits.maxLogBytes !== null) {
+      const [logs] = await h.orm
+        .select({ n: sql<number>`coalesce(sum(length(${s.logChunks.bytes})), 0)`.mapWith(Number) })
+        .from(s.logChunks)
+        .where(eq(s.logChunks.orgId, orgId));
+      logBytes = Number(logs?.n ?? 0);
+    }
     const stored = await storedBytesIn(h, orgId);
     return {
       concurrent: Number(conc?.n ?? 0),
       runsLastHour: Number(runs?.n ?? 0),
       sandboxMinutesLastDay: Math.floor(sandbox.seconds / 60),
       sandboxEstimated: sandbox.estimated,
-      logBytes: Number(logs?.n ?? 0),
+      logBytes,
       storedBytes: stored,
     };
   });
@@ -162,7 +173,8 @@ export type QuotaMetric = "runs_per_hour" | "sandbox_minutes" | "log_bytes" | "s
 
 export type QuotaStatus = {
   metric: QuotaMetric | "concurrent";
-  used: number;
+  /** Null when not measured (log bytes without a limit). */
+  used: number | null;
   limit: number | null;
   /** Percent of the limit, rounded down; null with no limit. */
   percent: number | null;
@@ -179,7 +191,7 @@ export type QuotaStatus = {
 export function quotaStatuses(q: OrgQuotas, u: QuotaUsage): QuotaStatus[] {
   const mk = (
     metric: QuotaStatus["metric"],
-    used: number,
+    used: number | null,
     limit: number | null,
     what: string,
     estimated = false,
@@ -188,9 +200,10 @@ export function quotaStatuses(q: OrgQuotas, u: QuotaUsage): QuotaStatus[] {
     used,
     estimated,
     limit,
-    percent: limit === null || limit === 0 ? null : Math.floor((used / limit) * 100),
+    percent:
+      limit === null || limit === 0 || used === null ? null : Math.floor((used / limit) * 100),
     held:
-      limit !== null && used >= limit
+      limit !== null && used !== null && used >= limit
         ? `new work is held: ${what} reached its limit (${used} of ${limit})`
         : null,
   });

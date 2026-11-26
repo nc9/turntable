@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { describeSqlite, instrumentSlowSql, slowSqlMsFromEnv } from "./slow-sql";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -135,11 +136,22 @@ export function openDatabase(path: string): Db {
   migrateLegacyDbFiles(path);
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const sqlite = new Database(path, { create: true, strict: true });
+  // Diagnostics (#693): log any synchronous statement slower than TURNTABLE_SLOW_SQL_MS.
+  const slowMs = slowSqlMsFromEnv();
+  if (slowMs !== undefined) {
+    instrumentSlowSql(sqlite, slowMs);
+    if (path !== ":memory:") console.error(describeSqlite(sqlite, path));
+  }
   // First, before anything that takes a lock, so every later statement waits for another
   // connection's lock instead of failing at once (the CLI runs next to a server, or next to a
   // test's own handle).
   sqlite.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
   enableWal(sqlite);
+  // WAL with synchronous NORMAL: the database stays consistent after a crash, and fsyncs happen at
+  // checkpoints instead of on every commit. The default (FULL) fsynced every commit, synchronously
+  // on the event loop, which stalled the server on a slow volume (2026-11-26). A power loss can
+  // lose the last few commits; an application crash cannot.
+  sqlite.run("PRAGMA synchronous = NORMAL");
   sqlite.run("PRAGMA foreign_keys = ON");
   applyMigrations(sqlite, migrations);
   const orm = drizzle(sqlite, { schema });

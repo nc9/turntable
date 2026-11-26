@@ -72,6 +72,8 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `run_dispatch` | `POST /api/v1/dispatches` | yes |  | write | release_operator | token | Start a workflow_dispatch run of one workflow at a branch or tag. |
 | `list_installation_repos` | `GET /api/v1/installation-repos` | yes |  | read | reader | token | The repos a GitHub App installation grants, with their project, mode and paused state. |
 | `onboard_repos` | `POST /api/v1/onboard-repos` | no |  | write | admin | token | Turn CI on or off for a batch of an installation's repos, in one transaction. |
+| `add_project` | `POST /api/v1/projects` | no |  | write | admin | token | Add a repository an installation can reach as a project. |
+| `remove_project` | `POST /api/v1/remove-project` | no |  | write | admin | token | Stop using a project: unbind its repo and keep its history, or delete it. |
 | `preview_workflows` | `GET /api/v1/workflow-preview` | yes |  | read | reader | token | Dry-run Turntable's planner over a project's workflow files at the default branch. |
 | `run_default_branch` | `POST /api/v1/run-default-branch` | no |  | write | admin | token | Run CI once for the default branch's head, as a push run. |
 | `approve_run` | `POST /api/v1/runs/{run_id}/approve` | yes |  | write | operator (per org policy) | token | Approve a run held for an untrusted author, bound to its head sha and workflow hash. |
@@ -105,6 +107,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `instance_bind_installation` | none | no |  | write | admin | instance | Bind a GitHub App installation to an org when its owner cannot claim it (instance administrator only). |
 | `instance_rotate_webhook_secret` | `POST /api/v1/app-secrets/webhook-secret/rotate` | no |  | write | owner | token | Rotate the GitHub App's webhook secret (instance administrator, passkey step-up). |
 | `instance_replace_app_private_key` | `POST /api/v1/app-secrets/private-key` | no |  | write | owner | token | Replace the GitHub App's private key (instance administrator, passkey step-up). |
+| `instance_prune_unconfigured_projects` | none | no |  | write | admin | instance | List or delete the projects an installation sync made that nobody set up (instance administrator only). |
 | `instance_list_orgs` | none | no |  | read | admin | instance | Every org on the instance, for the instance administrator. |
 | `instance_doctor` | none | no |  | read | admin | instance | The instance's readiness report, for the instance administrator. |
 | `instance_drain` | none | no |  | write | admin | instance | Stop starting new attempts so a deploy does not cut running jobs (instance administrator). |
@@ -112,6 +115,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `instance_org_summary` | none | no |  | read | admin | instance | Counts of tokens, approvers, members and pending invites per org. |
 | `instance_run_activity` | none | no |  | read | admin | instance | Counts of runs, jobs and running attempts per org, for a deploy check. |
 | `instance_run_summary` | none | no |  | read | admin | instance | Counts of finished runs by trigger and conclusion, per org and project, for operators. |
+| `instance_infra_errors` | none | no |  | read | admin | instance | Recent infra_error attempts across orgs, with a sanitized error message, for operators. |
 | `instance_ingest_status` | none | no |  | read | admin | instance | Poll health of every org's repos, for the instance administrator. |
 | `instance_audit_verify` | none | no |  | read | admin | instance | Check orgs' audit chains against exported anchors, for the instance administrator. |
 | `set_quotas` | none | no |  | write | admin | instance | Set an org's quotas (instance administrator only). |
@@ -131,6 +135,10 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `approval_status` | `GET /api/v1/approvals/status` | yes |  | read | reader | token | Which environments of a run wait for approval, and who has approved so far. |
 | `approvers_overview` | `GET /api/v1/approvers` | yes |  | read | reader | token | Enrolled approvers, pending enrolments and the per-environment approval policies. |
 | `my_pending_approvals` | `GET /api/v1/my/pending-approvals` | yes |  | read | reader | token | Approvals waiting on the signed-in person, across every org they belong to. |
+| `my_notifications` | `GET /api/v1/my/notifications` | yes |  | read | reader | token | The signed-in person's notifications across every org they belong to, newest first. |
+| `notifications_ack` | `POST /api/v1/my/notifications/ack` | yes |  | write | reader | token | Mark notifications read: the named ids, or all of the caller's unread ones. |
+| `get_notification_prefs` | `GET /api/v1/my/notification-prefs` | yes |  | read | reader | token | The signed-in person's notification preferences and the defaults. |
+| `set_notification_prefs` | `POST /api/v1/my/notification-prefs/set` | yes |  | write | reader | token | Turn one notification kind on or off, for all orgs, one org or one project. |
 | `approval_challenge` | `POST /api/v1/approvals/challenge` | no |  | write | operator | token | Issue the statement an approver signs to approve a run in an environment. |
 | `release_approval_challenge` | `POST /api/v1/approvals/release-challenge` | no |  | write | operator | token | Issue the statement an approver signs to approve a release's artifacts. |
 | `enrolment_challenge` | `POST /api/v1/approvers/challenge` | no |  | write | release_operator | token | Issue the statement an approver signs to approve enrolling a new key. |
@@ -139,6 +147,10 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `enrol_first_approver` | `POST /api/v1/approvers/first` | no |  | write | owner | token | Enrol the org's first approver with a passkey (owner web session only). |
 | `key_policy_challenge` | `POST /api/v1/approvers/key-policy/challenge` | no |  | write | release_operator | token | Issue the statement an approver signs to change the key policy. |
 | `approve_key_policy` | `POST /api/v1/approvers/key-policy` | no |  | write | viewer | signature | Approve a key policy change with a signed statement. Human only. |
+| `approval_policy_challenge` | `POST /api/v1/approvers/approval-policy/challenge` | no |  | write | release_operator | token | Issue the statement an approver signs to let an environment's approval policy loosen. |
+| `approve_approval_policy` | `POST /api/v1/approvers/approval-policy` | no |  | write | viewer | signature | Sign an approval policy loosening. Human only. |
+| `get_approval_policy` | `GET /api/v1/approval-policy` | no |  | read | owner | token | The org's effective approval policy per environment, with its source and lock. |
+| `set_approval_policy` | `POST /api/v1/approval-policy` | no |  | write | owner | token | Set one environment's approval policy (org owner, web session). |
 | `request_enrolment` | `POST /api/v1/approvers/enrolments` | no |  | write | release_operator | token | Ask to enrol a passkey or an ed25519 public key as an approver, pending a quorum. |
 | `submit_approval` | `POST /api/v1/approvals/relay` | yes |  | write | operator | token | Upload an approval statement a human already signed. |
 | `approve_environment` | `POST /api/v1/approvals` | no |  | write | viewer | signature | Approve a run for an environment with a signed statement. Human only. |
@@ -191,6 +203,8 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `set_setting` | `POST /api/v1/settings` | yes |  | write | operator (per org policy) | token | Set an org or project setting (database layer). |
 | `instance_get_setting` | none | no |  | read | admin | instance | One instance setting: effective value, source and lock. |
 | `instance_list_settings` | none | no |  | read | admin | instance | Every instance setting with source and lock. |
+| `instance_sandbox_limits` | none | no |  | read | admin | instance | The sandbox limits with source and lock, and the concurrency they allow. |
+| `sandbox_limits` | `GET /api/v1/limits/sandbox` | yes |  | read | reader | token | The sandbox limits with source and lock, and the concurrency they allow. |
 | `instance_set_setting` | none | no |  | write | admin | instance | Set an instance setting (database layer, instance administrator only). |
 
 {/* ops:end */}

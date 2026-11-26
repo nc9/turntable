@@ -51,13 +51,81 @@ export function refusalKind(why: string): RefusalKind {
   return "other";
 }
 
+/** One `secrets.*` or `vars.*` name a job refers to. A name and fixed words only, never a value. */
+export type PreviewRef = {
+  kind: "secret" | "var";
+  name: string;
+  /** Where it is used, for example "job env", "step with", "step if". */
+  where: string[];
+  /** True for `secrets.GITHUB_TOKEN`, which Turntable provides: it is never needed. */
+  provided: boolean;
+};
+
 export type PreviewJob = {
   job_id: string;
   name: string | null;
   verdict: "run" | "skip" | "fail";
   reason?: string;
   fix?: string;
+  refs: PreviewRef[];
 };
+
+const REF =
+  /\b(secrets|vars)(?:\.([A-Za-z_][A-Za-z0-9_-]{0,99})|\[\s*['"]([A-Za-z_][A-Za-z0-9_-]{0,99})['"]\s*\])/g;
+const MAX_REFS = 100;
+
+type Found = Map<string, PreviewRef>;
+
+function scanText(text: string, where: string, out: Found): void {
+  for (const m of text.matchAll(REF)) {
+    const kind = m[1] === "secrets" ? "secret" : "var";
+    const name = (m[2] ?? m[3])!;
+    const key = `${kind}:${name.toUpperCase()}`;
+    const cur = out.get(key);
+    if (cur) {
+      if (!cur.where.includes(where)) cur.where.push(where);
+    } else if (out.size < MAX_REFS) {
+      out.set(key, {
+        kind,
+        name: kind === "secret" ? name.toUpperCase() : name,
+        where: [where],
+        provided: kind === "secret" && name.toUpperCase() === "GITHUB_TOKEN",
+      });
+    }
+  }
+}
+
+function scanValue(v: unknown, where: string, out: Found, depth = 0): void {
+  if (typeof v === "string") scanText(v, where, out);
+  else if (depth < 6 && v !== null && typeof v === "object") {
+    for (const x of Object.values(v)) scanValue(x, where, out, depth + 1);
+  }
+}
+
+/** Every secret and var reference of one job: env, with, if and run at job and step level. */
+export function jobRefs(job: unknown, workflowEnv: unknown): PreviewRef[] {
+  const out: Found = new Map();
+  scanValue(workflowEnv, "workflow env", out);
+  if (job === null || typeof job !== "object") return [];
+  const j = job as Record<string, unknown>;
+  scanValue(j.env, "job env", out);
+  scanValue(j.with, "job with", out);
+  scanValue(j.if, "job if", out);
+  scanValue(j["runs-on"], "job runs-on", out);
+  scanValue(j.container, "job container", out);
+  scanValue(j.services, "job services", out);
+  if (Array.isArray(j.steps)) {
+    for (const st of j.steps) {
+      if (st === null || typeof st !== "object") continue;
+      const s = st as Record<string, unknown>;
+      scanValue(s.env, "step env", out);
+      scanValue(s.with, "step with", out);
+      scanValue(s.if, "step if", out);
+      scanValue(s.run, "step run", out);
+    }
+  }
+  return [...out.values()];
+}
 
 export type WorkflowPreview = {
   name: string | null;
@@ -92,7 +160,13 @@ export function previewWorkflow(
     return undefined;
   }
   if (doc === null || typeof doc !== "object" || Array.isArray(doc)) return undefined;
-  const root = doc as { name?: unknown; on?: unknown; true?: unknown; jobs?: unknown };
+  const root = doc as {
+    name?: unknown;
+    on?: unknown;
+    true?: unknown;
+    jobs?: unknown;
+    env?: unknown;
+  };
   if (root.jobs === null || typeof root.jobs !== "object") return undefined;
   const triggers = triggerNames(root.on ?? root.true);
   const hasIngestedTrigger = triggers.some((t) => INGESTED_EVENTS.includes(t));
@@ -114,6 +188,7 @@ export function previewWorkflow(
   ): PreviewJob => ({
     job_id: clip(id, 100),
     name: jobNames.get(id) ?? null,
+    refs: jobRefs((root.jobs as Record<string, unknown>)[id], root.env),
     ...rest,
   });
   if (!hasIngestedTrigger) {

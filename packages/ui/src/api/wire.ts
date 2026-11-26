@@ -25,6 +25,15 @@ export type WireRun = {
   trust?: WireTrust | null;
 };
 
+export type WireApproval = {
+  by: string;
+  at: string;
+  head_sha: string;
+  workflow_hash: string;
+  /** Set when a pull request label approved the run. */
+  via?: { kind: "label"; label: string; event_id: string };
+};
+
 export type WireTrust = {
   class: TrustClass;
   reasons: string[];
@@ -97,7 +106,7 @@ export type WireJob = {
   log_path: string | null;
 };
 
-export type WireRunDetail = WireRun & { jobs: WireJob[] };
+export type WireRunDetail = WireRun & { jobs: WireJob[]; approval?: WireApproval | null };
 export type WireRunList = { runs: WireRun[]; next_cursor: string | null };
 
 export type WireLog = {
@@ -150,6 +159,7 @@ export type WireProjects = {
     slug: string;
     name: string;
     setup: "active" | "available";
+    no_access?: boolean;
     repos: { forge: string; owner: string; repo: string }[];
   }[];
   next_cursor: string | null;
@@ -304,6 +314,8 @@ export type WireApprovers = {
     source: "configured" | "default";
   }[];
   warnings: string[];
+  default_mode: "solo" | "strict";
+  instance_loosenings: { at: string; by: string; reason: string; loosened: string[] }[];
 };
 
 export type WireChallenge = {
@@ -395,7 +407,7 @@ export type WireQuotas = {
   };
   usage: {
     metric: "concurrent" | "runs_per_hour" | "sandbox_minutes" | "log_bytes" | "stored_bytes";
-    used: number;
+    used: number | null;
     limit: number | null;
     percent: number | null;
     held: string | null;
@@ -447,4 +459,44 @@ export type WireActivity = {
     duration_ms: number | null;
   }[];
   next_cursor: string | null;
+};
+
+/** `my_notifications`. */
+export type WireMyNotifications = {
+  notifications: {
+    id: string;
+    kind:
+      | "run_failed"
+      | "infra_errors"
+      | "work_held"
+      | "approval_waiting"
+      | "checkout_auth_failed"
+      | "dogfood_red"
+      | "deploy_failed";
+    org: string;
+    project: string | null;
+    run_id: string | null;
+    count: number;
+    title: string;
+    created_at: string;
+    read_at: string | null;
+    link: string;
+  }[];
+  unread_count: number;
+  next_cursor: string | null;
+};
+
+/** `get_notification_prefs`. */
+export type WireNotificationPrefs = {
+  prefs: {
+    kind: WireMyNotifications["notifications"][number]["kind"];
+    org: string | null;
+    project: string | null;
+    enabled: boolean;
+  }[];
+  defaults: {
+    kind: WireMyNotifications["notifications"][number]["kind"];
+    enabled: boolean;
+    operator_only: boolean;
+  }[];
 };

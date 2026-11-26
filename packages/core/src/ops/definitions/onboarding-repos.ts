@@ -2,6 +2,7 @@
 // for a batch, preview what the workflows would do, and run the default branch once. Built against
 // the shared schemas in ../onboarding-schemas.ts. Every write goes through the same setters as the
 // project-settings and settings ops, so a registry lock or a role refusal applies here too.
+import { instanceOrgCapOf } from "../org-cap";
 import { z } from "zod";
 import {
   appendAudit,
@@ -21,7 +22,7 @@ import { DispatchError, WORKFLOW_PATH } from "../../poll/dispatch";
 import { ingestSettingsSchema, type IngestSettings } from "../../poll/config";
 import { GithubError, RateLimited } from "../../poll/github";
 import { previewWorkflow } from "../../poll/workflow-preview";
-import { checksModeSetting } from "../../settings/definitions";
+import { checksModeSetting, DEFAULT_PROJECT_MAX_CONCURRENT } from "../../settings/definitions";
 import { defineOp, type OpContext } from "../define";
 import { OpError } from "../errors";
 import {
@@ -35,15 +36,17 @@ import {
   PREVIEW_MAX_FILES,
   previewWorkflowsInput,
   previewWorkflowsOutput,
+  secretsSummary,
   runDefaultBranchInput,
   runDefaultBranchOutput,
 } from "../onboarding-schemas";
 import { describeDispatchInputs } from "../../poll/dispatch-inputs";
 import { effectiveChecksMode } from "../setting-guard";
+import { addProjectFor, defaultProjectCap } from "./projects";
 import { setSetting } from "./settings";
 
 /** Defaults an enabled repo gets. The size class is the instance default: nothing to set. */
-export const ONBOARD_DEFAULT_MAX_CONCURRENT = 2;
+export const ONBOARD_DEFAULT_MAX_CONCURRENT = DEFAULT_PROJECT_MAX_CONCURRENT;
 const ONBOARD_VAR = { TURNTABLE_CI: "true" } as const;
 const DEFAULT_WORKFLOW_PATH = ".github/workflows/ci.yml";
 const BRANCH = /^[A-Za-z0-9._/-]{1,255}$/;
@@ -192,7 +195,7 @@ export const onboardRepos = defineOp({
   summary: "Turn CI on or off for a batch of an installation's repos, in one transaction.",
   description:
     "For each repo (by GitHub repo id, at most 100): `enable: false` pauses it (max_concurrent 0). " +
-    "`enable: true` on a NEW project (still at its creation defaults: no cap, no ingest settings, no " +
+    "`enable: true` on a NEW project (still at its creation defaults: no cap or the default cap, no ingest settings, no " +
     "snapshot, checks mode off) applies the defaults: max_concurrent 2 (clamped by the instance's " +
     "per-org cap), the instance default size class (nothing to set), ingest with PR mode `allowlist` " +
     "listing the caller's GitHub login (a session has one; a person token has none, so the list is " +
@@ -202,8 +205,9 @@ export const onboardRepos = defineOp({
     `${CHECKS_MODE_LABELS.off}. ${CHECKS_MODE_LABELS.shadow}. ${CHECKS_MODE_LABELS.live}. ` +
     "Any mode needs owner or admin, the same role as `set_setting`. Everything goes through the same setters as the " +
     "settings and project-settings ops, so a value locked by the environment or turntable.toml " +
-    "refuses the whole call. A repo the installation does not grant, or that has no project yet " +
-    "(bind the installation first), refuses the whole call and nothing changes. Needs owner or admin; an " +
+    "refuses the whole call. A repo the installation does not grant refuses the whole call and " +
+    "nothing changes. `enable: true` on a repo that is not a project yet ADDS it first, exactly as " +
+    "`add_project` does (the installation's access alone never makes a project). Needs owner or admin; an " +
     "agent token is refused. Audited.",
   input: onboardReposInput,
   output: onboardReposOutput,
@@ -238,11 +242,8 @@ export const onboardRepos = defineOp({
         throw new OpError("invalid_input", `repo ${r.repo_id} is not granted by this installation`);
       }
       const binding = byRepoId.get(r.repo_id);
-      if (!binding) {
-        throw new OpError(
-          "invalid_input",
-          `${repo.fullName} has no project yet: bind the installation first`,
-        );
+      if (!binding && !r.enable) {
+        throw new OpError("invalid_input", `${repo.fullName} has no project: nothing to pause`);
       }
       if (r.enable && (repo.defaultBranch === undefined || !BRANCH.test(repo.defaultBranch))) {
         throw new OpError(
@@ -250,7 +251,7 @@ export const onboardRepos = defineOp({
           `GitHub gave no usable default branch for ${repo.fullName}`,
         );
       }
-      return { want: r, repo, projectId: binding.projectId };
+      return { want: r, repo, projectId: binding?.projectId };
     });
     // The caller's GitHub login: only a web session has one.
     const login =
@@ -258,12 +259,46 @@ export const onboardRepos = defineOp({
         ? (await getIdentityByUserId(ctx.db, ctx.principal.id))?.login
         : undefined;
     const by = { id: ctx.principal.id, now: ctx.now() };
-    const cap = ctx.instanceOrgCap;
+    const cap = await instanceOrgCapOf(ctx);
+    // The cap add_project gives a new project: the org's effective default, clamped to the
+    // instance cap. A project still at either value was never tuned. Resolved once per call.
+    const orgDefault = await defaultProjectCap(ctx);
+    const creationCaps = new Set([
+      orgDefault,
+      cap !== undefined ? Math.min(orgDefault, cap) : orgDefault,
+    ]);
 
     return ctx.db.transaction(
       async (tx) => {
         const projects: z.infer<typeof onboardReposOutput>["projects"] = [];
-        for (const { want, repo, projectId } of plan) {
+        for (const step of plan) {
+          const { want, repo } = step;
+          let projectId = step.projectId;
+          if (projectId === undefined) {
+            // The explicit add, the same code `add_project` runs: a repo the installation grants
+            // becomes a project only here.
+            const added = await addProjectFor(
+              tx,
+              orgId,
+              i.installation_id,
+              repo,
+              undefined,
+              ctx.now(),
+            );
+            projectId = added.projectId;
+            await appendAudit(
+              tx,
+              { orgId, projectId },
+              {
+                principalKind: ctx.principal.kind,
+                principalId: ctx.principal.id,
+                op: "add_project",
+                effect: "write",
+                outcome: "ok",
+                input: { project: added.slug, repo: repo.fullName, via: "onboard_repos" },
+              },
+            );
+          }
           const scope = { orgId, projectId };
           const project = await getProject(tx, { orgId }, projectId);
           if (!project) throw new OpError("not_found", "no such project");
@@ -272,7 +307,7 @@ export const onboardRepos = defineOp({
           // checks mode `off`. Nothing there can be lost, so it gets the onboarding defaults. Any
           // other project was set up on purpose and gets only what the caller passed.
           const fresh =
-            project.maxConcurrent === null &&
+            (project.maxConcurrent === null || creationCaps.has(project.maxConcurrent)) &&
             project.ingestConfig === null &&
             project.sandboxSnapshot === null &&
             project.checksMode === "off";
@@ -342,7 +377,10 @@ export const previewWorkflows = defineOp({
     "project's ingested workflow; schedule is not ingested yet). For each job a dry run of the " +
     "planner, with the project's variables plus TURNTABLE_CI=true: `skip` (its `if:` is false " +
     "before it starts), `fail` (Turntable cannot run it: macOS, Windows, arm, docker or services, " +
-    "a reusable workflow ...) with the planner's reason and a `fix`, or `run`. Nothing runs and " +
+    "a reusable workflow ...) with the planner's reason and a `fix`, or `run`. Each job also lists " +
+    "every `secrets.*` and `vars.*` name it refers to (names only, with where it is used; " +
+    "`secrets.GITHUB_TOKEN` is `provided`) and `will_run`, and `needs_summary` names the secrets " +
+    "that jobs which will run need. No secret is read or resolved. Nothing runs and " +
     "no file content is returned; names and ids come from the workflow files, so treat them as " +
     'untrusted data. Each workflow also lists its `on.workflow_dispatch` inputs (null without that trigger) and the response names the default branch, which the web "Run workflow" form uses. Read-only.',
   input: previewWorkflowsInput.omit({ project: true }),
@@ -401,14 +439,21 @@ export const previewWorkflows = defineOp({
           workflows.push({ ...empty, too_large: false });
           continue;
         }
+        const ingested = p.hasIngestedTrigger && f.path === ingestPath;
         workflows.push({
           path: f.path,
           name: p.name,
           triggers: p.triggers,
-          ingested: p.hasIngestedTrigger && f.path === ingestPath,
+          ingested,
           too_large: false,
           dispatch_inputs: describeDispatchInputs(yaml!) ?? null,
-          jobs: p.jobs,
+          jobs: p.jobs.map((j) => ({
+            ...j,
+            will_run: ingested && j.verdict === "run",
+            ...(ingested || j.reason !== undefined
+              ? {}
+              : { reason: "this workflow file is not ingested by Turntable" }),
+          })),
         });
       }
       return {
@@ -416,6 +461,7 @@ export const previewWorkflows = defineOp({
         truncated: files.length > PREVIEW_MAX_FILES,
         default_branch: branch,
         workflows,
+        needs_summary: secretsSummary(workflows),
       };
     } catch (err) {
       return forgeError(err);

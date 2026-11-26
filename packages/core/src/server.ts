@@ -14,6 +14,7 @@ import {
   rejectResponse,
   transportOptionsFromEnv,
   withHsts,
+  withVersion,
   type TransportOptions,
 } from "./transport";
 import { createRestApi } from "./ops/rest";
@@ -37,7 +38,7 @@ import { createEventStream } from "./realtime/sse";
 import type { WebhookService } from "./webhooks/service";
 import { pageCsp, renderPage, servePageAsset } from "./pages/server-pages";
 import { serveUi } from "./ui-assets";
-import { BUILD_SHA, VERSION } from "./version";
+import { BUILD_SHA, BUILD_TIME, VERSION } from "./version";
 import type { RunDispatcher } from "./poll/dispatch";
 import type { DefaultBranchRunner, RepoReaderFactory } from "./poll/onboarding-forge";
 
@@ -100,8 +101,8 @@ export async function handleRequest(
     const body = processDrain.draining
       ? // Only the flag: /healthz is unauthenticated, so a running count would publish tenant
         // activity. The count is in the instance administrator's instance_drain_status.
-        { ok: true, version: VERSION, build_sha: BUILD_SHA, draining: true }
-      : { ok: true, version: VERSION, build_sha: BUILD_SHA };
+        { ok: true, version: VERSION, build_sha: BUILD_SHA, built_at: BUILD_TIME, draining: true }
+      : { ok: true, version: VERSION, build_sha: BUILD_SHA, built_at: BUILD_TIME };
     return Response.json(body, { headers: SECURITY_HEADERS });
   }
   if (url.pathname === "/openapi.json") {
@@ -238,10 +239,16 @@ export function startServer(options: ServeOptions) {
     async fetch(req, srv) {
       options.forwarded?.record(req);
       const t = decideTransport(req, transport);
-      if (t.action === "redirect") return redirectResponse(t.location);
-      if (t.action === "reject") return rejectResponse();
+      if (t.action === "redirect") return withVersion(redirectResponse(t.location));
+      if (t.action === "reject") return withVersion(rejectResponse());
       const res = await route(req, srv);
-      return res !== undefined && t.secure ? withHsts(res, transport) : res;
+      if (res === undefined) return res;
+      const versioned = withVersion(res);
+      return t.secure ? withHsts(versioned, transport) : versioned;
+    },
+    error(err) {
+      console.error("unhandled request error", err);
+      return withVersion(new Response("internal server error", { status: 500 }));
     },
     websocket: realtime.websocket,
   });

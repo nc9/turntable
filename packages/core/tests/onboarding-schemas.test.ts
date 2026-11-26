@@ -136,7 +136,7 @@ describe("onboarding schemas", () => {
       ingested: true,
       too_large: false,
       dispatch_inputs: null,
-      jobs: [{ job_id: "b", name: null, verdict: "run" }],
+      jobs: [{ job_id: "b", name: null, verdict: "run", will_run: true, refs: [] }],
     };
     expect(
       s.previewWorkflowsOutput.safeParse({
@@ -144,6 +144,7 @@ describe("onboarding schemas", () => {
         truncated: false,
         default_branch: "main",
         workflows: [wf],
+        needs_summary: { needed: [], text: "0 secrets needed" },
       }).success,
     ).toBe(true);
     const bad = { ...wf, jobs: [{ job_id: "b", name: null, verdict: "maybe" }] };

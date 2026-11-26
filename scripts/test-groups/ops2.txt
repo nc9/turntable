@@ -31,3 +31,13 @@ packages/core/tests/my-pending-approvals-parity.test.ts
 packages/core/tests/my-activity-feed.test.ts
 packages/core/tests/github-avatar.test.ts
 packages/core/tests/github-installer.test.ts
+packages/core/tests/notifications.test.ts
+packages/core/tests/outbound-webhooks-slack.test.ts
+packages/core/tests/projects-add-remove.test.ts
+packages/core/tests/instance-prune-projects.test.ts
+packages/core/tests/checks-every-job-631.test.ts
+packages/core/tests/checks-backfill.test.ts
+packages/core/tests/skipped-superseded-648.test.ts
+packages/core/tests/checks-superseded-race-648.test.ts
+packages/core/tests/approval-default-solo.test.ts
+packages/core/tests/approval-default-backfill.test.ts

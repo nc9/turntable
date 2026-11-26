@@ -7,7 +7,7 @@ import type {
   SubscribeOptions,
   Topic,
 } from "../realtime";
-import type { ActivityRun, CheckSummary, RunDetail, Whoami } from "../types";
+import type { ActivityRun, ApprovalPolicy, CheckSummary, RunDetail, Whoami } from "../types";
 import { createFixtureSettings } from "./settings";
 import { createRng } from "./prng";
 import { createWorld, type World } from "./world";
@@ -69,6 +69,20 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     );
 
   const settings = createFixtureSettings(() => options.role ?? "owner");
+  const demoPolicy: ApprovalPolicy = {
+    environments: ["production", "release"].map((environment) => ({
+      environment,
+      required: 2,
+      allowAuthorApproval: false,
+      keyPolicy: "any" as const,
+      gated: true,
+      source: "default" as const,
+    })),
+    source: "default",
+    locked: false,
+    lockedBy: null,
+    approvers: 2,
+  };
 
   const timer = setInterval(() => {
     world.tick();
@@ -210,12 +224,32 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     approvalStatus: ({ runId }) => delay(() => world.approvalStatus(runId)),
     approversOverview: () => delay(() => world.approversOverview()),
     myPendingApprovals: () => delay(() => []),
+    myNotifications: () => delay(() => ({ notifications: [], unreadCount: 0, nextCursor: null })),
+    notificationsAck: () => delay(() => 0),
+    getNotificationPrefs: () => delay(() => ({ prefs: [], defaults: [] })),
+    setNotificationPref: () => delay(() => undefined),
     sandboxUsage: ({ days }) => delay(() => world.sandboxUsage(days)),
     getArtifacts: ({ runId }) => delay(() => world.getArtifacts(runId)),
     checkArtifactConsumption: (a) => delay(() => world.checkArtifactConsumption(a)),
     getQuotas: () => delay(() => world.getQuotas()),
     listSettings: (a) => delay(() => settings.list(a?.project)),
     setSetting: (a) => delay(() => settings.set(a)),
+    getApprovalPolicy: () => delay(() => structuredClone(demoPolicy)),
+    setApprovalPolicy: (a) =>
+      delay(() => {
+        const e = demoPolicy.environments.find((x) => x.environment === a.environment);
+        const row = {
+          environment: a.environment,
+          required: a.required,
+          allowAuthorApproval: a.allowAuthorApproval,
+          keyPolicy: a.keyPolicy,
+          gated: true,
+          source: "configured" as const,
+        };
+        if (e) Object.assign(e, row);
+        else demoPolicy.environments.push(row);
+        return structuredClone(demoPolicy);
+      }),
     stepUpChallenge: () => Promise.reject(new Error("The demo has no passkeys to confirm with.")),
     laneWrite: () => Promise.reject(new Error("The demo has no release lane to configure.")),
     laneConfig: () => Promise.reject(new Error("The demo has no release lane to configure.")),

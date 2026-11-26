@@ -18,6 +18,7 @@ import {
 } from "drizzle-orm";
 import { retryableAfterSteps } from "@turntable/act-runner";
 import type { Db } from "..";
+import { sanitizeInfraError } from "../../infra-error-text";
 import { announceCancelled } from "../abort-bus";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
@@ -30,6 +31,7 @@ import {
   type Job,
   type JobAttempt,
   listJobs,
+  readLog,
   type Run,
   setRunStatus,
   transitionJob,
@@ -44,6 +46,7 @@ import {
   orgsWithQuotas,
   quotaStatuses,
   quotaUsage,
+  type OrgQuotas,
   type QuotaStatus,
   type QuotaUsage,
 } from "./quotas";
@@ -104,12 +107,20 @@ export type ClaimOptions = {
 export const DEFAULT_PREEMPT_LIMIT = { max: 0, windowMs: 60 * 60_000 } as const;
 
 const usageCache = new WeakMap<Db, Map<string, { at: number; usage: QuotaUsage }>>();
-async function cachedUsage(db: Db, orgId: string, now: number, ttl: number): Promise<QuotaUsage> {
+async function cachedUsage(
+  db: Db,
+  orgId: string,
+  now: number,
+  ttl: number,
+  limits: Pick<OrgQuotas, "maxLogBytes">,
+): Promise<QuotaUsage> {
   let m = usageCache.get(db);
   if (!m) usageCache.set(db, (m = new Map()));
   const hit = m.get(orgId);
-  if (ttl > 0 && hit && Math.abs(now - hit.at) < ttl) return hit.usage;
-  const usage = await quotaUsage(db, orgId, now);
+  // A limit set since the entry was cached needs the measured figure, not the skipped one.
+  const measured = limits.maxLogBytes === null || hit?.usage.logBytes != null;
+  if (ttl > 0 && hit && measured && Math.abs(now - hit.at) < ttl) return hit.usage;
+  const usage = await quotaUsage(db, orgId, now, limits);
   m.set(orgId, { at: now, usage });
   return usage;
 }
@@ -250,7 +261,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
       for (const w of waiting) {
         const q = quotas.get(w.orgId);
         if (!q) continue;
-        const usage = await cachedUsage(tx, w.orgId, o.now, o.quotaCacheMs ?? 0);
+        const usage = await cachedUsage(tx, w.orgId, o.now, o.quotaCacheMs ?? 0, q);
         const statuses = quotaStatuses(q, { ...usage, concurrent: perOrg.get(w.orgId) ?? 0 });
         await noticesOnce(tx, w.orgId, statuses, o.now, o.quotaCacheMs ?? 0);
         if (
@@ -689,6 +700,8 @@ export type FinishInput = {
   errorClass?: string | null;
   /** For infra_error: the named kind (`INFRA_KINDS`). */
   infraKind?: string | null;
+  /** For infra_error: the underlying error's name and code, kept on the `infra.error` event. */
+  errorDetail?: { name?: string; code?: string };
   /** Reconciler only: finish only if the lease has expired by this time. */
   expiredBefore?: number;
   /** How dependents of this job are resolved. Default: plain `needs`. */
@@ -728,6 +741,9 @@ export function finishAttempt(db: Db, scope: Scope, input: FinishInput): Promise
       exitCode: input.exitCode ?? null,
       errorClass: input.errorClass ?? null,
       ...(input.state === "infra_error" && input.infraKind ? { infraKind: input.infraKind } : {}),
+      ...(input.state === "infra_error" && input.errorDetail
+        ? { errorDetail: input.errorDetail }
+        : {}),
     });
     await tx.orm
       .update(s.jobAttempts)
@@ -981,7 +997,14 @@ export function requeueLostAttemptOnce(
 export function requeueInfraFailureOnce(
   db: Db,
   scope: Scope,
-  input: { attemptId: string; owner: string; kind: string; reason: string; now: number },
+  input: {
+    attemptId: string;
+    owner: string;
+    kind: string;
+    reason: string;
+    errorDetail?: { name?: string; code?: string };
+    now: number;
+  },
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     const [cur] = await tx.orm
@@ -1001,11 +1024,27 @@ export function requeueInfraFailureOnce(
       state: "infra_error",
       errorClass: input.reason.slice(0, 200),
       infraKind: input.kind,
+      ...(input.errorDetail ? { errorDetail: input.errorDetail } : {}),
     });
     await tx.orm
       .update(s.jobAttempts)
       .set({ leaseOwner: null, leaseExpiresAt: null })
       .where(eq(s.jobAttempts.id, cur.id));
+    // One line at the end of the failed attempt's job log: it was retried once, and why.
+    const tail = (await readLog(tx, scope, cur.id)).reduce(
+      (end, c) => Math.max(end, c.offset + c.bytes.length),
+      0,
+    );
+    const why = sanitizeInfraError(input.reason).slice(0, 200);
+    await appendLog(
+      tx,
+      scope,
+      cur.id,
+      tail,
+      new TextEncoder().encode(
+        `infra error (${input.kind}), retrying once on a fresh sandbox: ${why}\n`,
+      ),
+    );
     await transitionJob(tx, scope, cur.jobId, "infra_error", {
       reason: `infra_retry:${input.kind}`,
     });

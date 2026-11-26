@@ -1,6 +1,7 @@
 import type { ApiCapabilities, TurntableApi } from "./client";
 import { refusalMessage } from "./refusal";
 import { stepEvents } from "./step-events";
+import { observeServerVersion } from "@/lib/build-version";
 import type {
   ActivityRun,
   ApprovalChallenge,
@@ -8,6 +9,9 @@ import type {
   ReleaseStatement,
   ApprovalStatus,
   ApproversOverview,
+  AppNotification,
+  NotificationPage,
+  NotificationPrefs,
   PendingApproval,
   SandboxUsage,
   PolicyStatement,
@@ -30,6 +34,7 @@ import type {
   LaneKey,
   LaneCosignKey,
   LaneSecretStatus,
+  ApprovalPolicy,
   StepUpChallenge,
   Whoami,
   JobAttempt,
@@ -38,6 +43,7 @@ import type {
   Org,
   Project,
   Run,
+  RunApproval,
   RunDetail,
   StepEvent,
   Artifact,
@@ -50,7 +56,9 @@ import type {
   WireApprovalStatus,
   WireReleaseChallenge,
   WireApprovers,
+  WireMyNotifications,
   WireMyPendingApprovals,
+  WireNotificationPrefs,
   WireChallenge,
   WireEnrolmentApproval,
   WireEnrolmentRequest,
@@ -73,6 +81,7 @@ import type {
   WireProjects,
   WireRerun,
   WireRun,
+  WireApproval,
   WireRunDetail,
   WireRunList,
   WireSetting,
@@ -96,6 +105,8 @@ export class ApiError extends Error {
 }
 
 export type HttpApiOptions = {
+  /** Receives the `Turntable-Version` header of every response (default: the update prompt). */
+  observeVersion?: (version: string | null) => void;
   /** Where `/api/v1` lives; empty for same-origin. */
   baseUrl?: string;
   /** The org slug requests are made for. */
@@ -206,6 +217,16 @@ export function mapRun(w: WireRun, org: string): Run {
   };
 }
 
+function mapApproval(a: WireApproval): RunApproval {
+  return {
+    by: a.by,
+    at: ms(a.at),
+    ...(a.via
+      ? { via: { kind: "label" as const, label: a.via.label, eventId: a.via.event_id } }
+      : {}),
+  };
+}
+
 function mapAttempt(a: WireAttempt, job: WireJob, run: WireRun, org: string): JobAttempt {
   return {
     id: a.id,
@@ -279,6 +300,7 @@ const LANE_PATHS: Record<LaneAction, string> = {
 
 export function createHttpApi(options: HttpApiOptions): TurntableApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+  const observe = options.observeVersion ?? observeServerVersion;
   const base = `${options.baseUrl ?? ""}/api/v1`;
   /** attemptId -> where to read its log, learned from get_run. */
   const attempts = new Map<string, { jobId: string; attempt: number; state: JobState }>();
@@ -313,6 +335,8 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       credentials: viaSession ? "same-origin" : "omit",
       referrerPolicy: "no-referrer",
     });
+    // Errors and 401s carry the header too, so look before the status check.
+    observe(res.headers.get("turntable-version"));
     if (!res.ok) {
       let code = "internal";
       let message = `Request failed (${res.status})`;
@@ -362,6 +386,7 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       });
       return w.projects.map((p) => ({
         setup: p.setup,
+        ...(p.no_access ? { noAccess: true } : {}),
         id: p.slug,
         orgId,
         slug: p.slug,
@@ -434,7 +459,9 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
           attempts.set(a.id, { jobId: j.id, attempt: a.attempt, state: a.state });
         }
       }
-      return { run: mapRun(w, slug), jobs, attempts: atts };
+      const run = mapRun(w, slug);
+      if (w.approval) run.approval = mapApproval(w.approval);
+      return { run, jobs, attempts: atts };
     },
 
     async jobLog({ attemptId, offset, limit }): Promise<LogSlice> {
@@ -804,6 +831,36 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       );
     },
 
+    async getApprovalPolicy(): Promise<ApprovalPolicy> {
+      return mapApprovalPolicy(
+        await call<WireApprovalPolicy>("GET", "/approval-policy", { org: org() }),
+      );
+    },
+
+    async setApprovalPolicy({
+      environment,
+      required,
+      allowAuthorApproval,
+      keyPolicy,
+      stepUp,
+    }): Promise<ApprovalPolicy> {
+      return mapApprovalPolicy(
+        await call<WireApprovalPolicy>(
+          "POST",
+          "/approval-policy",
+          {},
+          {
+            org: org(),
+            environment,
+            required,
+            allow_author_approval: allowAuthorApproval,
+            key_policy: keyPolicy,
+            ...(stepUp ? { step_up: stepUp } : {}),
+          },
+        ),
+      );
+    },
+
     async incidentStatus(args): Promise<IncidentStatus> {
       const w = await call<WireIncident>("GET", "/incident", {
         org: org(),
@@ -962,6 +1019,70 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       }));
     },
 
+    async myNotifications(f = {}): Promise<NotificationPage> {
+      // Like the feed: it spans the person's orgs, so no `org()` is needed.
+      const w = await call<WireMyNotifications>("GET", "/my/notifications", {
+        unread: f.unread ? "true" : undefined,
+        ...(f.kinds && f.kinds.length > 0 ? { kinds: f.kinds.join(",") } : {}),
+        limit: f.limit ? Math.min(100, f.limit) : undefined,
+        cursor: f.cursor,
+      });
+      return {
+        notifications: w.notifications.map((n): AppNotification => ({
+          id: n.id,
+          kind: n.kind,
+          org: n.org,
+          project: n.project,
+          runId: n.run_id,
+          count: n.count,
+          title: n.title,
+          createdAt: ms(n.created_at) ?? 0,
+          readAt: ms(n.read_at),
+          link: n.link,
+        })),
+        unreadCount: w.unread_count,
+        nextCursor: w.next_cursor,
+      };
+    },
+
+    async notificationsAck({ ids, org: named }): Promise<number> {
+      const w = await call<{ acked: number }>(
+        "POST",
+        "/my/notifications/ack",
+        {},
+        { org: named ?? org(), ...(ids ? { ids } : {}) },
+      );
+      return w.acked;
+    },
+
+    async getNotificationPrefs({ org: named } = {}): Promise<NotificationPrefs> {
+      const w = await call<WireNotificationPrefs>("GET", "/my/notification-prefs", {
+        org: named ?? org(),
+      });
+      return {
+        prefs: w.prefs,
+        defaults: w.defaults.map((d) => ({
+          kind: d.kind,
+          enabled: d.enabled,
+          operatorOnly: d.operator_only,
+        })),
+      };
+    },
+
+    async setNotificationPref({ kind, enabled, org: named, scopeOrg }): Promise<void> {
+      await call(
+        "POST",
+        "/my/notification-prefs/set",
+        {},
+        {
+          org: named ?? org(),
+          kind,
+          ...(enabled === null ? {} : { enabled }),
+          ...(scopeOrg ? { scope_org: scopeOrg } : {}),
+        },
+      );
+    },
+
     async approversOverview(): Promise<ApproversOverview> {
       const w = await call<WireApprovers>("GET", "/approvers", { org: org() });
       return {
@@ -994,6 +1115,13 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
           source: p.source,
         })),
         warnings: w.warnings,
+        defaultMode: w.default_mode,
+        instanceLoosenings: w.instance_loosenings.map((l) => ({
+          at: ms(l.at) ?? 0,
+          by: l.by,
+          reason: l.reason,
+          loosened: l.loosened,
+        })),
       };
     },
 
@@ -1217,4 +1345,36 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
     },
   };
   return api;
+}
+
+type WireApprovalPolicy = {
+  environments: {
+    environment: string;
+    required: number;
+    allow_author_approval: boolean;
+    key_policy: "any" | "hardware";
+    gated: boolean;
+    source: "configured" | "default";
+  }[];
+  source: ApprovalPolicy["source"];
+  locked: boolean;
+  locked_by: string | null;
+  approvers: number;
+};
+
+export function mapApprovalPolicy(w: WireApprovalPolicy): ApprovalPolicy {
+  return {
+    environments: w.environments.map((e) => ({
+      environment: e.environment,
+      required: e.required,
+      allowAuthorApproval: e.allow_author_approval,
+      keyPolicy: e.key_policy,
+      gated: e.gated,
+      source: e.source,
+    })),
+    source: w.source,
+    locked: w.locked,
+    lockedBy: w.locked_by,
+    approvers: w.approvers,
+  };
 }

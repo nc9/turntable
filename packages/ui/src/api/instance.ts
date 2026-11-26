@@ -2,11 +2,20 @@
 // (`/api/v1/instance/*`). It holds the `tti_` token and nothing else; the org client never sees it
 // and this one never sees an org token. Every refusal is thrown with the server's own message.
 import { getInstanceToken, disconnectInstance } from "@/lib/instance-auth";
+import { versionAwareFetch } from "@/lib/build-version";
 import { ApiError, mapSetting } from "./http-adapter";
 import type { OrgQuotas, Setting } from "./types";
 import type { WireError, WireQuotas, WireSetting } from "./wire";
 
 export type InstanceWhoami = { id: string; name: string; expiresAt: number | null };
+/** What the sandbox limits allow together (#661). */
+export type EffectiveConcurrency = {
+  value: number;
+  boundedBy: string;
+  orgCap: number;
+  cpuLimit: number;
+  note: string;
+};
 export type InstanceOrg = { slug: string; name: string };
 export type QuotaPatch = {
   maxConcurrent?: number | null;
@@ -33,6 +42,7 @@ export interface InstanceApi {
   whoami(): Promise<InstanceWhoami>;
   listOrgs(): Promise<InstanceOrg[]>;
   listSettings(): Promise<Setting[]>;
+  sandboxLimits(): Promise<EffectiveConcurrency>;
   setSetting(args: { key: string; value?: unknown; unset?: boolean }): Promise<Setting>;
   setQuotas(args: { org: string; patch: QuotaPatch }): Promise<OrgQuotas>;
   createProject(args: { org: string; slug: string; name: string }): Promise<CreatedProject>;
@@ -61,7 +71,7 @@ const ms = (iso: string | null): number | null => {
 };
 
 export function createInstanceApi(options: InstanceApiOptions): InstanceApi {
-  const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+  const doFetch = options.fetch ?? versionAwareFetch;
   const base = `${options.baseUrl ?? ""}/api/v1/instance`;
 
   async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
@@ -121,6 +131,25 @@ export function createInstanceApi(options: InstanceApiOptions): InstanceApi {
     async listSettings() {
       const w = await call<{ settings: WireSetting[] }>("GET", "/settings");
       return w.settings.map(mapSetting);
+    },
+    async sandboxLimits() {
+      const w = await call<{
+        effective_concurrency: {
+          value: number;
+          bounded_by: string;
+          org_cap: number;
+          cpu_limit: number;
+          note: string;
+        };
+      }>("GET", "/sandbox-limits");
+      const e = w.effective_concurrency;
+      return {
+        value: e.value,
+        boundedBy: e.bounded_by,
+        orgCap: e.org_cap,
+        cpuLimit: e.cpu_limit,
+        note: e.note,
+      };
     },
     async setSetting({ key, value, unset }) {
       return mapSetting(

@@ -122,10 +122,20 @@ describe("evaluateCondition", () => {
   });
 });
 
+describe("the object filter", () => {
+  test.each([
+    ["contains(github.event.pull_request.labels.*.name, 'a')", true],
+    ["contains(github.event.pull_request.labels.*.name, 'b')", false],
+    ["github.event.pull_request.nothing.*.name == ''", false],
+  ])("%s", (e, want) => {
+    expect(evaluateCondition(e, ctx({ github }))).toBe(want);
+  });
+});
+
 describe("unsupported constructs name the feature", () => {
   test.each([
     ["hashFiles('**/x')", "function hashFiles"],
-    ["github.event.*.x", "object filter"],
+    ["github.event.*", "object filter"],
     ["unknownFn(1)", "function unknownFn"],
   ])("%s", (e, feature) => {
     try {

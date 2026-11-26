@@ -20,12 +20,16 @@ import {
   rebuildArgv,
   splitJob,
   workflowFullHistoryJobs,
+  workflowSubmodulesJobs,
   workflowHeadCheckouts,
 } from "@turntable/act-runner";
 import type { JobArtifactProvider } from "../artifacts/job";
 import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
+import { effectiveChecksMode } from "../ops/setting-guard";
+import { ambientSettings } from "../settings/ambient";
+import type { SettingsRuntime } from "../settings/resolve";
 import { getOrgById, logSize } from "../db/repos/api";
 import { listJobs, listRepos, type Run } from "../db/repos";
 import { SecretRegistry } from "@turntable/redact";
@@ -43,8 +47,10 @@ import {
   sweepOldCheckouts,
 } from "../run/checkout-child";
 import { clean, DEFAULT_FETCH_LIMITS } from "../run/git-fetch";
+import { deliverSubmodules } from "../run/submodule-fetch";
 import { scrubToken } from "../run/scrub-token";
 import { tarballReader } from "../run/tarball-reader";
+import { treeScanOutcome } from "./tree-scan-outcome";
 import { resolvePlanActions } from "../pins";
 import { normalizeForgeToken, type ForgeToken } from "../pins/forge-token";
 import {
@@ -58,7 +64,7 @@ import { createBackoff, RateLimitedError, type SafeFetch } from "@turntable/net"
 import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
 import { createHash } from "node:crypto";
-import type { IssuedJobToken, JobTokens } from "../github/job-token";
+import { type IssuedJobToken, type JobTokens, SHADOW_LOWERED_NOTICE } from "../github/job-token";
 import type { JobOidc } from "../oidc/job-delivery";
 import {
   getActionPolicy,
@@ -93,7 +99,18 @@ export interface RepoSource {
   checkout(
     run: Run,
     repo: { owner: string; repo: string; installationId?: string | null | undefined } | undefined,
-    opts?: { signal?: AbortSignal | undefined; fullHistory?: boolean | undefined },
+    opts?: {
+      signal?: AbortSignal | undefined;
+      fullHistory?: boolean | undefined;
+      /** Also deliver each submodule at its pinned commit (a job's `submodules:` input). */
+      submodules?: "true" | "recursive" | undefined;
+      /**
+       * Whether a same-owner submodule may get an installation token. Only a trusted run does;
+       * absent means no, so every submodule is fetched anonymously (a fork PR's token reads only
+       * its own repository on GitHub, and an untrusted run must not pull in another private repo).
+       */
+      submoduleCredentials?: boolean | undefined;
+    },
   ): Promise<Checkout>;
 }
 
@@ -190,10 +207,12 @@ export function gitRepoSource(
       const dir = mkdtempSync(join(tmpdir(), "tt-src-"));
       const out = join(tmpdir(), `tt-src-${crypto.randomUUID()}.tgz`);
       // Removed in the background: a recursive delete of a large tree must not hold the event loop.
+      const manifests: string[] = [];
       const cleanup = async (): Promise<void> => {
         await Promise.all([
           rmAsync(dir, { recursive: true, force: true }),
           rmAsync(out, { force: true }),
+          ...manifests.map((m) => rmAsync(m, { force: true })),
         ]).catch(() => {});
       };
       try {
@@ -208,7 +227,11 @@ export function gitRepoSource(
             );
           }
         }
-        const res = await runCheckoutChild({
+        const startedAt = Date.now();
+        const submodules = opts?.submodules;
+        const manifest = join(tmpdir(), `tt-src-${crypto.randomUUID()}.json`);
+        manifests.push(manifest);
+        let res = await runCheckoutChild({
           ...(token ? { token } : {}),
           ...(opts?.fullHistory ? { fullHistory: true } : {}),
           owner,
@@ -217,11 +240,48 @@ export function gitRepoSource(
           ...(o.cloneUrl ? { url: clone } : {}),
           dir,
           out,
+          // With submodules the main tree is written and listed first; the tarball is made last,
+          // over the tree and the modules together.
+          ...(submodules ? { stage: "tree" as const, manifest } : {}),
           allowHosts: o.allowHosts ?? [],
           config: cfg,
           signal: opts?.signal,
           ...(o.command ? { command: o.command } : {}),
         });
+        if (submodules) {
+          if (res.sha !== sha)
+            throw new Error("the checkout is of a different commit than the one asked for");
+          await deliverSubmodules({
+            mode: submodules,
+            root: dir,
+            manifest,
+            main: res,
+            owner,
+            ...(opts?.submoduleCredentials === true
+              ? { installationId, mint: o.installationToken }
+              : {}),
+            cloneUrl: o.cloneUrl,
+            allowHosts: o.allowHosts ?? [],
+            config: cfg,
+            startedAt,
+            signal: opts?.signal,
+            command: o.command,
+          });
+          const left = cfg.timeoutMs - (Date.now() - startedAt);
+          if (left <= 1000) throw new Error("the checkout took too long");
+          res = await runCheckoutChild({
+            stage: "pack",
+            owner,
+            repo,
+            sha,
+            dir,
+            out,
+            allowHosts: o.allowHosts ?? [],
+            config: { ...cfg, timeoutMs: left },
+            signal: opts?.signal,
+            ...(o.command ? { command: o.command } : {}),
+          });
+        }
         // The child is not trusted: what it says it fetched, and the file it wrote, are checked.
         if (res.sha !== sha)
           throw new Error("the checkout is of a different commit than the one asked for");
@@ -290,6 +350,11 @@ export type ActRunnerOptions = {
    */
   jobTokens?: JobTokens;
   /**
+   * The settings layers (env, `turntable.toml`) the project's effective `checks_mode` is read
+   * through when a job token is issued. Default: the process's own (`ambientSettings`).
+   */
+  settings?: SettingsRuntime;
+  /**
    * Gives a job that asked for it (`permissions: id-token: write`) GitHub's OIDC request
    * variables, for a class the issuer allows. Behind the secrets proxy only: the request token is
    * a placeholder and the proxy attaches the real credential. Absent: jobs get no OIDC variables.
@@ -313,6 +378,29 @@ export const PROXIED_TOKEN_PLACEHOLDER = "turntable-token-is-added-by-the-proxy"
  * the lease-fenced attempt store. The final state is NOT written here: the scheduler records the
  * outcome (fenced) once the runner returns, so `finishJob` and the run-level calls do nothing.
  */
+/**
+ * Whether this job's submodules may be fetched with the installation token: only when the class
+ * it will run as (the same rule as the job start: the ingest class is a ceiling, the demotion
+ * rule only lowers it) is trusted. Anything else, or anything unreadable, is anonymous.
+ */
+function submoduleCredentialsFor(
+  workflowYaml: string,
+  dbRun: Run,
+  job: { jobKey: string; planned?: string | null },
+): boolean {
+  try {
+    const pj = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
+    const head = workflowHeadCheckouts(workflowYaml)[pj?.id ?? job.jobKey] ?? [];
+    const assessed = assessJob({ event: dbRun.event, ref: dbRun.ref }, head.length > 0);
+    const klass = assessed.demotedFrom
+      ? assessed.klass
+      : (parseTrust(dbRun)?.class ?? assessed.klass);
+    return !untrustedForSize(klass, false);
+  } catch {
+    return false;
+  }
+}
+
 function workerStore(ctx: AttemptContext): RunStore {
   const unused = (name: string) => async (): Promise<never> => {
     throw new Error(`${name} is not used by the worker`);
@@ -492,6 +580,8 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       reason: res.reason,
       ...(res.outputs ? { outputs: res.outputs } : {}),
       ...(res.infraKind ? { infraKind: res.infraKind } : {}),
+      ...(res.errorName ? { errorName: res.errorName } : {}),
+      ...(res.errorCode ? { errorCode: res.errorCode } : {}),
     };
   };
 
@@ -589,6 +679,12 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       // A refused credential is not transient: its own kind, so it is never retried.
       if (e instanceof CheckoutAuthError)
         return { state: "infra_error", infraKind: "checkout_auth_failed", reason: e.message };
+      const scan = treeScanOutcome(e);
+      if (scan) {
+        await ctx.store.appendLog(0, new TextEncoder().encode(scan.logLine));
+        o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${scan.logLine}`);
+        return scan.outcome;
+      }
       throw e;
     }
     try {
@@ -604,24 +700,43 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       // fetched again that way, and fails with the reason when the repository is over the caps.
       if (repo && !dbRun.local) {
         let wantsFull = false;
+        let wantsSubmodules: "true" | "recursive" | undefined;
         try {
-          const jobs = workflowFullHistoryJobs(workflowYaml);
           const pj = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
-          wantsFull = jobs[pj?.id ?? job.jobKey] === true;
+          const id = pj?.id ?? job.jobKey;
+          wantsFull = workflowFullHistoryJobs(workflowYaml)[id] === true;
+          // `submodules: true|recursive` (the default is false): the modules at their pinned
+          // commits are delivered too, under the checkout's own limits and rules.
+          wantsSubmodules = workflowSubmodulesJobs(workflowYaml)[id];
         } catch {
           // a workflow that does not parse fails in the planner below, with its own reason
         }
-        if (wantsFull) {
+        if (wantsFull || wantsSubmodules) {
           checkout.dispose?.();
           try {
             checkout = await o.source.checkout(
               dbRun,
               { owner: repo.owner, repo: repo.repo, installationId: repo.installationId },
-              { signal: ctx.signal, fullHistory: true },
+              {
+                signal: ctx.signal,
+                ...(wantsFull ? { fullHistory: true } : {}),
+                ...(wantsSubmodules
+                  ? {
+                      submodules: wantsSubmodules,
+                      submoduleCredentials: submoduleCredentialsFor(workflowYaml, dbRun, job),
+                    }
+                  : {}),
+              },
             );
           } catch (e) {
             if (e instanceof CheckoutAuthError)
               return { state: "infra_error", infraKind: "checkout_auth_failed", reason: e.message };
+            const scan = treeScanOutcome(e);
+            if (scan) {
+              await ctx.store.appendLog(0, new TextEncoder().encode(scan.logLine));
+              o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${scan.logLine}`);
+              return scan.outcome;
+            }
             return {
               state: "infra_error",
               reason: `checkout: ${clean(e instanceof Error ? e.message : String(e), 400)}`,
@@ -845,7 +960,16 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         const envOk = jobKlass === "protected" || jobKlass === "release";
         if (ctx.proxy || envOk) {
           try {
+            // Read now, at issue time: a project that is not live never holds a write token.
+            const readOnly =
+              (await effectiveChecksMode(
+                o.settings ?? ambientSettings(),
+                o.db,
+                ctx.scope.orgId,
+                ctx.scope.projectId,
+              )) !== "live";
             const r = await o.jobTokens.issue({
+              readOnly,
               installationId: repo.installationId,
               owner: repo.owner,
               repo: repo.repo,
@@ -855,6 +979,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
             });
             if ("none" in r) {
               notices.push(`[turntable] GITHUB_TOKEN is not set (${r.none})`);
+              if (r.lowered) notices.push(`[turntable] ${SHADOW_LOWERED_NOTICE}`);
             } else if (egressForRun(ctx.run.plan, o.egress) === "open") {
               // A job holding a token never runs with open egress.
               await r.revoke();
@@ -877,6 +1002,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               notices.push(
                 `[turntable] GITHUB_TOKEN for ${repo.owner}/${repo.repo}: ${perms} (${ctx.proxy ? "added by the proxy" : "in the environment"}), revoked when the job ends`,
                 ...r.notes.map((n) => `[turntable] GITHUB_TOKEN: ${n}`),
+                ...(r.lowered ? [`[turntable] ${SHADOW_LOWERED_NOTICE}`] : []),
               );
             }
           } catch (err) {

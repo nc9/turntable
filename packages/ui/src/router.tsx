@@ -18,10 +18,12 @@ import { InstanceQuotasPage } from "@/features/instance/quotas-page";
 import { InstanceProjectsPage } from "@/features/instance/projects-page";
 import { InstanceBackupsPage } from "@/features/instance/backups-page";
 import { InstanceTokenPage } from "@/features/instance/token-page";
+import { AddRepositoriesPage } from "@/features/onboarding/add-repositories";
 import { OnboardingPage, validateOnboardingSearch } from "@/features/onboarding/wizard";
 import { parseFeedSearch } from "@/lib/activity";
 import { sanitizeNext } from "@/lib/session";
 import { SettingsPage } from "@/features/runs/settings-page";
+import { NotificationPrefsPage, NotificationsPage } from "@/features/shell/notifications-page";
 
 export type RunsSearch = {
   status?: JobState | undefined;
@@ -137,10 +139,27 @@ const usageRoute = createRoute({
   component: UsagePage,
 });
 
+const notificationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/notifications",
+  component: NotificationsPage,
+});
+const notificationPrefsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/notifications/settings",
+  component: NotificationPrefsPage,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/$org/$project/settings",
   component: SettingsPage,
+});
+
+const addRepositoriesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/$org/-/repositories",
+  component: AddRepositoriesPage,
 });
 
 const orgSettingsRoute = createRoute({
@@ -197,6 +216,9 @@ export const routeTree = rootRoute.addChildren([
   orgSettingsRoute,
   releaseLaneRoute,
   settingsRoute,
+  notificationsRoute,
+  notificationPrefsRoute,
+  addRepositoriesRoute,
 ]);
 
 export const router = createRouter({

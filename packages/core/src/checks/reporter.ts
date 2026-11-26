@@ -5,13 +5,18 @@ import { redactString } from "@turntable/redact";
 import { foldShardStates } from "@turntable/act-runner";
 import type { Db } from "../db";
 import {
+  appendAudit,
+  listBackfillAttempts,
+  settleBackfill,
   claimSkippedCheck,
   type DismissReason,
   dismissSkippedCheck,
   getAttemptCheckRunId,
   getOrgById,
   listAttempts,
+  isRunSuperseded,
   listJobs,
+  listNewerCheckedJobs,
   listUnreportedSkips,
   listProjects,
   listRepos,
@@ -131,6 +136,7 @@ export class CheckReporter {
         do {
           this.#resweep = false;
           more = await this.sweepSkipped();
+          await this.sweepBackfill();
         } while (more || this.#resweep);
       } finally {
         this.#sweeping = false;
@@ -171,6 +177,70 @@ export class CheckReporter {
       });
     }
     return rows.length >= SKIP_BATCH && settled > 0;
+  }
+
+  /**
+   * Posts the current state of each job marked by a checks-mode flip (#630): off to shadow or
+   * live, or shadow to live. The marker is set in the database by the flip itself, for the latest
+   * run per ref only, and is cleared once the job has its check, so a restart neither loses nor
+   * repeats it. The post is the event path's own (`#post`), so the external ids are the same and
+   * a later event for the job updates this check. An attempt that already has a check (its own
+   * event posted it after the flip) only has its marker cleared. One audit entry per project and
+   * sweep records what was posted.
+   */
+  async sweepBackfill(): Promise<void> {
+    const rows = await listBackfillAttempts(this.#o.db, { limit: SKIP_BATCH });
+    const tally = new Map<string, { scope: Claim["scope"]; posted: number; dismissed: number }>();
+    for (const row of rows) {
+      const scope = { orgId: row.attempt.orgId, projectId: row.attempt.projectId };
+      const claim: Claim = { attempt: row.attempt, job: row.job, run: row.run, scope };
+      await this.#enqueue(chainKey(claim), async () => {
+        const { db } = this.#o;
+        const now = (this.#o.now ?? Date.now)();
+        const t = tally.get(scope.projectId) ?? { scope, posted: 0, dismissed: 0 };
+        tally.set(scope.projectId, t);
+        const gate = await this.#gate(claim);
+        if ("reason" in gate) {
+          await settleBackfill(db, scope, row.attempt.id, now, gate.reason);
+          t.dismissed++;
+          return;
+        }
+        const state = row.attempt.state;
+        if ((await getAttemptCheckRunId(db, scope, row.attempt.id)) === null) {
+          if (
+            state === "success" ||
+            state === "failure" ||
+            state === "infra_error" ||
+            state === "cancelled" ||
+            state === "skipped"
+          ) {
+            await this.#post(claim, { state, reason: row.attempt.errorClass ?? "" });
+            t.posted++;
+          } else if (state !== "queued") {
+            await this.#post(claim, undefined); // running: its own finish event completes it
+            t.posted++;
+          }
+        }
+        await settleBackfill(db, scope, row.attempt.id, now);
+      });
+    }
+    for (const t of tally.values()) {
+      if (t.posted === 0 && t.dismissed === 0) continue;
+      const mode = await effectiveChecksMode(
+        this.#o.settings,
+        this.#o.db,
+        t.scope.orgId,
+        t.scope.projectId,
+      );
+      await appendAudit(this.#o.db, t.scope, {
+        principalKind: "system",
+        principalId: "checks-reporter",
+        op: "checks_backfill",
+        effect: "write",
+        outcome: "ok",
+        input: { mode, posted: t.posted, nothing_to_post: t.dismissed },
+      }).catch((err) => this.#log(`checks backfill audit not written: ${msg(err)}`));
+    }
   }
 
   /** Resolves when everything queued so far has been attempted (tests, shutdown). */
@@ -271,6 +341,8 @@ export class CheckReporter {
     const { db } = this.#o;
     const { scope, run, job, attempt } = claim;
     if ((await getAttemptCheckRunId(db, scope, attempt.id)) !== null) return "posted";
+    // A newer run owns this sha's check names (#648): posting now could land after its checks.
+    if (await isRunSuperseded(db, run)) return { nothing: "superseded" };
     const target = await this.#gate(claim);
     if ("reason" in target) return { nothing: target.reason };
     const all = await listJobs(db, scope, run.id);
@@ -320,7 +392,7 @@ export class CheckReporter {
     all: Awaited<ReturnType<typeof listJobs>>,
     latest: Map<string, Claim["attempt"]>,
     mine: { id: string } | undefined,
-  ): Promise<"posted"> {
+  ): Promise<"posted" | { nothing: DismissReason }> {
     const { db } = this.#o;
     const { scope, run, job, attempt } = claim;
     const { mode, token } = target;
@@ -335,7 +407,7 @@ export class CheckReporter {
       }),
     });
     const at = new Date((this.#o.now ?? Date.now)()).toISOString();
-    const id = await this.#create(token, target.repo, target.sha, externalId, name, {
+    const id = await this.#create(claim, mode, token, target.repo, target.sha, externalId, name, {
       name,
       head_sha: target.sha,
       external_id: externalId,
@@ -349,6 +421,7 @@ export class CheckReporter {
         summary: summaryFor({ mode, result: NO_ATTEMPT_SKIP, runUrl, skipReason: reason }),
       },
     });
+    if (id === undefined) return { nothing: "superseded" };
     for (const a of latest.values()) await setAttemptCheckRunId(db, scope, a.id, id);
     await setAttemptCheckRunId(db, scope, attempt.id, id);
     return "posted";
@@ -400,19 +473,28 @@ export class CheckReporter {
         await setAttemptCheckRunId(db, scope, attempt.id, group.sharedId);
         return;
       }
-      id = await this.#create(token, repo, sha, group?.externalId ?? attempt.id, checkName_, {
-        name: checkName_,
-        head_sha: sha,
-        status: "in_progress",
-        started_at: new Date((this.#o.now ?? Date.now)()).toISOString(),
-        external_id: group?.externalId ?? attempt.id,
-        ...(runUrl ? { details_url: runUrl } : {}),
-        output: {
-          title: RUNNING_TITLE(mode),
-          summary: summaryRunning(mode, runUrl, retryOf),
+      const made = await this.#create(
+        claim,
+        mode,
+        token,
+        repo,
+        sha,
+        group?.externalId ?? attempt.id,
+        checkName_,
+        {
+          name: checkName_,
+          head_sha: sha,
+          status: "in_progress",
+          started_at: new Date((this.#o.now ?? Date.now)()).toISOString(),
+          external_id: group?.externalId ?? attempt.id,
+          ...(runUrl ? { details_url: runUrl } : {}),
+          output: {
+            title: RUNNING_TITLE(mode),
+            summary: summaryRunning(mode, runUrl, retryOf),
+          },
         },
-      });
-      await setAttemptCheckRunId(db, scope, attempt.id, id);
+      );
+      if (made !== undefined) await setAttemptCheckRunId(db, scope, attempt.id, made);
       return;
     }
 
@@ -486,13 +568,22 @@ export class CheckReporter {
       return;
     }
     // The start was never reported (an outage, a restart before it): create it completed.
-    id = await this.#create(token, repo, sha, group?.externalId ?? attempt.id, checkName_, {
-      ...body,
-      name: checkName_,
-      head_sha: sha,
-      external_id: group?.externalId ?? attempt.id,
-    });
-    await setAttemptCheckRunId(db, scope, attempt.id, id);
+    const made = await this.#create(
+      claim,
+      mode,
+      token,
+      repo,
+      sha,
+      group?.externalId ?? attempt.id,
+      checkName_,
+      {
+        ...body,
+        name: checkName_,
+        head_sha: sha,
+        external_id: group?.externalId ?? attempt.id,
+      },
+    );
+    if (made !== undefined) await setAttemptCheckRunId(db, scope, attempt.id, made);
   }
 
   /**
@@ -539,21 +630,52 @@ export class CheckReporter {
    * worker that died before it could store the id) is reused and brought up to date.
    */
   async #create(
+    claim: Claim,
+    mode: Exclude<ChecksMode, "off">,
     token: string,
     repo: string,
     sha: string,
     attemptId: string,
     name: string,
     body: CheckRunBody,
-  ): Promise<string> {
-    const found = await this.#retry("find check run", () =>
-      this.#o.api.findByExternalId(token, repo, sha, name, attemptId),
-    );
-    if (found !== undefined) {
-      await this.#retry("update check run", () => this.#o.api.update(token, repo, found, body));
-      return found;
+  ): Promise<string | undefined> {
+    // One creator at a time per (repo, sha), with the staleness check inside the lock (#648): any
+    // check a newer run creates comes after its run row exists, so it either waits behind this
+    // create (and is then the most recent) or is seen by the check here.
+    return this.#locked(`${repo}@${sha}`, async () => {
+      if (await this.#stale(claim, mode, name)) return undefined;
+      const found = await this.#retry("find check run", () =>
+        this.#o.api.findByExternalId(token, repo, sha, name, attemptId),
+      );
+      if (found !== undefined) {
+        await this.#retry("update check run", () => this.#o.api.update(token, repo, found, body));
+        return found;
+      }
+      return this.#retry("create check run", () => this.#o.api.create(token, repo, body));
+    });
+  }
+
+  /** True when this run was superseded, or a newer run on the sha already holds a check by this name. */
+  async #stale(claim: Claim, mode: Exclude<ChecksMode, "off">, name: string): Promise<boolean> {
+    const { db } = this.#o;
+    if (await isRunSuperseded(db, claim.run)) return true;
+    for (const n of await listNewerCheckedJobs(db, claim.run)) {
+      if (checkName(mode, n.job, checkScopeOf(n.run.plan)) === name) return true;
     }
-    return this.#retry("create check run", () => this.#o.api.create(token, repo, body));
+    return false;
+  }
+
+  readonly #locks = new Map<string, Promise<unknown>>();
+  async #locked<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const prev = this.#locks.get(key) ?? Promise.resolve();
+    const next = prev.then(work, work);
+    const tail = next.catch(() => {});
+    this.#locks.set(key, tail);
+    try {
+      return await next;
+    } finally {
+      if (this.#locks.get(key) === tail) this.#locks.delete(key);
+    }
   }
 
   async #runUrl(claim: Claim): Promise<string | undefined> {

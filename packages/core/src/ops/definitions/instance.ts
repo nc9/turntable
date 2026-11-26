@@ -2,6 +2,7 @@
 // caller is a `tti_` token minted on the host, and only such a token can call them over REST. No
 // org token of any role can, whatever its grant, and none of these is an MCP tool. Their audit
 // entries go to the system org's chain.
+import { instanceOrgCapOf } from "../org-cap";
 import { z } from "zod";
 import type { Db } from "../../db";
 import {
@@ -28,6 +29,7 @@ import {
   getProject,
   getProjectBySlug,
   instanceOrgSummary,
+  instanceInfraErrors,
   instanceRunActivity,
   instanceRunSummary,
   listProjects,
@@ -38,6 +40,8 @@ import {
   moveRepoBinding,
   orgTokenHistory,
   setOrgQuotas,
+  deleteProjectCascade,
+  listPruneCandidates,
 } from "../../db/repos";
 import { loadAuditKey } from "../../audit/checkpoint";
 import { SYSTEM_ORG_SLUG, systemOrgId } from "../../audit/failures";
@@ -54,8 +58,10 @@ import { ORG_SLUG } from "../bootstrap";
 import { defineOp } from "../define";
 import { ClaimError } from "../../github/claim";
 import { syncInstallation } from "../../github/installations";
+import { staticPollKey } from "../project-setup";
 import { resolveGithubUserId } from "../../approvals/github-id";
 import { OpError } from "../errors";
+import { sanitizeInfraError } from "../../infra-error-text";
 import { rotateInstanceToken } from "../instance-token-cli";
 import { generateToken, hashToken } from "../tokens";
 import { ambientSettings } from "../../settings/ambient";
@@ -165,7 +171,7 @@ export const setQuotas = defineOp({
     if (Object.keys(patch).length === 0) {
       throw new OpError("invalid_input", "name at least one limit to set");
     }
-    const cap = ctx.instanceOrgCap;
+    const cap = await instanceOrgCapOf(ctx);
     if (typeof i.max_concurrent === "number" && cap !== undefined && i.max_concurrent > cap) {
       throw new OpError(
         "invalid_input",
@@ -713,7 +719,6 @@ export const instanceBindInstallationOp = defineOp({
     try {
       r = await syncInstallation(ctx.db, ctx.githubFacts, i.installation_id, {
         claimedBy: org.id,
-        newProjectMaxConcurrent: 0,
       });
     } catch (e) {
       if (e instanceof Error && e.message.includes("already claimed by another org")) {
@@ -761,6 +766,85 @@ export const instanceBindInstallationOp = defineOp({
       target_org: org.slug,
       bound: r.bound,
     };
+  },
+});
+
+export const instancePruneUnconfiguredProjectsOp = defineOp({
+  name: "instance_prune_unconfigured_projects",
+  summary:
+    "List or delete the projects an installation sync made that nobody set up (instance administrator only).",
+  description:
+    "Before #577 an installation sync made a project for every repository the installation could " +
+    "reach. This lists, and with `dry_run: false` deletes, the projects of `target_org` that " +
+    "were made that way and never set up: never added on purpose, bound (or once bound) through " +
+    "an installation, zero runs, every setting at its default (paused is the sync's default), no " +
+    "static poll entry naming it, no onboarding row, and no token, secret or other row scoped to " +
+    "it. A project with any of those is never listed. A dry run returns the list and its count. A " +
+    "non-dry run needs `expected_count`, the count of that dry run, and refuses (conflict, " +
+    "nothing deleted) when the list now has a different count. Each deletion is audited with " +
+    "the project's slug and repos in the system chain and in the org's chain. The system org is " +
+    "never a target. Only the instance administrator can call it. Not an MCP tool.",
+  input: z.object({
+    target_org: z.string().min(1).max(64).describe("Slug of the org to prune."),
+    dry_run: z.boolean().describe("True lists only. False deletes the listed projects."),
+    expected_count: z
+      .int()
+      .min(0)
+      .max(100_000)
+      .optional()
+      .describe("Required when dry_run is false: the count the dry run returned."),
+  }),
+  output: z.object({
+    target_org: z.string(),
+    dry_run: z.boolean(),
+    count: z.int().describe("Projects listed (a dry run) or deleted."),
+    projects: z.array(z.object({ slug: z.string(), repos: z.array(z.string()) })),
+  }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/prune-unconfigured-projects" },
+  mcp: false,
+  async handler(ctx, i) {
+    const org = await getOrgBySlug(ctx.db, i.target_org);
+    if (!org || org.slug === SYSTEM_ORG_SLUG) throw new OpError("not_found", "no such org");
+    if (!i.dry_run && i.expected_count === undefined) {
+      throw new OpError("invalid_input", "expected_count is required when dry_run is false");
+    }
+    const prefix = staticPollKey(org.slug, "");
+    const staticPollSlugs = new Set(
+      (ctx.staticPollProjects ?? [])
+        .filter((k) => k.startsWith(prefix))
+        .map((k) => k.slice(prefix.length)),
+    );
+    const list = await listPruneCandidates(ctx.db, { orgId: org.id }, { staticPollSlugs });
+    const view = list.map((p) => ({ slug: p.slug, repos: p.repos }));
+    if (i.dry_run) {
+      return { target_org: org.slug, dry_run: true, count: list.length, projects: view };
+    }
+    if (list.length !== i.expected_count) {
+      throw new OpError(
+        "conflict",
+        `the list changed: ${list.length} projects qualify now, not ${i.expected_count}; run a dry run again`,
+        { count: list.length },
+      );
+    }
+    const system = { orgId: await systemOrgId(ctx.db) };
+    for (const p of list) {
+      if (!(await deleteProjectCascade(ctx.db, { orgId: org.id }, p.id))) continue;
+      const entry = {
+        principalKind: "instance" as const,
+        principalId: ctx.principal.id,
+        op: "instance_prune_unconfigured_projects",
+        effect: "write" as const,
+        outcome: "ok",
+        input: { target_org: org.slug, project: p.slug, repos: p.repos, project_id: p.id },
+      };
+      await appendAudit(ctx.db, { orgId: org.id }, entry);
+      await appendAudit(ctx.db, system, entry);
+    }
+    return { target_org: org.slug, dry_run: false, count: list.length, projects: view };
   },
 });
 
@@ -1432,6 +1516,131 @@ export const instanceRunSummaryOp = defineOp({
       },
     );
     return { since: new Date(since).toISOString(), until: new Date(now).toISOString(), orgs: rows };
+  },
+});
+
+export { sanitizeInfraError };
+
+export const instanceInfraErrorsOp = defineOp({
+  name: "instance_infra_errors",
+  summary:
+    "Recent infra_error attempts across orgs, with a sanitized error message, for operators.",
+  description:
+    "Recent attempts that ended `infra_error`, newest first, over a window (`since`: an ISO 8601 " +
+    "time or a duration like 24h; default 24 hours, at most 7 days). Each row has the org and " +
+    "project slug, run id, job key, attempt number, infra kind (`unknown` when none was " +
+    "recorded), the error text sanitized (secrets and tokens redacted, URL credentials, query " +
+    "strings and fragments removed, at most 500 characters), the underlying error's name and code " +
+    "when recorded (`error_name`, `error_code`) and timestamps. Never log or job " +
+    "output. Narrow it with `target_org`, `target_project` (needs target_org) and `run_id`. Use " +
+    "it to diagnose an infra error with no tenant token. The read is audited in the system " +
+    "chain. Only the instance administrator can call it. Read-only. Not an MCP tool.",
+  input: z.object({
+    since: z
+      .string()
+      .max(40)
+      .optional()
+      .describe("ISO 8601 time or a duration such as 24h or 2d. Default 24h; at most 7 days back."),
+    target_org: z.string().max(100).optional().describe("Only this org (slug)."),
+    target_project: z
+      .string()
+      .max(100)
+      .optional()
+      .describe("Only this project (slug); needs target_org."),
+    run_id: z.string().max(100).optional().describe("Only this run."),
+    limit: z.int().min(1).max(200).optional().describe("At most this many rows. Default 50."),
+  }),
+  output: z.object({
+    since: z.string(),
+    until: z.string(),
+    errors: z.array(
+      z.object({
+        org: z.string(),
+        project: z.string(),
+        run_id: z.string(),
+        job_key: z.string(),
+        attempt: z.int(),
+        infra_kind: z.string(),
+        error_class: z.string(),
+        error_name: z.string().nullable(),
+        error_code: z.string().nullable(),
+        created_at: z.string(),
+        started_at: z.string().nullable(),
+        finished_at: z.string().nullable(),
+      }),
+    ),
+  }),
+  effect: "read",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: true,
+  scope: "org",
+  http: { method: "GET", path: "/instance/infra-errors" },
+  mcp: false,
+  async handler(ctx, i) {
+    const now = ctx.now();
+    const since = parseSummarySince(i.since, now);
+    if (i.target_project !== undefined && i.target_org === undefined) {
+      throw new OpError("invalid_input", "target_project needs target_org");
+    }
+    const orgs = (await listAllOrgs(ctx.db)).filter((o) => o.slug !== SYSTEM_ORG_SLUG);
+    let orgId: string | undefined;
+    let projectId: string | undefined;
+    if (i.target_org !== undefined) {
+      const o = orgs.find((x) => x.slug === i.target_org);
+      if (!o) throw new OpError("not_found", "no such org");
+      orgId = o.id;
+      if (i.target_project !== undefined) {
+        const p = await getProjectBySlug(ctx.db, { orgId: o.id }, i.target_project);
+        if (!p) throw new OpError("not_found", "no such project");
+        projectId = p.id;
+      }
+    }
+    const rows = await instanceInfraErrors(
+      ctx.db,
+      since,
+      { orgId, projectId, runId: i.run_id },
+      i.limit ?? 50,
+    );
+    const orgSlug = new Map(orgs.map((o) => [o.id, o.slug]));
+    const projectSlugs = new Map<string, string>();
+    for (const id of new Set(rows.map((r) => r.orgId))) {
+      for (const p of await listProjects(ctx.db, { orgId: id })) projectSlugs.set(p.id, p.slug);
+    }
+    const iso = (t: number | null): string | null =>
+      t === null ? null : new Date(t).toISOString();
+    const errors = rows
+      .filter((r) => orgSlug.has(r.orgId))
+      .map((r) => ({
+        org: orgSlug.get(r.orgId)!,
+        project: projectSlugs.get(r.projectId) ?? "",
+        run_id: r.runId,
+        job_key: r.jobKey,
+        attempt: r.attempt,
+        infra_kind: r.infraKind ?? "unknown",
+        error_class: sanitizeInfraError(r.errorClass),
+        error_name: r.errorName === null ? null : sanitizeInfraError(r.errorName).slice(0, 60),
+        error_code: r.errorCode === null ? null : sanitizeInfraError(r.errorCode).slice(0, 60),
+        created_at: new Date(r.createdAt).toISOString(),
+        started_at: iso(r.startedAt),
+        finished_at: iso(r.finishedAt),
+      }));
+    await appendAudit(
+      ctx.db,
+      { orgId: await systemOrgId(ctx.db) },
+      {
+        principalKind: "instance",
+        principalId: ctx.principal.id,
+        op: "instance_infra_errors",
+        effect: "read",
+        outcome: "ok",
+        input: {
+          rows: errors.length,
+          window_ms: now - since,
+          filtered: i.target_org !== undefined || i.run_id !== undefined,
+        },
+      },
+    );
+    return { since: new Date(since).toISOString(), until: new Date(now).toISOString(), errors };
   },
 });
 

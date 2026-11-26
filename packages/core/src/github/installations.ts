@@ -1,5 +1,7 @@
-// Installation sync: maps a GitHub App installation to the owning org, and its repositories to
-// projects, through the tenancy repos. Every fact comes from the GitHub API. The webhook payload
+// Installation sync: maps a GitHub App installation to the owning org and keeps the bindings of
+// the projects that were ADDED (`add_project`) in line with what it can reach (#577). The
+// installation's repository access is a permission: sync creates no project and no binding for a
+// repo nobody added. Every fact comes from the GitHub API. The webhook payload
 // contributes only an installation id to look up, so a payload that names a different
 // installation, account or repository than the API reports changes nothing.
 import type { Db } from "../db";
@@ -7,12 +9,10 @@ import {
   adoptRepoBinding,
   appendAudit,
   bindRepo,
-  createProject,
   findGithubRepoBinding,
   findReattachableProject,
   getGithubApp,
   getInstallation,
-  getProjectBySlug,
   listInstallationsWithPolledBindings,
   listInstallationBindings,
   type RepoBinding,
@@ -31,11 +31,6 @@ export interface SyncOptions {
   claimMode?: boolean;
   /** The org that just claimed the installation (the claim callback); never taken from a payload. */
   claimedBy?: string;
-  /**
-   * `max_concurrent` for a project THIS sync creates (0 pauses it). Existing projects, including
-   * a reattached one, are never touched: only a project made here gets it.
-   */
-  newProjectMaxConcurrent?: number;
 }
 
 export interface SyncResult {
@@ -48,16 +43,9 @@ export interface SyncResult {
   followed: string[];
   /** Repos left alone because they are already bound elsewhere. */
   conflicts: string[];
-  /** Projects this sync created (a reattached or adopted project is not one), by repo. */
-  created: { repo: string; projectId: string }[];
+  /** Repos the installation can reach that are not projects (nothing was created for them). */
+  reachable: string[];
 }
-
-const slugify = (s: string): string =>
-  s
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9-]+/g, "-")
-    .replaceAll(/^-+|-+$/g, "")
-    .slice(0, 60) || "repo";
 
 /**
  * Reconciles one installation with GitHub. Idempotent: running it twice, or for a replayed or
@@ -77,7 +65,7 @@ export async function syncInstallation(
     unbound: [],
     followed: [],
     conflicts: [],
-    created: [],
+    reachable: [],
   };
   const app = await getGithubApp(db);
   if (!app) throw new Error("no GitHub App is configured");
@@ -223,25 +211,17 @@ export async function syncInstallation(
       result.conflicts.push(repo.fullName);
       continue;
     }
-    // A re-grant: this org's project whose last_forge_repo_id is this repo and has no binding now.
+    // Not bound anywhere. A repo the installation can reach is a permission, never a project:
+    // only a re-grant of a project that was added and lost access binds here. Anything else waits
+    // for an explicit `add_project`.
     const reattachId = await findReattachableProject(db, scope, repo.id);
-    const project =
-      reattachId !== undefined
-        ? { id: reattachId }
-        : await createProjectFor(
-            db,
-            scope,
-            repo.owner,
-            repo.name,
-            repo.id,
-            repo.fullName,
-            opts.newProjectMaxConcurrent,
-          );
-    if (reattachId === undefined)
-      result.created.push({ repo: repo.fullName, projectId: project.id });
+    if (reattachId === undefined) {
+      result.reachable.push(repo.fullName);
+      continue;
+    }
     await bindRepo(
       db,
-      { orgId, projectId: project.id },
+      { orgId, projectId: reattachId },
       {
         forge: "github",
         owner: repo.owner,
@@ -250,16 +230,14 @@ export async function syncInstallation(
         forgeRepoId: repo.id,
       },
     );
-    if (reattachId !== undefined) {
-      await appendAudit(db, scope, {
-        principalKind: "system",
-        principalId: "github-installation",
-        op: "reattach_repo_binding",
-        effect: "write",
-        outcome: "ok",
-        input: { repo: repo.fullName, installationId, projectId: reattachId, forgeRepoId: repo.id },
-      });
-    }
+    await appendAudit(db, scope, {
+      principalKind: "system",
+      principalId: "github-installation",
+      op: "reattach_repo_binding",
+      effect: "write",
+      outcome: "ok",
+      input: { repo: repo.fullName, installationId, projectId: reattachId, forgeRepoId: repo.id },
+    });
     result.bound.push(repo.fullName);
   }
   for (const b of await listInstallationBindings(db, scope, installationId)) {
@@ -301,31 +279,6 @@ async function unbindAndRecord(
     },
   );
   return true;
-}
-
-async function createProjectFor(
-  db: Db,
-  scope: { orgId: string },
-  owner: string,
-  name: string,
-  repoId: string,
-  fullName: string,
-  maxConcurrent?: number,
-) {
-  for (const slug of [
-    slugify(name),
-    slugify(`${owner}-${name}`),
-    slugify(`${owner}-${name}-${repoId}`),
-  ]) {
-    if (!(await getProjectBySlug(db, scope, slug))) {
-      return createProject(db, scope, {
-        slug,
-        name: fullName,
-        ...(maxConcurrent !== undefined ? { maxConcurrent } : {}),
-      });
-    }
-  }
-  throw new Error(`no free project slug for ${fullName}`);
 }
 
 /**

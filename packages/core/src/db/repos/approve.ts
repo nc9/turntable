@@ -18,7 +18,14 @@ import { supersedeOlderRuns } from "./poll";
 import { effectiveStates } from "./readiness";
 import { type Scope, scoped } from "./scope";
 
-export type RunApproval = { by: string; at: number; head_sha: string; workflow_hash: string };
+export type RunApproval = {
+  by: string;
+  at: number;
+  head_sha: string;
+  workflow_hash: string;
+  /** Set when a pull request label approved the run: the label and its `labeled` event id. */
+  via?: { kind: "label"; label: string; event_id: string };
+};
 
 export class ApproveError extends Error {
   readonly code: "conflict";
@@ -69,7 +76,13 @@ export function approveRun(
   db: Db,
   scope: Scope,
   runId: string,
-  input: { headSha: string; workflowHash: string; by: string; now?: number },
+  input: {
+    headSha: string;
+    workflowHash: string;
+    by: string;
+    via?: { kind: "label"; label: string; event_id: string };
+    now?: number;
+  },
 ): Promise<{ released: number; approval: RunApproval; state: string } | undefined> {
   return db.transaction(async (tx) => {
     const run = await getRun(tx, scope, runId);
@@ -122,6 +135,7 @@ export function approveRun(
       at: input.now ?? Date.now(),
       head_sha: run.sha.toLowerCase(),
       workflow_hash: trust.workflowHash,
+      ...(input.via ? { via: input.via } : {}),
     };
     // Only the approval is written: the trust column (the class) is left exactly as decided.
     await tx.orm

@@ -43,6 +43,7 @@ const NO_ORG_ID = new Set([
   "login_states", // a sign-in attempt in flight, before anyone is known (#430)
   "web_sessions", // a signed-in user's session; its orgs come from org_members (#430)
   "github_installation_installers", // recorded before any org claims the installation; read only by the ownership check, keyed by installation id
+  "notification_cursors", // the single instance-wide fan-out cursor of the notification rule engine (#611); no per-org rows
 ]);
 
 test.skipIf(onPostgres)("every table except the allowlist has an org_id column", () => {

@@ -20,15 +20,18 @@ export async function setupChecksWorld(open?: () => Db) {
   await bindRepo(db, scope, { forge: "github", owner: "acme", repo: "web", installationId });
   const sha = "a".repeat(40);
 
-  async function claim(): Promise<Claim> {
+  async function claim(
+    jobKey = "build",
+    workflowPath = ".github/workflows/ci.yml",
+  ): Promise<Claim> {
     const run = await createRun(db, scope, {
-      workflowPath: ".github/workflows/ci.yml",
+      workflowPath,
       event: "push",
       ref: "refs/heads/main",
       sha,
       repo: "acme/web",
     });
-    const job = (await createJob(db, scope, { runId: run.id, jobKey: "build", name: "build" }))!;
+    const job = (await createJob(db, scope, { runId: run.id, jobKey, name: jobKey }))!;
     const attempt = (await createAttempt(db, scope, { jobId: job.id, provider: "fake" }))!;
     return { attempt, job, run, scope };
   }

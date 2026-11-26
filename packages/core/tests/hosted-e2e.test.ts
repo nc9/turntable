@@ -32,6 +32,7 @@ import { pollConfigSchema } from "../src/poll/config";
 import { createActRunner, Scheduler } from "../src/scheduler";
 import {
   WEBHOOK_SECRET,
+  addAll,
   fakeFacts,
   fakeUserVerifier,
   inst,
@@ -94,7 +95,7 @@ describe("hosted shadow, end to end", () => {
     const user = fakeUserVerifier(new Map([["c", ownerOf100]]));
     const claimHandler = createClaimHandler({ claims, facts: facts.facts, user, log: () => {} });
 
-    // --- step 1: the tenant claims the installation; the repo becomes a project of THAT org
+    // --- step 1: the tenant claims the installation, then adds the repo; it becomes a project of THAT org
     const { url } = await claims.start(tenant.id, "token:operator");
     const state = new URL(url, "http://x").searchParams.get("state")!;
     const nonce = JSON.parse(Buffer.from(state.split(".")[1]!, "base64url").toString()).n as string;
@@ -106,6 +107,8 @@ describe("hosted shadow, end to end", () => {
     );
     expect(claimed?.status).toBe(200);
     expect((await getInstallation(db, "100"))?.orgId).toBe(tenant.id);
+    expect(await listProjects(db, { orgId: tenant.id })).toEqual([]); // a claim makes no project (#577)
+    await addAll(db, tenant.id, facts, "100");
     const [project] = await listProjects(db, { orgId: tenant.id });
     expect(project?.slug).toBe("web");
     const scope = { orgId: tenant.id, projectId: project!.id };

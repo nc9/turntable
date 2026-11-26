@@ -360,6 +360,148 @@ test("rerun: at most 2 per job per commit, across runs of the same sha", async (
   ).toBe(1);
 });
 
+async function failAgain(runId: string, jobId: string, state: "failure" | "infra_error") {
+  const attempt = (await listAttempts(db, a.scope, jobId)).at(-1)!;
+  await transitionJob(db, a.scope, jobId, "running");
+  await updateAttempt(db, a.scope, attempt.id, { state: "running" });
+  if (state === "infra_error") {
+    await updateAttempt(db, a.scope, attempt.id, { state, errorClass: "lost" });
+    await transitionJob(db, a.scope, jobId, state);
+  } else {
+    await updateAttempt(db, a.scope, attempt.id, { state, exitCode: 1 });
+    await transitionJob(db, a.scope, jobId, state, { exitCode: 1 });
+  }
+  await setRunStatus(db, a.scope, runId, "failure");
+}
+
+test("rerun: infra-error reruns leave the user budget, bounded by their own limit", async () => {
+  const sha = "1".repeat(40);
+  const first = await finishRun(a, [{ key: "test", state: "infra_error" }], sha);
+  const id = first.ids.test!;
+  // two reruns after infra errors: the user budget is still full
+  for (let i = 0; i < 2; i++) {
+    const out = await run(operator, "rerun", { run_id: first.run.id, reason: `infra ${i}` });
+    expect(out.reruns[0].reruns_used).toBe(0);
+    await failAgain(first.run.id, id, "infra_error");
+  }
+  // this rerun replaces an infra attempt, so it is the third infra rerun; it then fails for real
+  await run(operator, "rerun", { run_id: first.run.id, reason: "infra 2" });
+  await failAgain(first.run.id, id, "failure");
+  // user-outcome reruns still stop at 2
+  await run(operator, "rerun", { run_id: first.run.id, reason: "u1" });
+  await failAgain(first.run.id, id, "failure");
+  const u2 = await run(operator, "rerun", { run_id: first.run.id, reason: "u2" });
+  expect(u2.reruns[0].reruns_used).toBe(2);
+  await failAgain(first.run.id, id, "failure");
+  const refused = await call(operator, "rerun", { run_id: first.run.id, reason: "u3" });
+  expect(!refused.ok && refused.error.code).toBe("conflict");
+  // the message names both budgets
+  expect(!refused.ok && refused.error.message).toMatch(
+    /already rerun 2 times.*limit 2.*0 of 2 job-outcome reruns and 2 of 5 infra-error reruns remain/,
+  );
+});
+
+test("rerun: the infra streak is bounded at 5 per job per commit", async () => {
+  const sha = "2".repeat(40);
+  const first = await finishRun(a, [{ key: "test", state: "infra_error" }], sha);
+  const id = first.ids.test!;
+  for (let i = 0; i < 5; i++) {
+    await run(operator, "rerun", { run_id: first.run.id, reason: `infra ${i}` });
+    await failAgain(first.run.id, id, "infra_error");
+  }
+  const refused = await call(operator, "rerun", { run_id: first.run.id, reason: "again" });
+  expect(!refused.ok && refused.error.code).toBe("conflict");
+  expect(!refused.ok && refused.error.message).toMatch(
+    /after infra errors.*infra limit 5.*2 of 2 job-outcome reruns and 0 of 5 infra-error reruns remain/,
+  );
+  expect(await listAttempts(db, a.scope, id)).toHaveLength(6);
+});
+
+async function finishWithDependent(sha: string, upstream: "failure" | "infra_error") {
+  const first = await finishRun(a, [{ key: "build", state: upstream }], sha);
+  const dep = (await createJob(db, a.scope, {
+    runId: first.run.id,
+    jobKey: "deploy",
+    name: "deploy",
+    needs: ["build"],
+  }))!;
+  const at = (await createAttempt(db, a.scope, { jobId: dep.id, provider: "docker" }))!;
+  await updateAttempt(db, a.scope, at.id, {
+    state: "skipped",
+    errorClass: `dependency:${upstream}`,
+  });
+  await transitionJob(db, a.scope, dep.id, "skipped");
+  return { run: first.run, build: first.ids.build!, deploy: dep.id };
+}
+
+test("rerun: a dependent skipped by an infra_error upstream uses the infra budget", async () => {
+  const f = await finishWithDependent("3".repeat(40), "infra_error");
+  // three upstream infra failures, the dependent rerun each time; the 4th rerun is accepted
+  for (let i = 0; i < 3; i++) {
+    const out = await run(operator, "rerun", {
+      run_id: f.run.id,
+      jobs: ["deploy"],
+      reason: `i${i}`,
+    });
+    expect(out.reruns[0].reruns_used).toBe(0);
+    const att = (await listAttempts(db, a.scope, f.deploy)).at(-1)!;
+    await updateAttempt(db, a.scope, att.id, {
+      state: "skipped",
+      errorClass: "dependency:infra_error",
+    });
+    await transitionJob(db, a.scope, f.deploy, "skipped");
+  }
+  const fourth = await call(operator, "rerun", {
+    run_id: f.run.id,
+    jobs: ["deploy"],
+    reason: "i3",
+  });
+  expect(fourth.ok).toBe(true);
+});
+
+test("rerun: the refusal for a dependency-skipped job reports both budgets", async () => {
+  const f = await finishWithDependent("4".repeat(40), "infra_error");
+  for (let i = 0; i < 5; i++) {
+    await run(operator, "rerun", { run_id: f.run.id, jobs: ["deploy"], reason: `i${i}` });
+    const att = (await listAttempts(db, a.scope, f.deploy)).at(-1)!;
+    await updateAttempt(db, a.scope, att.id, {
+      state: "skipped",
+      errorClass: "dependency:infra_error",
+    });
+    await transitionJob(db, a.scope, f.deploy, "skipped");
+  }
+  const refused = await call(operator, "rerun", {
+    run_id: f.run.id,
+    jobs: ["deploy"],
+    reason: "x",
+  });
+  expect(!refused.ok && refused.error.message).toMatch(
+    /after infra errors.*infra limit 5.*2 of 2 job-outcome reruns and 0 of 5 infra-error reruns remain/,
+  );
+});
+
+test("rerun: a dependent skipped by a real failure is charged to the job-outcome budget", async () => {
+  const f = await finishWithDependent("5".repeat(40), "failure");
+  const one = await run(operator, "rerun", { run_id: f.run.id, jobs: ["deploy"], reason: "u1" });
+  expect(one.reruns[0].reruns_used).toBe(1);
+  const att = (await listAttempts(db, a.scope, f.deploy)).at(-1)!;
+  await updateAttempt(db, a.scope, att.id, { state: "skipped", errorClass: "dependency:failure" });
+  await transitionJob(db, a.scope, f.deploy, "skipped");
+  const two = await run(operator, "rerun", { run_id: f.run.id, jobs: ["deploy"], reason: "u2" });
+  expect(two.reruns[0].reruns_used).toBe(2);
+  const att2 = (await listAttempts(db, a.scope, f.deploy)).at(-1)!;
+  await updateAttempt(db, a.scope, att2.id, { state: "skipped", errorClass: "dependency:failure" });
+  await transitionJob(db, a.scope, f.deploy, "skipped");
+  const refused = await call(operator, "rerun", {
+    run_id: f.run.id,
+    jobs: ["deploy"],
+    reason: "u3",
+  });
+  expect(!refused.ok && refused.error.message).toMatch(
+    /already rerun 2 times.*limit 2.*0 of 2 job-outcome reruns and 5 of 5 infra-error reruns remain/,
+  );
+});
+
 test("rerun: cross-tenant denial", async () => {
   const bRun = await finishRun(b, [{ key: "test", state: "failure" }]);
   const res = await call(operator, "rerun", { run_id: bRun.run.id, reason: "x" });
@@ -372,30 +514,40 @@ test("events long-poll: a per-org cap keeps one org from using every slot", asyn
   const saved = { ...waiterLimits };
   waiterLimits.perOrg = 3;
   waiterLimits.global = 5;
+  // Barrier on the long-poll's own slot count, never on a sleep: each call queries the database
+  // before it takes a slot, which can take arbitrarily long under load.
+  const until = async (n: number, orgId?: string) => {
+    const stop = Date.now() + 20_000;
+    while (waitingCount(orgId) !== n) {
+      if (Date.now() > stop) throw new Error(`waiters stuck at ${waitingCount(orgId)}, want ${n}`);
+      await Bun.sleep(5);
+    }
+  };
   try {
     const bTok = (await mintToken(db, { orgId: b.orgId }, "reader")).secret;
-    const poll = (tok: string, wait = 400) => run(tok, "events", { after: 999_999, wait_ms: wait });
+    // Held waiters outlive every step below; an over-cap call that wrongly waited (5000 ms) would
+    // outlast them and the slot counts would drop, so the asserts need no wall-clock bound.
+    const hold = 2500;
+    const poll = (tok: string, wait = hold) =>
+      run(tok, "events", { after: 999_999, wait_ms: wait });
 
     const aWaiters = Array.from({ length: 3 }, () => poll(reader));
-    await Bun.sleep(60);
+    await until(3, a.orgId);
     expect(waitingCount(a.orgId)).toBe(3);
 
-    // org A is at its cap: a fourth call returns at once, without waiting
-    const t0 = Date.now();
+    // org A is at its cap: a fourth call returns at once, without taking a slot
     await poll(reader, 5000);
-    expect(Date.now() - t0).toBeLessThan(1000);
     expect(waitingCount(a.orgId)).toBe(3);
 
     // org B still gets slots while A is saturated
     const bWaiters = Array.from({ length: 2 }, () => poll(bTok));
-    await Bun.sleep(60);
+    await until(2, b.orgId);
     expect(waitingCount(b.orgId)).toBe(2);
     expect(waitingCount()).toBe(5);
 
     // the global cap still binds: a third org waiter in B is over it
-    const t1 = Date.now();
     await poll(bTok, 5000);
-    expect(Date.now() - t1).toBeLessThan(1000);
+    expect(waitingCount()).toBe(5);
 
     await Promise.all([...aWaiters, ...bWaiters]);
     expect(waitingCount()).toBe(0);
@@ -403,9 +555,9 @@ test("events long-poll: a per-org cap keeps one org from using every slot", asyn
     expect(waitingCount(b.orgId)).toBe(0);
     // slots are released: waiting works again
     const again = poll(reader, 100);
-    await Bun.sleep(30);
-    expect(waitingCount(a.orgId)).toBe(1);
+    await until(1, a.orgId);
     await again;
+    expect(waitingCount(a.orgId)).toBe(0);
   } finally {
     Object.assign(waiterLimits, saved);
   }

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { registry } from "../src/ops";
 import { lintOutputSchemas, outputFieldNames } from "../src/ops/lint";
 import { mcpTools } from "../src/ops/mcp";
-import { buildOpenApi } from "../src/ops/openapi";
+import { OPENAPI_DOC_VERSION, buildOpenApi } from "../src/ops/openapi";
 import { createRegistry, defineOp } from "../src/ops";
 import { z } from "zod";
 
@@ -13,11 +13,25 @@ const DOC = join(import.meta.dir, "../../../docs/openapi.json");
 test("docs/openapi.json is current (run `bun run --cwd packages/core openapi:gen`)", () => {
   const committed = JSON.parse(readFileSync(DOC, "utf8"));
   // compare parsed, so formatter whitespace cannot flap this
-  expect(committed).toEqual(JSON.parse(JSON.stringify(buildOpenApi(registry, "0.0.0-dev"))));
+  expect(committed).toEqual(
+    JSON.parse(JSON.stringify(buildOpenApi(registry, OPENAPI_DOC_VERSION))),
+  );
+});
+
+test("the committed document is fixed; the Turntable-Version header is documented", () => {
+  const committed = JSON.parse(readFileSync(DOC, "utf8"));
+  expect(committed.info.version).toBe(OPENAPI_DOC_VERSION);
+  expect(committed.components.headers.TurntableVersion.schema).toEqual({ type: "string" });
+  const ok = committed.paths[Object.keys(committed.paths)[0]!];
+  const op = ok[Object.keys(ok)[0]!];
+  expect(op.responses["200"].headers["Turntable-Version"]).toEqual({
+    $ref: "#/components/headers/TurntableVersion",
+  });
+  expect(committed.components.responses.Unauthenticated.headers["Turntable-Version"]).toBeDefined();
 });
 
 test("the generated document is a structurally valid OpenAPI 3.1 document", () => {
-  const doc = buildOpenApi(registry, "0.0.0-dev") as any;
+  const doc = buildOpenApi(registry, OPENAPI_DOC_VERSION) as any;
   expect(doc.openapi).toBe("3.1.0");
   expect(doc.info.title).toBeString();
   expect(doc.components.securitySchemes.bearerAuth).toMatchObject({
@@ -114,6 +128,7 @@ test("MCP tool list equals the registry minus signature ops", () => {
     "accept_action_move",
     "add_proxy_passthrough_host",
     "approval_challenge",
+    "approval_policy_challenge",
     "approve_run_challenge",
     "create_api_token",
     "enrolment_challenge",
@@ -164,7 +179,12 @@ test("operations meet the agent-facing conventions", () => {
     // writes need at least the operator role; reads may be readers
     // revoke_api_token is the exception: any token may revoke itself, whatever its role, and the
     // handler refuses a reader revoking anyone else's.
-    if (op.effect !== "read" && op.name !== "revoke_api_token") {
+    // notifications_ack and set_notification_prefs change only the caller's own rows and refuse
+    // every token: a viewer reads their inbox, so a viewer may clear it.
+    if (
+      op.effect !== "read" &&
+      !["revoke_api_token", "notifications_ack", "set_notification_prefs"].includes(op.name)
+    ) {
       expect(op.auth.minRole).not.toBe("reader");
     }
     // list ops page by cursor
@@ -221,7 +241,7 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
   const { openDatabase } = await import("../src/db");
   void handleRequest;
   const api = createRestApi({ registry, db: openDatabase(":memory:") });
-  const doc = buildOpenApi(registry, "0.0.0-dev") as any;
+  const doc = buildOpenApi(registry, OPENAPI_DOC_VERSION) as any;
   const tools = new Set(mcpTools(registry).map((t) => t.name));
   const operationIds = new Set(
     Object.values<any>(doc.paths).flatMap((item) =>

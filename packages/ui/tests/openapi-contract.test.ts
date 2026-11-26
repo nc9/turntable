@@ -8,7 +8,9 @@ import type {
   WireConsumption,
   WireQuotas,
   WireApprovers,
+  WireMyNotifications,
   WireMyPendingApprovals,
+  WireNotificationPrefs,
   WireChallenge,
   WireEnrolmentApproval,
   WireEnrolmentRequest,
@@ -520,6 +522,8 @@ test("human approvals: status, approvers, challenges, enrolment and the signatur
       pending_enrolments: true,
       policies: true,
       warnings: true,
+      default_mode: true,
+      instance_loosenings: true,
     }),
   );
   expectKeys(approvers.properties!.approvers!.items!, [
@@ -710,4 +714,33 @@ test("my_pending_approvals: path and item fields", () => {
       }),
     ),
   );
+});
+
+test("my_notifications, get_notification_prefs: paths and fields", () => {
+  const o = op("/my/notifications", "get");
+  expect(o.operationId).toBe("my_notifications");
+  const body = ok(o);
+  expectKeys(body, ["notifications", "unread_count", "next_cursor"]);
+  const item = body.properties!.notifications!.items!;
+  expect(Object.keys(item.properties ?? {})).toEqual(
+    expect.arrayContaining(
+      keysOf<WireMyNotifications["notifications"][number]>({
+        id: true,
+        kind: true,
+        org: true,
+        project: true,
+        run_id: true,
+        count: true,
+        title: true,
+        created_at: true,
+        read_at: true,
+        link: true,
+      }),
+    ),
+  );
+  const prefs = op("/my/notification-prefs", "get");
+  expect(prefs.operationId).toBe("get_notification_prefs");
+  expectKeys(ok(prefs), keysOf<WireNotificationPrefs>({ prefs: true, defaults: true }));
+  expect(op("/my/notifications/ack", "post").operationId).toBe("notifications_ack");
+  expect(op("/my/notification-prefs/set", "post").operationId).toBe("set_notification_prefs");
 });

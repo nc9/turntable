@@ -674,6 +674,12 @@ const UNREACHABLE: Record<string, string> = {
     "needs a run whose jobs wait on the project's release environment with recorded release-class artifacts, which the fixture lacks; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such run. The approval itself is covered in release-approval-v2.test.ts",
   key_policy_challenge:
     "a hardware policy needs a counted passkey with an allowed AAGUID, and the fixture approvers are ed25519; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such approver of its own",
+  get_approval_policy:
+    "owner role: no token holds it, so every token principal of A and B is refused alike; an owner session works in its own org alone, and approval-policy-web.test.ts covers the gate",
+  set_approval_policy:
+    "owner web sessions only (every token of A and B is refused alike), and a loosening needs a passkey step-up; approval-policy-web.test.ts covers the gate and the org scoping",
+  approval_policy_challenge:
+    "needs a counted approver key id and a change that loosens a policy; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such approver of its own. The statement and quorum are in approval-policy-web.test.ts",
   first_approver_challenge:
     "owner web sessions only (every token of A and B is refused alike); a session works in its own org alone, and first-approver-passkey.test.ts covers the gate",
   enrol_first_approver:
@@ -694,6 +700,8 @@ const UNREACHABLE: Record<string, string> = {
     "needs a configured GitHub App to list the installation's repos; org B is probed and gets not_found for A's installation id, and the ownership check is in onboarding-repos.test.ts (another org's installation looks like none)",
   onboard_repos:
     "needs an admin: no token holds that role, so every token principal of A and B is refused alike; the org scoping (an installation of another org looks like none) and the batch are in onboarding-repos.test.ts",
+  add_project:
+    "needs an admin (no token holds that role) and a configured GitHub App, so every token principal of A and B is refused alike; the installation scoping (another org's installation looks like none), the repo check and the audit are in projects-add-remove.test.ts",
   preview_workflows:
     "needs a configured GitHub App and a repo reader; org B is probed and finds no such project of its own, and the preview itself is in onboarding-repos.test.ts",
   run_default_branch:
@@ -734,6 +742,10 @@ const UNREACHABLE: Record<string, string> = {
     "web sessions only: no token reaches it (the handler refuses a token principal alike); the binding, org scoping and single use are in session-step-up.test.ts",
   my_pending_approvals:
     "web sessions only: a token of any kind, A's or B's, is refused by the handler (a person's inbox). What a session sees, per org and per person, is in my-pending-approvals.test.ts",
+  get_notification_prefs:
+    "web sessions only: a token of any kind is refused by the handler (a person's own preferences). Per-person scoping is in notifications.test.ts",
+  set_notification_prefs:
+    "web sessions only: a token of any kind is refused by the handler (a person's own preferences). Per-person scoping and the org membership check are in notifications.test.ts",
   accept_action_move:
     "needs a recorded action pin and verdict; covered by action-pins.test.ts, re-probed below by repo",
 };

@@ -179,7 +179,7 @@ describe("a full-history delivery", () => {
         // a named kind: the fetch's own error, or the net client's timeout when the clock runs out first
         expect(["GitFetchError", "RequestTimeoutError"]).toContain(err?.name);
         expect(String(err.message)).toMatch(
-          /too many objects|too large|more than 1 tags|Maximum|exceed|time/i,
+          /too many objects|too large|more than 1 tags|Maximum|exceed|time|too long/i,
         );
       }
       // the parent says what was asked for

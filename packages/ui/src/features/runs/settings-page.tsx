@@ -2,9 +2,13 @@ import { Lock } from "lucide-react";
 import { EmptyState } from "@/components/empty-state";
 import { SettingsSection } from "@/features/settings/settings-section";
 import { useScope } from "@/features/shell/scope";
+import { useWhoami } from "@/lib/directory";
+import { ProjectSecretsSection } from "./project-secrets-section";
+import { RemoveProject } from "./remove-project";
 
 export function SettingsPage() {
   const scope = useScope();
+  const who = useWhoami();
   if (scope.projects && scope.project === null)
     return <EmptyState title="Project not found">Pick a project from the sidebar.</EmptyState>;
   const rows: [string, string][] = [
@@ -34,6 +38,20 @@ export function SettingsPage() {
           <h2 className="mb-3 text-sm font-semibold">Settings</h2>
           <SettingsSection key={scope.project.id} project={scope.project.slug} />
         </div>
+      ) : null}
+      {scope.project && scope.orgSlug ? (
+        <ProjectSecretsSection
+          key={`secrets-${scope.project.id}`}
+          org={scope.orgSlug}
+          project={scope.project.slug}
+        />
+      ) : null}
+      {scope.project && scope.orgSlug ? (
+        <RemoveProject
+          org={scope.orgSlug}
+          project={scope.project.slug}
+          role={who.data?.role ?? null}
+        />
       ) : null}
       <p className="mt-6 text-sm text-dim">
         Secrets, environments and approval rules will live here. Secret values are never shown in

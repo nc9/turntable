@@ -72,8 +72,15 @@ export interface DaytonaProviderOptions {
   baseUrl?: string;
   /** Run id stamped on every sandbox as the `turntable-run` label unless the spec already has one. */
   runId?: string;
-  /** Live sandboxes of ours at once. Default 2, never above 3. */
+  /** Live sandboxes of ours at once. Default 2, never above the hard ceiling. */
   maxLive?: number;
+  /**
+   * Limits read at each create instead of fixed at construction (#661): the server's settings
+   * registry feeds them, so an operator changes them with no restart. A value here beats
+   * `maxLive` and `ownerCiPreflight.cpuLimit`; an absent one falls back to them. Still clamped to
+   * the hard ceiling. Lowering one never stops a running sandbox: it only holds new creates.
+   */
+  limits?: () => { maxLive?: number | undefined; cpuLimit?: number | undefined };
   /** Daytona target (region). Omit for the account default. */
   target?: string;
   /**
@@ -217,7 +224,7 @@ export class DaytonaProvider implements Provider {
   private readonly known = new Map<string, string>();
   private readonly api: DaytonaApi;
   private readonly runId: string;
-  private readonly maxLive: number;
+  private readonly staticMaxLive: number;
   private readonly maxFileBytes: number;
   private readonly maxTtl: number;
   private readonly capacityWaitMs: number;
@@ -240,6 +247,20 @@ export class DaytonaProvider implements Provider {
   /** The fleet whose sandboxes are ours (see policy.ts). */
   readonly fleet: Fleet;
 
+  /** The live-sandbox ceiling now: the live limit when one is given, else the configured one. */
+  private get maxLive(): number {
+    const live = this.opts.limits?.().maxLive;
+    return live === undefined ? this.staticMaxLive : clampMaxLive(live);
+  }
+
+  /** The org CPU limit now: the live limit, else `ownerCiPreflight.cpuLimit`, else the default. */
+  private get cpuLimit(): number {
+    const o = this.opts.ownerCiPreflight;
+    return (
+      this.opts.limits?.().cpuLimit ?? (o === false ? 0 : o?.cpuLimit) ?? DEFAULT_ORG_CPU_LIMIT
+    );
+  }
+
   constructor(opts: DaytonaProviderOptions) {
     this.opts = opts;
     this.api = new DaytonaApi({
@@ -249,7 +270,7 @@ export class DaytonaProvider implements Provider {
     });
     this.runId = opts.runId ?? crypto.randomUUID().replaceAll("-", "").slice(0, 16);
     this.fleet = makeFleet(opts.fleet);
-    this.maxLive = clampMaxLive(opts.maxLive);
+    this.staticMaxLive = clampMaxLive(opts.maxLive);
     const ttl = opts.maxTtlSeconds ?? MAX_TTL_SECONDS;
     if (!Number.isInteger(ttl) || ttl < 60 || ttl > MAX_TTL_SECONDS) {
       throw new RangeError(`maxTtlSeconds must be 60 to ${MAX_TTL_SECONDS}`);
@@ -536,7 +557,7 @@ export class DaytonaProvider implements Provider {
       counting: this.countingMode(),
       // What the org check judges against: the configured values until a usage read has said more.
       limits: {
-        cpu: this.limitsUsed.cpu ?? (o === false ? 0 : (o?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT)),
+        cpu: this.limitsUsed.cpu ?? (o === false ? 0 : this.cpuLimit),
         diskGiB: this.limitsUsed.diskGiB ?? (o === false ? null : (o?.diskLimitGiB ?? null)),
         memGiB: this.limitsUsed.memGiB ?? (o === false ? null : (o?.memLimitGiB ?? null)),
         diskFrom:
@@ -569,7 +590,7 @@ export class DaytonaProvider implements Provider {
     if (o === false) return { ok: true };
     // Own-fleet budget: the caller already waits while our live count is at maxLive.
     if (this.opts.quotaMode === "own-fleet" || this.usageForbidden) return { ok: true };
-    const limit = o?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT;
+    const limit = this.cpuLimit;
     this.limitsUsed.cpu = limit;
     if (this.orgId === undefined) {
       const first = await this.api.json<{ items?: DaytonaSandbox[] }>("GET", "/sandbox", {
@@ -788,7 +809,7 @@ export class DaytonaProvider implements Provider {
                   id: "daytona.usage",
                   status: "pass",
                   summary: `the org usage endpoint answers (${[
-                    `${u.cpu} vCPU in use of ${pre?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT}`,
+                    `${u.cpu} vCPU in use of ${this.cpuLimit}`,
                     ...extra,
                   ].join(", ")})`,
                 },

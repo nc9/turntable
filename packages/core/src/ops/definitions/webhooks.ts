@@ -6,7 +6,13 @@ import {
   setOutboundEndpointState,
   type OutboundEndpoint,
 } from "../../db/repos";
-import { EVENT_TYPES, WEBHOOK_DELIVERY_STATES, type EventType } from "../../db/schema";
+import {
+  EVENT_TYPES,
+  WEBHOOK_DELIVERY_STATES,
+  WEBHOOK_FORMATS,
+  type EventType,
+} from "../../db/schema";
+import { SLACK_EVENT_TYPES } from "../../webhooks/slack";
 import { WebhookUrlError, type WebhookService } from "../../webhooks/service";
 import { iso } from "../common";
 import { defineOp } from "../define";
@@ -31,6 +37,7 @@ const endpointOut = z.object({
     .nullable()
     .describe("Set when the endpoint only gets one project's events."),
   event_types: z.array(z.enum(EVENT_TYPES)).nullable().describe("null means every type."),
+  format: z.enum(WEBHOOK_FORMATS).describe("`json`: the signed event. `slack`: a Slack message."),
   state: z.enum(["active", "disabled"]),
   disabled_reason: z.string().nullable(),
   consecutive_failures: z.int(),
@@ -44,6 +51,7 @@ const shape = (e: OutboundEndpoint): z.infer<typeof endpointOut> => ({
   description: e.description,
   project_id: e.projectId,
   event_types: e.eventTypes ? (JSON.parse(e.eventTypes) as EventType[]) : null,
+  format: e.format as (typeof WEBHOOK_FORMATS)[number],
   state: e.state as "active" | "disabled",
   disabled_reason: e.disabledReason,
   consecutive_failures: e.consecutiveFailures,
@@ -78,6 +86,14 @@ export const createWebhookOp = defineOp({
       .max(EVENT_TYPES.length)
       .optional()
       .describe("Only these event types. Default: all."),
+    format: z
+      .enum(WEBHOOK_FORMATS)
+      .default("json")
+      .describe(
+        '`slack` posts `{"text": ...}` of fixed text (run failed, infrastructure error, work held, ' +
+          "approval waiting; ids and slugs only) for a Slack incoming webhook URL, and `types` " +
+          "defaults to those events. Other events are not sent.",
+      ),
     from_start: z.boolean().default(false).describe("Deliver the whole feed, not just new events."),
   }),
   output: z.object({
@@ -104,7 +120,8 @@ export const createWebhookOp = defineOp({
       endpoint = await svc.createEndpoint(ctx.scope, {
         url: input.url,
         description: input.description,
-        eventTypes: input.types ?? null,
+        eventTypes: input.types ?? (input.format === "slack" ? [...SLACK_EVENT_TYPES] : null),
+        format: input.format,
         createdBy: `${ctx.principal.kind}:${ctx.principal.id}`,
         fromStart: input.from_start,
       });

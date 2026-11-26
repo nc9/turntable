@@ -12,9 +12,12 @@ import {
   enrolFirstApprover,
   keyPolicyChallenge,
   approveKeyPolicy,
+  approvalPolicyChallenge,
+  approveApprovalPolicy,
   requestEnrolment,
   submitApproval,
 } from "./definitions/approvals";
+import { getApprovalPolicyOp, setApprovalPolicyOp } from "./definitions/approval-policy";
 import { dbBackupOp } from "./definitions/db-backup";
 import { approveRunChallengeOp, approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
@@ -35,6 +38,7 @@ import {
   instanceOrgSummaryOp,
   instanceRunActivityOp,
   instanceRunSummaryOp,
+  instanceInfraErrorsOp,
   instanceAuditVerifyOp,
   instanceListOrgs,
   instanceWhoami,
@@ -44,6 +48,7 @@ import {
   moveRepoBindingOp,
   instanceStartInstallationClaimOp,
   instanceBindInstallationOp,
+  instancePruneUnconfiguredProjectsOp,
   setQuotas,
   bootstrapApprover,
 } from "./definitions/instance";
@@ -89,6 +94,12 @@ import {
   onboardingCreateOrgOp,
 } from "./definitions/onboarding";
 import { whoami } from "./definitions/whoami";
+import {
+  getNotificationPrefsOp,
+  myNotificationsOp,
+  notificationsAckOp,
+  setNotificationPrefsOp,
+} from "./definitions/notifications";
 import { myPendingApprovalsOp } from "./definitions/my-pending-approvals";
 import { instanceBindGithubLoginOp, inviteMemberOp } from "./definitions/members";
 import { sessionStepUpChallenge } from "./definitions/session-step-up";
@@ -121,6 +132,7 @@ import { getRun } from "./definitions/get-run";
 import { incidentFreeze, incidentStatus, incidentUnfreeze } from "./definitions/incident";
 import { sandboxUsageOp } from "./definitions/sandbox-usage";
 import { secretUsage } from "./definitions/secret-usage";
+import { addProject, removeProject } from "./definitions/projects";
 import { resyncInstallation } from "./definitions/resync-installation";
 import { ingestStatusOp } from "./definitions/ingest-status";
 import { instanceIngestStatusOp } from "./definitions/instance-ingest-status";
@@ -141,6 +153,8 @@ import {
   getSettingOp,
   instanceGetSettingOp,
   instanceListSettingsOp,
+  instanceSandboxLimitsOp,
+  sandboxLimitsOp,
   instanceSetSettingOp,
   listSettingsOp,
   setSettingOp,
@@ -170,6 +184,8 @@ export const registry = createRegistry([
   runDispatch,
   listInstallationRepos,
   onboardRepos,
+  addProject,
+  removeProject,
   previewWorkflows,
   runDefaultBranch,
   approveRunOp,
@@ -203,6 +219,7 @@ export const registry = createRegistry([
   instanceBindInstallationOp,
   instanceRotateWebhookSecretOp,
   instanceReplaceAppPrivateKeyOp,
+  instancePruneUnconfiguredProjectsOp,
   instanceListOrgs,
   instanceDoctorOp,
   instanceDrainOp,
@@ -210,6 +227,7 @@ export const registry = createRegistry([
   instanceOrgSummaryOp,
   instanceRunActivityOp,
   instanceRunSummaryOp,
+  instanceInfraErrorsOp,
   instanceIngestStatusOp,
   instanceAuditVerifyOp,
   setQuotas,
@@ -229,6 +247,10 @@ export const registry = createRegistry([
   approvalStatus,
   approversOverview,
   myPendingApprovalsOp,
+  myNotificationsOp,
+  notificationsAckOp,
+  getNotificationPrefsOp,
+  setNotificationPrefsOp,
   approvalChallenge,
   releaseApprovalChallenge,
   enrolmentChallenge,
@@ -237,6 +259,10 @@ export const registry = createRegistry([
   enrolFirstApprover,
   keyPolicyChallenge,
   approveKeyPolicy,
+  approvalPolicyChallenge,
+  approveApprovalPolicy,
+  getApprovalPolicyOp,
+  setApprovalPolicyOp,
   requestEnrolment,
   submitApproval,
   approveEnvironment,
@@ -289,5 +315,7 @@ export const registry = createRegistry([
   setSettingOp,
   instanceGetSettingOp,
   instanceListSettingsOp,
+  instanceSandboxLimitsOp,
+  sandboxLimitsOp,
   instanceSetSettingOp,
 ]);

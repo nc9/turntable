@@ -257,9 +257,10 @@ describe("the installation claim flow", () => {
     ).toBe(true);
     const row = await getInstallation(h.db, "100");
     expect(row?.orgId).toBe(h.tenantB.id); // the claiming org, not the org that owns the App
-    expect((await listProjects(h.db, { orgId: h.tenantB.id })).length).toBe(1);
+    // a claim records the installation; a repo is added on purpose (#577)
+    expect((await listProjects(h.db, { orgId: h.tenantB.id })).length).toBe(0);
     expect(await listProjects(h.db, { orgId: h.org.id })).toEqual([]);
-    expect((await listRepos(h.db, { orgId: h.tenantB.id })).length).toBe(1);
+    expect((await listRepos(h.db, { orgId: h.tenantB.id })).length).toBe(0);
     // the audit row says who claimed it on GitHub
     const rows = await listAudit(h.db, { orgId: h.tenantB.id });
     const claimRow = rows.find((r) => r.op === "claim_installation");
@@ -457,7 +458,7 @@ describe("the installation claim flow", () => {
       const res = await h.callback(upd, nonce);
       expect(res.status).toBe(200);
       expect((await getInstallation(h.db, "100"))?.orgId).toBe(h.tenantB.id);
-      expect((await listRepos(h.db, { orgId: h.tenantB.id })).length).toBe(1);
+      expect((await listRepos(h.db, { orgId: h.tenantB.id })).length).toBe(0);
       const ok = (await listAudit(h.db, { orgId: h.tenantB.id })).find(
         (r) => r.op === "claim_installation",
       );
@@ -688,7 +689,7 @@ describe("the installation claim flow", () => {
     await h.callback({ installation_id: "100", setup_action: "install", state, code: "code-b" });
     h.f.repos.set("100", [repo("1", "api"), repo("2", "web")]);
     await post("00000000-aaaa-0000-0000-000000000002");
-    expect((await listProjects(h.db, { orgId: h.tenantB.id })).length).toBe(2);
+    expect((await listProjects(h.db, { orgId: h.tenantB.id })).length).toBe(0);
     expect(await listProjects(h.db, { orgId: h.org.id })).toEqual([]);
   });
 

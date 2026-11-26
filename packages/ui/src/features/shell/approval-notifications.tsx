@@ -211,11 +211,12 @@ export function ApprovalNotifyToggle() {
   return (
     <section aria-labelledby="notify-h" className="mt-8">
       <h2 id="notify-h" className="text-base font-semibold tracking-tight">
-        This browser: approval notifications
+        This browser: notifications
       </h2>
       <p className="mt-0.5 text-sm text-dim">
-        This browser shows a notification when an approval is waiting on you. A notification only
-        opens the screen; approving still needs your passkey. The choice is kept per browser.
+        This browser shows a notification when an approval is waiting on you or something fails. A
+        notification only opens the screen, with fixed text; approving still needs your passkey. The
+        choice is kept per browser.
       </p>
       {permission === "unsupported" ? (
         <p className="mt-3 text-sm text-dim">This browser does not support notifications.</p>
@@ -238,7 +239,7 @@ export function ApprovalNotifyToggle() {
               changed();
             }}
           />
-          Notify me in this browser about approvals waiting on me
+          Notify me in this browser
         </label>
       )}
     </section>

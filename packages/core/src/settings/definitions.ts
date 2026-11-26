@@ -7,6 +7,8 @@ import {
   approvalPolicyMap,
   MAX_REQUIRED_APPROVALS,
 } from "../approvals/policy-setting";
+import { readFileSync } from "node:fs";
+import { DEFAULT_ORG_CPU_LIMIT, HARD_MAX_LIVE } from "@turntable/provider-daytona";
 import { refuseLabelMap } from "../scheduler/sandbox-size";
 import { createSettingsRegistry, defineSetting } from "./define";
 
@@ -187,6 +189,40 @@ export const untrustedRunApprovalSetting = defineSetting({
   toml: "untrusted_run_approval",
 });
 
+/** Longest `pr_approval_label`: GitHub's own limit for a label name. */
+export const PR_APPROVAL_LABEL_MAX = 50;
+
+/** A label name with no control characters, or an empty string for off. */
+const prApprovalLabel = z
+  .string()
+  .max(PR_APPROVAL_LABEL_MAX)
+  .refine((v) => v === v.trim() && !/[\u0000-\u001f\u007f,]/.test(v), {
+    message: "a label name with no surrounding spaces, commas or control characters",
+  });
+
+export const prApprovalLabelSetting = defineSetting({
+  key: "pr_approval_label",
+  scope: "project",
+  type: prApprovalLabel,
+  default: "",
+  // Setting it lets a label release an untrusted pull request, so it is the instance
+  // administrator's, as for `untrusted_run_approval`, and never an agent's.
+  role: "owner",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides what releases an untrusted pull request, so only a person changes it",
+  description:
+    "For a repo in `prMode: approval`: a GitHub label (for example `ci:approved`) that releases a pull request run waiting for approval. Empty is off. The label counts only when its latest `labeled` event was made by a human (not a Bot, not the PR's author) with write, maintain or admin access, after the head was pushed and after the run was created, and it approves that exact sha. A new push needs a new label. The released run keeps its untrusted class: no secrets. The signed approval keeps working.",
+  warning:
+    "Every user with write access to the repo can then approve a pull request by adding the label, with no passkey. It runs the PR's code in a sandbox without secrets.",
+  loosens: (before, after) =>
+    after !== "" && after !== before
+      ? [`a pull request label (${after}) now releases untrusted runs`]
+      : [],
+  env: ["TURNTABLE_PR_APPROVAL_LABEL"],
+  toml: "pr_approval_label",
+});
+
 /** The values of `checks_mode`; the same three the `projects.checks_mode` column has always held. */
 export const CHECKS_MODE_VALUES = ["off", "shadow", "live"] as const;
 
@@ -246,7 +282,7 @@ export const approvalPolicySetting = defineSetting({
   instanceAdminOnly: true,
   mcpEditable: false,
   mcpReason: "it decides how many people must approve a release, so only a person changes it",
-  description: `Approval policy per environment, a map from environment name to \`required\` (distinct approvers, 1 to ${MAX_REQUIRED_APPROVALS}), \`allow_author_approval\` (default false) and \`key_policy\` (\`any\` or \`hardware\`, default \`any\`). An environment with no entry is \`production\` and \`release\` at two approvers and every other one ungated.`,
+  description: `Approval policy per environment, a map from environment name to \`required\` (distinct approvers, 1 to ${MAX_REQUIRED_APPROVALS}), \`allow_author_approval\` (default false) and \`key_policy\` (\`any\` or \`hardware\`, default \`any\`). An environment with no entry is \`production\` and \`release\` at two approvers (the author excluded) and every other one ungated; while an org has exactly one owner or admin, those two default to one approver who may be the author, and the org moves to two for good when a second joins.`,
   warning:
     "Lowering this weakens human approval: one approver, the author approving their own run, or any key instead of a hardware key. A solo setup needs it; a team does not.",
   loosens: approvalPolicyLoosening,
@@ -465,23 +501,159 @@ export const projectRunnerLabelsSetting = defineSetting({
   toml: "runner_labels",
 });
 
+/** The cap a newly added project starts with (#659). Existing projects keep what they have. */
+export const DEFAULT_PROJECT_MAX_CONCURRENT = 2;
+
+export const defaultProjectMaxConcurrentSetting = defineSetting({
+  key: "default_project_max_concurrent",
+  scope: "org",
+  type: z.int().min(0).max(1000),
+  default: DEFAULT_PROJECT_MAX_CONCURRENT,
+  role: "admin",
+  mcpEditable: false,
+  mcpReason: "it sets how many attempts a new project may run at once, so only a person changes it",
+  description:
+    "How many attempts at once a project gets when it is added (`add_project`, the Add repositories page), so a new project cannot starve the org's others. The caller may pass another value when adding. 0 adds projects paused. Existing projects keep the value they have; changing this never touches them. The instance's per-org cap still clamps it.",
+  env: ["TURNTABLE_DEFAULT_PROJECT_MAX_CONCURRENT"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "default_project_max_concurrent",
+});
+
+/** Sandbox limits (#661): the scheduler's two caps and the Daytona provider's two. */
+export const DEFAULT_GLOBAL_CAP = 4;
+export const DEFAULT_ORG_CAP = 2;
+
+const wholeNumber = (raw: string): unknown => (/^\d+$/.test(raw) ? Number(raw) : raw);
+
+export const schedulerGlobalCapSetting = defineSetting({
+  key: "scheduler_global_cap",
+  scope: "instance",
+  type: z.int().min(1).max(10_000),
+  default: DEFAULT_GLOBAL_CAP,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides how much of the fleet tenants may use, so only a person changes it",
+  description:
+    "Most jobs running at once across the instance (1 to 10000). Read at every claim: a change applies to the next claim with no restart. Lowering it never stops a running job; new claims wait until usage is under it. `TURNTABLE_GLOBAL_CAP` and `--global-cap` lock it.",
+  env: ["TURNTABLE_GLOBAL_CAP"],
+  envParse: wholeNumber,
+  toml: "scheduler.global_cap",
+});
+
+export const schedulerOrgCapSetting = defineSetting({
+  key: "scheduler_org_cap",
+  scope: "instance",
+  type: z.int().min(1).max(10_000),
+  default: DEFAULT_ORG_CAP,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides how much of the fleet one tenant may use, so only a person changes it",
+  description:
+    "Most jobs running at once per org (1 to 10000), the ceiling `set_quotas` and `max_concurrent` clamp to. Read at every claim: a change applies to the next claim with no restart. Lowering it never stops a running job. `TURNTABLE_ORG_CAP` and `--org-cap` lock it.",
+  env: ["TURNTABLE_ORG_CAP"],
+  envParse: wholeNumber,
+  toml: "scheduler.org_cap",
+});
+
+/**
+ * A number from a provider config document: the text of `TURNTABLE_PROVIDER_CONFIG_JSON`, or the
+ * file `TURNTABLE_PROVIDER_CONFIG` names. Undefined when the document does not set it (or is not
+ * readable here: the provider's own loader reports that at boot).
+ */
+function providerConfigNumber(raw: string, pick: (c: Record<string, unknown>) => unknown): unknown {
+  let text = raw;
+  if (!raw.startsWith("{")) {
+    try {
+      text = readFileSync(raw, "utf8");
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    const c = JSON.parse(text) as unknown;
+    return typeof c === "object" && c !== null && !Array.isArray(c)
+      ? pick(c as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const pickMaxLive = (c: Record<string, unknown>): unknown => c.maxLive;
+const pickCpuLimit = (c: Record<string, unknown>): unknown => {
+  const o = c.ownerCiPreflight;
+  return typeof o === "object" && o !== null ? (o as Record<string, unknown>).cpuLimit : undefined;
+};
+
+/** The default of `provider_daytona_max_live`: the provider's own default. */
+export const DEFAULT_DAYTONA_MAX_LIVE = 2;
+
+export const providerDaytonaMaxLiveSetting = defineSetting({
+  key: "provider_daytona_max_live",
+  scope: "instance",
+  type: z.int().min(1).max(HARD_MAX_LIVE),
+  default: DEFAULT_DAYTONA_MAX_LIVE,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides how many sandboxes the instance holds in the provider's account",
+  description: `Most live Daytona sandboxes of this instance's fleet at once (1 to ${HARD_MAX_LIVE}, the provider's hard ceiling). Read at every sandbox create: lowering it never stops a running sandbox, it holds new creates. \`maxLive\` in the provider config (\`TURNTABLE_PROVIDER_CONFIG\`, \`TURNTABLE_PROVIDER_CONFIG_JSON\`) or \`TURNTABLE_DAYTONA_MAX_LIVE\` locks it.`,
+  env: [
+    "TURNTABLE_DAYTONA_MAX_LIVE",
+    "TURNTABLE_PROVIDER_CONFIG_JSON",
+    "TURNTABLE_PROVIDER_CONFIG",
+  ],
+  envDocument: true,
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : providerConfigNumber(raw, pickMaxLive)),
+  toml: "provider.daytona.max_live",
+});
+
+export const providerDaytonaCpuLimitSetting = defineSetting({
+  key: "provider_daytona_cpu_limit",
+  scope: "instance",
+  type: z.int().min(1).max(10_000),
+  default: DEFAULT_ORG_CPU_LIMIT,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides how much of the provider's account the instance may use",
+  description:
+    "vCPU in use in the Daytona org above which a new sandbox create waits (1 to 10000). Read at every create. `ownerCiPreflight.cpuLimit` in the provider config (`TURNTABLE_PROVIDER_CONFIG`, `TURNTABLE_PROVIDER_CONFIG_JSON`) or `TURNTABLE_DAYTONA_CPU_LIMIT` locks it.",
+  env: [
+    "TURNTABLE_DAYTONA_CPU_LIMIT",
+    "TURNTABLE_PROVIDER_CONFIG_JSON",
+    "TURNTABLE_PROVIDER_CONFIG",
+  ],
+  envDocument: true,
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : providerConfigNumber(raw, pickCpuLimit)),
+  toml: "provider.daytona.cpu_limit",
+});
+
 /** The shipped registry. */
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
   jobLogGrepScanBytesSetting,
   jobLogGrepDeadlineSetting,
   approverRebootstrapDelaySetting,
+  defaultProjectMaxConcurrentSetting,
   orgTokenRemintDelaySetting,
   auditAnchorSinkUrlSetting,
   auditAnchorExportIntervalSetting,
   untrustedRunApprovalSetting,
   checksModeSetting,
+  prApprovalLabelSetting,
   runDispatchAgentsSetting,
   approvalPolicySetting,
   schedulingClassSetting,
   preemptMaxPerJobSetting,
   preemptWindowMinutesSetting,
   drainTimeoutSecondsSetting,
+  schedulerGlobalCapSetting,
+  schedulerOrgCapSetting,
+  providerDaytonaMaxLiveSetting,
+  providerDaytonaCpuLimitSetting,
   sessionIdleHoursSetting,
   sessionAbsoluteDaysSetting,
   selfServeOrgsSetting,

@@ -25,6 +25,8 @@ export type Project = {
   repo: string;
   /** "available": created by installation sync and never set up for CI. Absent means active. */
   setup?: "active" | "available";
+  /** The repo was unbound (access lost or removed); the project and its history are kept. */
+  noAccess?: boolean;
 };
 
 /** How far a run is trusted, decided by the server from re-fetched forge facts. */
@@ -36,6 +38,13 @@ export type RunTrust = {
   reasons: string[];
   workflowHash: string;
   decidedAt: number | null;
+};
+
+/** An approval recorded on a run. `via` is set when a pull request label approved it. */
+export type RunApproval = {
+  by: string;
+  at: number | null;
+  via?: { kind: "label"; label: string; eventId: string };
 };
 
 export type Run = {
@@ -58,6 +67,8 @@ export type Run = {
   /** null when the server has not classified the run (older data). */
   trustClass?: TrustClass | null;
   trust?: RunTrust | null;
+  /** Who approved a held run, when the API reports it (the run detail). */
+  approval?: RunApproval | null;
   /** Network policy of the run's sandboxes when the API reports it; absent means not reported. */
   egress?: "none" | "open" | "allowlist" | null;
   createdAt: number;
@@ -432,6 +443,10 @@ export type ApproversOverview = {
   }[];
   /** Ways the approval setup is weaker than it looks, such as too few approvers. */
   warnings: string[];
+  /** The built-in default for `production` and `release` where no entry is set (#663). */
+  defaultMode: "solo" | "strict";
+  /** The instance administrator's recent loosenings of this org's approval policy, newest first. */
+  instanceLoosenings: { at: number; by: string; reason: string; loosened: string[] }[];
 };
 
 export type EnvironmentApprovalResult = {
@@ -522,7 +537,8 @@ export type QuotaMetric =
 
 export type QuotaUsage = {
   metric: QuotaMetric;
-  used: number;
+  /** Null when not measured (log bytes without a limit). */
+  used: number | null;
   limit: number | null;
   /** Percent of the limit, rounded down; null with no limit. */
   percent: number | null;
@@ -556,6 +572,27 @@ export type Setting = {
   warning: string | null;
   /** A trust setting: only tightened without a passkey confirmation. */
   trust?: "tighten_only";
+};
+
+/** One environment's effective approval policy, defaults filled in (`get_approval_policy`). */
+export type ApprovalPolicyEnv = {
+  environment: string;
+  required: number;
+  allowAuthorApproval: boolean;
+  keyPolicy: "any" | "hardware";
+  /** Whether a job in this environment waits for approval at all. */
+  gated: boolean;
+  source: "configured" | "default";
+};
+
+/** The org's approval policy: the effective map, where it comes from, and whether it is locked. */
+export type ApprovalPolicy = {
+  environments: ApprovalPolicyEnv[];
+  source: SettingSource;
+  locked: boolean;
+  lockedBy: string | null;
+  /** Counted approvers: with two or more, a loosening also needs their signed quorum. */
+  approvers: number;
 };
 
 /** The passkey confirmation a session attaches to a sensitive write (`step_up`). */
@@ -610,6 +647,47 @@ export type ActivityFilter = {
   status?: ActivityStatus | undefined;
   cursor?: string | undefined;
   limit?: number | undefined;
+};
+
+/** Kinds of per-person notification (#611). */
+export type NotificationKind =
+  | "run_failed"
+  | "infra_errors"
+  | "work_held"
+  | "approval_waiting"
+  | "checkout_auth_failed"
+  | "dogfood_red"
+  | "deploy_failed";
+
+/** One notification of the signed-in person: ids, slugs and an escaped, truncated title. */
+export type AppNotification = {
+  id: string;
+  kind: NotificationKind;
+  org: string;
+  project: string | null;
+  runId: string | null;
+  /** Coalesced events behind it (infra_errors). */
+  count: number;
+  /** Escaped, truncated forge text. Shown as text, never as markup. */
+  title: string;
+  createdAt: number;
+  readAt: number | null;
+  link: string;
+};
+export type NotificationPage = {
+  notifications: AppNotification[];
+  unreadCount: number;
+  nextCursor: string | null;
+};
+export type NotificationPref = {
+  kind: NotificationKind;
+  org: string | null;
+  project: string | null;
+  enabled: boolean;
+};
+export type NotificationPrefs = {
+  prefs: NotificationPref[];
+  defaults: { kind: NotificationKind; enabled: boolean; operatorOnly: boolean }[];
 };
 
 /** The release lane config writes: each needs a passkey step-up for exactly its input. */

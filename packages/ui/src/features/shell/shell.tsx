@@ -5,6 +5,7 @@ import {
   Menu,
   Moon,
   PlayCircle,
+  Plus,
   Search,
   Settings,
   Gauge,
@@ -22,6 +23,7 @@ import { IncidentBanner } from "./incident-banner";
 import { useWhoami } from "@/lib/directory";
 import { canConfigureLane } from "@/lib/release-lane";
 import { ApprovalNotifyBanner, useApprovalNotifications } from "./approval-notifications";
+import { NotificationBell } from "./notification-bell";
 import {
   Dialog,
   DialogClose,
@@ -37,6 +39,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { BuildVersionLabel } from "@/components/update-banner";
+import { UI_VERSION } from "@/lib/build-version";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useTheme } from "@/components/theme";
@@ -156,6 +160,15 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           Usage
         </NavLink>
         <NavLink
+          to="/$org/-/repositories"
+          params={{ org: orgSlug }}
+          icon={<Plus />}
+          active={path === `${base}/-/repositories`}
+          {...(onNavigate ? { onNavigate } : {})}
+        >
+          Add repositories
+        </NavLink>
+        <NavLink
           to="/$org/-/settings"
           params={{ org: orgSlug }}
           icon={<Settings />}
@@ -254,6 +267,11 @@ function AccountMenu() {
         ) : (
           <DropdownMenuItem onSelect={() => disconnect()}>Disconnect</DropdownMenuItem>
         )}
+        {UI_VERSION !== "" ? (
+          <DropdownMenuLabel className="text-xs font-normal text-dim">
+            <BuildVersionLabel className="block" />
+          </DropdownMenuLabel>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -512,6 +530,7 @@ function ShellInner() {
               {dark ? <Sun /> : <Moon />}
             </Button>
           </Tooltip>
+          <NotificationBell />
           <AccountMenu />
         </div>
       </header>
@@ -519,6 +538,7 @@ function ShellInner() {
         {scope.orgSlug ? (
           <aside className="sticky top-12 hidden h-[calc(100dvh-3rem)] w-56 shrink-0 overflow-y-auto border-r border-line md:block">
             <SidebarNav />
+            <BuildVersionLabel />
           </aside>
         ) : null}
         <main id="main" className="min-w-0 flex-1">

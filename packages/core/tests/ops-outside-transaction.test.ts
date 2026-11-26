@@ -3,6 +3,7 @@ import { registry } from "../src/ops";
 
 // Edit this list only after review. Every entry gives up the dispatcher's atomic op + audit row.
 const ALLOWED_OUTSIDE_TRANSACTION = [
+  "add_project", // asks GitHub whether the installation reaches the repo first; all writes are one inner transaction
   "bind_installation", // reads GitHub with the user's token (several calls) before and while it syncs; a partial bind is repaired by running it again (sync is idempotent)
   "db_backup", // cannot run inside a transaction
   "instance_bind_installation", // reads GitHub (installation facts, then the sync's repo list) before and while it syncs, which must not hold the write lock; the sync is idempotent so a partial bind is repaired by running it again, and the audit row and event are written in one db.transaction

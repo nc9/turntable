@@ -14,6 +14,7 @@ import {
 } from "@turntable/act-runner";
 import type { Provider, ProxyEndpoint, SandboxResources } from "@turntable/provider-sdk";
 import { Redactor, SecretRegistry, redactString } from "@turntable/redact";
+import { type ErrorDetail, errorDetailOf } from "../scheduler/error-detail";
 import { renderEvent, stepLabel } from "./render";
 import type { JobIds, RunStore, StepRecord } from "./store";
 
@@ -98,6 +99,9 @@ export interface JobOutcome {
   outputs?: Record<string, string>;
   /** For infra_error: the named kind, when one is known. */
   infraKind?: InfraKind;
+  /** For infra_error: the underlying error's name and code (identifiers only), when known. */
+  errorName?: string;
+  errorCode?: string;
 }
 
 const enc = new TextEncoder();
@@ -131,6 +135,7 @@ export async function executeJob(
     code?: number,
     outputs?: Record<string, string>,
     infraKind?: InfraKind,
+    detail?: ErrorDetail,
   ): Promise<JobOutcome> => {
     const reason = clean(rawReason);
     const exitCode =
@@ -146,6 +151,8 @@ export async function executeJob(
       ...(code !== undefined ? { actExitCode: code } : {}),
       ...(outputs ? { outputs } : {}),
       ...(state === "infra_error" && infraKind ? { infraKind } : {}),
+      ...(state === "infra_error" && detail?.name ? { errorName: detail.name } : {}),
+      ...(state === "infra_error" && detail?.code ? { errorCode: detail.code } : {}),
     };
   };
 
@@ -196,11 +203,12 @@ export async function executeJob(
     code?: number,
     outputs?: Record<string, string>,
     infraKind?: InfraKind,
+    detail?: ErrorDetail,
   ): Promise<JobOutcome> => {
     clearInterval(idle);
     watch.clear();
     await log.close();
-    return finish(state, reason, code, outputs, infraKind);
+    return finish(state, reason, code, outputs, infraKind, detail);
   };
 
   // A resumed job owns the sandbox it re-attaches to from the start, so every exit destroys it.
@@ -406,7 +414,8 @@ export async function executeJob(
       e instanceof Error ? e.message : String(e),
       undefined,
       undefined,
-      creating ? "sandbox_create_failed" : undefined,
+      creating ? "sandbox_create_failed" : "unknown",
+      errorDetailOf(e),
     );
   } finally {
     clearInterval(idle);
@@ -469,6 +478,19 @@ export class MissingToolWatch {
   }
 }
 
+const clock = (ms: number): string => new Date(ms).toISOString().slice(11, 19);
+
+/** The line that stands in the stored log for output that could not be retrieved. UTC times. */
+export function cutMarker(
+  bytes: number,
+  fromMs: number,
+  toMs: number,
+  reason: string,
+  atLineStart: boolean,
+): string {
+  return `${atLineStart ? "" : "\n"}[turntable] ${bytes} bytes of output from ${clock(fromMs)} to ${clock(toMs)} could not be retrieved: ${reason}\n`;
+}
+
 /** Redacts text, shows it, and stores it in order with byte offsets (offsets of what is stored). */
 export class LogPipe {
   stored = 0;
@@ -476,6 +498,7 @@ export class LogPipe {
   readonly #env: JobEnv;
   readonly #attemptId: string;
   #lastPush = Date.now();
+  #atLineStart = true;
   #writes: Promise<void> = Promise.resolve();
 
   constructor(env: JobEnv, attemptId: string) {
@@ -499,11 +522,14 @@ export class LogPipe {
 
   /**
    * Records, as metadata at the current position of the stored log, that `omittedBytes` of output
-   * were dropped. Nothing is written into the log text. What was held for redaction is flushed
-   * first and redaction starts afresh after the cut, so text from either side of the gap is
-   * never joined.
+   * were dropped, and writes a marker line after it so a reader of the text sees the gap too
+   * (the log is never silently short). The metadata (`log_cuts`, `log_incomplete`) is the
+   * authoritative record: a job can print the same words, which only makes a false alarm. What
+   * was held for redaction is flushed first and redaction starts afresh after the cut, so text
+   * from either side of the gap is never joined.
    */
-  cut(omittedBytes: number): void {
+  cut(omittedBytes: number, reason = "output cap"): void {
+    const from = this.#lastPush;
     this.#emit(this.#redactor.end());
     this.#redactor = new Redactor({ registry: this.#env.registry });
     const atOffset = this.stored;
@@ -512,9 +538,14 @@ export class LogPipe {
         this.#env.store.addCut?.(this.#attemptId, {
           atOffset,
           omittedBytes,
-          reason: "output cap",
+          reason,
         }) ?? Promise.resolve(),
     );
+    const why =
+      reason === "output cap"
+        ? "the sandbox kept only the first and last part of the output (output cap)"
+        : reason;
+    this.#emit(cutMarker(omittedBytes, from, Date.now(), why, this.#atLineStart));
   }
 
   /** Flushes the held tail and waits for every pending write. */
@@ -526,6 +557,7 @@ export class LogPipe {
   #emit(text: string): void {
     if (text === "") return;
     this.#env.out(text);
+    this.#atLineStart = text.endsWith("\n");
     const bytes = enc.encode(text);
     const at = this.stored;
     this.stored += bytes.length;

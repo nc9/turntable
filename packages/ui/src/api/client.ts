@@ -8,6 +8,9 @@ import type {
   ReleaseStatement,
   ApprovalStatus,
   ApproversOverview,
+  NotificationKind,
+  NotificationPage,
+  NotificationPrefs,
   PendingApproval,
   SandboxUsage,
   PolicyStatement,
@@ -39,6 +42,7 @@ import type {
   LaneKey,
   LaneCosignKey,
   LaneSecretStatus,
+  ApprovalPolicy,
   StepUpChallenge,
   StepUpProof,
   Whoami,
@@ -115,6 +119,23 @@ export interface TurntableApi {
   approversOverview(): Promise<ApproversOverview>;
   /** Approvals waiting on the signed-in person, across their orgs. A web session only. */
   myPendingApprovals(): Promise<PendingApproval[]>;
+  /** The signed-in person's notifications across their orgs (#611), newest first. */
+  myNotifications(args?: {
+    unread?: boolean;
+    kinds?: NotificationKind[];
+    cursor?: string;
+    limit?: number;
+  }): Promise<NotificationPage>;
+  /** Marks the named notifications read, or every unread one. `org` is any org of the person. */
+  notificationsAck(args: { ids?: string[]; org?: string }): Promise<number>;
+  getNotificationPrefs(args?: { org?: string }): Promise<NotificationPrefs>;
+  /** `enabled: null` removes the preference. */
+  setNotificationPref(args: {
+    kind: NotificationKind;
+    enabled: boolean | null;
+    org?: string;
+    scopeOrg?: string;
+  }): Promise<void>;
   /** Sandbox minutes per UTC day for the last `days` days, with the quota limit if one is set. */
   sandboxUsage(args: { days: number; byProject?: boolean }): Promise<SandboxUsage>;
   /** The statement to sign for a run and environment, with its single-use challenge. */
@@ -211,10 +232,24 @@ export interface TurntableApi {
     /** Loosening a trust setting from a web session: a passkey confirmation for these exact args. */
     stepUp?: StepUpProof;
   }): Promise<Setting>;
+  /** The org owner's view of the approval policy, defaults filled in (`get_approval_policy`). */
+  getApprovalPolicy(): Promise<ApprovalPolicy>;
+  /**
+   * Sets one environment's approval policy (`set_approval_policy`). A loosening carries the
+   * passkey `stepUp` for exactly these arguments; a refusal rejects with the server's words.
+   */
+  setApprovalPolicy(args: {
+    environment: string;
+    required: number;
+    allowAuthorApproval: boolean;
+    keyPolicy: "any" | "hardware";
+    stepUp?: StepUpProof;
+  }): Promise<ApprovalPolicy>;
   /** Starts a passkey confirmation for `set_setting` with exactly `input` (`session_step_up_challenge`). */
   stepUpChallenge(args: {
     action:
       | "set_setting"
+      | "set_approval_policy"
       | LaneAction
       | "instance_rotate_webhook_secret"
       | "instance_replace_app_private_key";
