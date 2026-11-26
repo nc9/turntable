@@ -13,6 +13,8 @@ import { isRetryableInfra } from "@turntable/act-runner";
 import { createOrg, createProject, type Db, openDatabase } from "../src/db";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
+import { checkCheckoutBudgets } from "../src/doctor/checks";
+import type { DoctorInputs } from "../src/doctor/types";
 import { CheckoutLimitError, limitsFor, runCheckoutChild } from "../src/run/checkout-child";
 import { effectiveCheckoutLimits } from "../src/run/checkout-limits";
 import {
@@ -160,7 +162,7 @@ console.log("ok ${"a".repeat(40)} files=1 tarball=1");`,
         out: join(tmp, "o.tgz"),
         command: cmd,
         fullHistory,
-        config: { limits: { maxInflatedBytes: 1024 * MIB } },
+        config: { memoryMb: 0, limits: { maxInflatedBytes: 1024 * MIB } },
       });
       const a = JSON.parse(readFileSync(join(tmp, "o.tgz.args"), "utf8")) as string[];
       return JSON.parse(a[a.indexOf("--limits") + 1]!) as { maxInflatedBytes: number };
@@ -311,5 +313,38 @@ describe("memory", () => {
     expect(total).toBe(each * n);
     // held at least what was unpacked: the budget is a memory bound, not only a disk one
     expect(held).toBeGreaterThanOrEqual(total * 0.9);
+  });
+});
+
+describe("the unpacked budget is clamped to the memory ceiling", () => {
+  // effective = memory ceiling - pack budget - 256 MiB, for shallow and full history alike
+  test("shallow: a budget above memory - pack - overhead is clamped", () => {
+    const l = limitsFor({ maxInflatedBytes: 4096 * MIB }, false, 1536);
+    expect(l.maxInflatedBytes).toBe((1536 - 128 - 256) * MIB);
+  });
+
+  test("full history: x4 pack counts against the ceiling, so the clamp is lower", () => {
+    const l = limitsFor({}, true, 1536);
+    expect(l.maxPackBytes).toBe(512 * MIB);
+    expect(l.maxInflatedBytes).toBe((1536 - 512 - 256) * MIB);
+  });
+
+  test("a budget that fits is untouched, and memory 0 turns the clamp off", () => {
+    expect(limitsFor({}, false, 1536).maxInflatedBytes).toBe(512 * MIB);
+    expect(limitsFor({ maxInflatedBytes: 4096 * MIB }, false, 0).maxInflatedBytes).toBe(4096 * MIB);
+  });
+
+  test("doctor warns for a clamped configuration, naming both values", () => {
+    const i = { env: { TURNTABLE_CHECKOUT_MAX_UNPACKED_MIB: "4096" } } as unknown as DoctorInputs;
+    const c = checkCheckoutBudgets(i);
+    expect(c.status).toBe("warn");
+    expect(c.summary).toContain("shallow unpacked 4096 MiB is clamped to 1152 MiB");
+    expect(c.summary).toContain("1536 MiB memory ceiling");
+    expect(c.summary).toContain("full-history unpacked 16384 MiB is clamped to 768 MiB");
+  });
+
+  test("doctor passes the defaults", () => {
+    const c = checkCheckoutBudgets({ env: {} } as unknown as DoctorInputs);
+    expect(c.status).toBe("pass");
   });
 });

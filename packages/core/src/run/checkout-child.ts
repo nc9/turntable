@@ -42,15 +42,45 @@ export class CheckoutAuthError extends Error {
  * per-object, tree, entry, delta and time limits are the same for both. A single place, so the
  * child, the tarball read-back and the settings page agree.
  */
-export function limitsFor(base: Partial<FetchLimits>, fullHistory: boolean): FetchLimits {
+export function limitsFor(
+  base: Partial<FetchLimits>,
+  fullHistory: boolean,
+  memoryMb: number = 0,
+): FetchLimits {
   const l: FetchLimits = { ...DEFAULT_FETCH_LIMITS, ...base };
-  if (!fullHistory) return l;
+  const f = fullHistory ? FULL_HISTORY_FACTOR : 1;
+  const maxPackBytes = l.maxPackBytes * f;
   return {
     ...l,
-    maxPackBytes: l.maxPackBytes * FULL_HISTORY_FACTOR,
-    maxInflatedBytes: l.maxInflatedBytes * FULL_HISTORY_FACTOR,
-    maxTarballBytes: l.maxTarballBytes * FULL_HISTORY_FACTOR,
+    maxPackBytes,
+    maxInflatedBytes: unpackedBudget(l.maxInflatedBytes * f, maxPackBytes, memoryMb).bytes,
+    maxTarballBytes: l.maxTarballBytes * f,
   };
+}
+
+/** Memory kept for the child's own code and buffers beyond the pack and the unpacked objects. */
+export const CHECKOUT_MEMORY_OVERHEAD_MIB = 256;
+/** The least the clamp leaves, so a tiny memory ceiling never makes the budget useless. */
+const MIN_UNPACKED_MIB = 64;
+
+/**
+ * The unpacked budget that can actually be used: inflated objects live in the child's heap next to
+ * the pack, so a budget above `memory ceiling - pack - overhead` would only turn a near-limit
+ * repository into a memory kill. With the ceiling off (0) nothing is clamped.
+ */
+export function unpackedBudget(
+  configured: number,
+  packBytes: number,
+  memoryMb: number,
+): { bytes: number; clamped: boolean; maxBytes: number } {
+  if (memoryMb <= 0) return { bytes: configured, clamped: false, maxBytes: configured };
+  const maxBytes = Math.max(
+    memoryMb * MIB - packBytes - CHECKOUT_MEMORY_OVERHEAD_MIB * MIB,
+    MIN_UNPACKED_MIB * MIB,
+  );
+  return configured > maxBytes
+    ? { bytes: maxBytes, clamped: true, maxBytes }
+    : { bytes: configured, clamped: false, maxBytes };
 }
 
 /** What names each budget to an operator: the words, the settings that raise it, the env variable. */
@@ -291,7 +321,7 @@ const MEMORY_KILL = "the checkout used more than its memory ceiling";
 async function runChild(r: ChildRequest): Promise<ChildResult> {
   const cfg = { ...DEFAULT_CHECKOUT_CONFIG, ...r.config };
   const limits: FetchLimits = {
-    ...limitsFor(cfg.limits, r.fullHistory === true),
+    ...limitsFor(cfg.limits, r.fullHistory === true, cfg.memoryMb),
     timeoutMs: cfg.timeoutMs,
   };
   // The commit is checked here, in the parent, whatever the caller did: it goes into an argument.

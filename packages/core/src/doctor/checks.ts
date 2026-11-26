@@ -7,6 +7,13 @@ import { open, secretAad } from "../secrets/crypto";
 import { RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV } from "../roles";
 import { anchorKeyMessage } from "../secrets/master-key";
 import { SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../github/app-auth";
+import {
+  checkoutConfigFromEnv,
+  DEFAULT_CHECKOUT_CONFIG,
+  limitsFor,
+  unpackedBudget,
+} from "../run/checkout-child";
+import { FULL_HISTORY_FACTOR } from "../run/git-fetch";
 import { type DoctorCheck, type DoctorInputs, report, type DoctorReport } from "./types";
 
 /** `openError` value for a data directory with no database file yet. */
@@ -667,6 +674,50 @@ export async function checkConfigChannel(i: DoctorInputs): Promise<DoctorCheck> 
       );
 }
 
+/**
+ * The checkout unpacked budget (shallow and full history) is clamped to the child's memory ceiling
+ * minus the pack budget and a fixed overhead. Doctor reads the environment (the instance values
+ * that `TURNTABLE_CHECKOUT_*` set, when it sets the unpacked budget); a per-project override is clamped the same way at run time.
+ */
+export function checkCheckoutBudgets(i: DoctorInputs): DoctorCheck {
+  const id = "checkout_budgets";
+  const area = "limits";
+  let cfg;
+  try {
+    cfg = checkoutConfigFromEnv(i.env);
+  } catch {
+    return pass(id, area, "checkout budgets are not checked: an environment value is invalid");
+  }
+  // Only a budget the operator set is reported: the full-history default (4 x 512 MiB) is above
+  // the default ceiling on purpose and is clamped quietly (see docs/configuration.mdx).
+  if (cfg.limits.maxInflatedBytes === undefined)
+    return pass(
+      id,
+      area,
+      "checkout unpacked budgets are the defaults, clamped to the memory ceiling",
+    );
+  const mem = cfg.memoryMb ?? DEFAULT_CHECKOUT_CONFIG.memoryMb;
+  const clamped: string[] = [];
+  for (const full of [false, true]) {
+    const asked = limitsFor(cfg.limits, full);
+    const got = limitsFor(cfg.limits, full, mem);
+    if (got.maxInflatedBytes < asked.maxInflatedBytes) {
+      const m = unpackedBudget(asked.maxInflatedBytes, asked.maxPackBytes, mem);
+      clamped.push(
+        `${full ? "full-history" : "shallow"} unpacked ${Math.round(asked.maxInflatedBytes / 1048576)} MiB is clamped to ${Math.round(m.maxBytes / 1048576)} MiB by the ${mem} MiB memory ceiling`,
+      );
+    }
+  }
+  if (clamped.length === 0)
+    return pass(id, area, "checkout unpacked budgets fit the checkout memory ceiling");
+  return warn(
+    id,
+    area,
+    `checkout unpacked budget is above what the memory ceiling allows (${clamped.join("; ")})`,
+    `Raise TURNTABLE_CHECKOUT_MAX_MEMORY_MIB (the ceiling, minus the pack budget and 256 MiB, is the most that can be unpacked; full history is ${FULL_HISTORY_FACTOR} times the shallow budgets) or lower the unpacked budget.`,
+  );
+}
+
 export async function checkQuotas(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "limits";
   if (!i.db)
@@ -835,6 +886,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("release_channel", "release", () => checkChannel(i))),
     ...(await safe("release_config_channel", "release", () => checkConfigChannel(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
+    ...(await safe("checkout_budgets", "limits", () => checkCheckoutBudgets(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
     ...(await safe("draining", "scheduler", () => checkDraining())),
     ...(await safe("human_approval_approvers", "approvals", () => checkHumanApprovalApprovers(i))),

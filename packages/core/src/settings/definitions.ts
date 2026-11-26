@@ -530,7 +530,7 @@ function checkoutBudgetSettings(b: BudgetSpec): SettingDef[] {
       instanceAdminOnly: true,
       mcpEditable: false,
       mcpReason: why,
-      description: `Most MiB of ${b.what} that a checkout of a shallow tree may take, for every project (1 to ${b.max}). A full-history checkout (\`fetch-depth: 0\`) gets ${FULL_HISTORY_FACTOR} times this. A project overrides it with \`project_${inst}\`, up to \`${ceil}\`. A checkout over it ends \`infra_error\` with kind \`fetch_limit\`. Memory: the checkout child holds unpacked data in memory, so raise \`TURNTABLE_CHECKOUT_MAX_MEMORY_MIB\` with it.`,
+      description: `Most MiB of ${b.what} that a checkout of a shallow tree may take, for every project (1 to ${b.max}). A full-history checkout (\`fetch-depth: 0\`) gets ${FULL_HISTORY_FACTOR} times this. A project overrides it with \`project_${inst}\`, up to \`${ceil}\`. A checkout over it ends \`infra_error\` with kind \`fetch_limit\`. Memory: the checkout child holds unpacked data in memory, so the effective budget is clamped to \`TURNTABLE_CHECKOUT_MAX_MEMORY_MIB\` minus the pack budget and 256 MiB: raise the memory ceiling with it.`,
       warning:
         "Raising this lets a hostile repository make the checkout child use more disk and memory.",
       env: [b.env],

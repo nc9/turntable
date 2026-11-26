@@ -202,7 +202,7 @@ export function gitRepoSource(
       assertCloneHost(clone, o.allowHosts);
       // This checkout's budgets: the project's when the caller resolved them, else the source's.
       const base = { ...cfg.limits, ...opts?.limits };
-      const lim = limitsFor(base, opts?.fullHistory === true);
+      const lim = limitsFor(base, opts?.fullHistory === true, cfg.memoryMb);
       const release = await turns.acquire(opts?.signal);
       let token: string | undefined;
       const dir = mkdtempSync(join(tmpdir(), "tt-src-"));
