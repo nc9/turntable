@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ApiError } from "../src/api/http-adapter";
 import { createInstanceApi } from "../src/api/instance";
 import { RotatedNotice } from "../src/features/instance/rotated-notice";
+import { EffectiveConcurrencyNote } from "../src/features/instance/settings-page";
 import { InstanceSignIn } from "../src/features/instance/sign-in";
 import { isInstancePath } from "../src/features/instance/instance-shell";
 import { parseLimit } from "../src/features/instance/use-action";
@@ -275,5 +276,29 @@ describe("routes", () => {
       const m = router.matchRoutes(`/-/instance/${name}`);
       expect(m.at(-1)!.routeId).toBe(`/-/instance/${name}`);
     }
+  });
+});
+
+describe("effective concurrency (#661)", () => {
+  test("the client maps the sandbox limits read and the page shows the number and its bound", async () => {
+    const { api, calls } = make(() =>
+      json({
+        limits: [],
+        effective_concurrency: {
+          value: 6,
+          bounded_by: "provider_daytona_max_live",
+          org_cap: 2,
+          cpu_limit: 150,
+          note: "n",
+        },
+      }),
+    );
+    const c = await api.sandboxLimits();
+    expect(calls[0]!.url.pathname).toBe("/api/v1/instance/sandbox-limits");
+    expect(c).toMatchObject({ value: 6, boundedBy: "provider_daytona_max_live", orgCap: 2 });
+    const html = renderToStaticMarkup(<EffectiveConcurrencyNote c={c} />);
+    expect(html).toContain(">6<");
+    expect(html).toContain("provider_daytona_max_live");
+    expect(html).toContain("150 vCPU");
   });
 });

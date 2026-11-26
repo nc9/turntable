@@ -4,6 +4,7 @@
 // through `remove_project`. Losing access never deletes a project: its binding goes, its history
 // stays, and it reads as having no access.
 import { z } from "zod";
+import { instanceOrgCapOf } from "../org-cap";
 import { getOrgById, setProjectSandboxSettings } from "../../db/repos";
 import { createSettingsRuntime, resolveSetting } from "../../settings/resolve";
 import { DEFAULT_PROJECT_MAX_CONCURRENT, settingsRegistry } from "../../settings/definitions";
@@ -251,7 +252,7 @@ export const addProject = defineOp({
     const orgId = ctx.scope.orgId;
     const granted = await reachableRepo(ctx, i.installation_id, i.repo);
     const requested = i.max_concurrent ?? (await defaultProjectCap(ctx));
-    const cap = ctx.instanceOrgCap;
+    const cap = await instanceOrgCapOf(ctx);
     if (i.max_concurrent !== undefined && cap !== undefined && i.max_concurrent > cap) {
       throw new OpError(
         "invalid_input",

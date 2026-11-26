@@ -229,11 +229,51 @@ export const previewWorkflowsOutput = z.object({
           verdict: z.enum(["run", "skip", "fail"]).describe("What Turntable would do."),
           reason: z.string().optional().describe("Why, for skip and fail."),
           fix: z.string().optional().describe("How to fix a fail."),
+          will_run: z
+            .boolean()
+            .describe(
+              "True when the workflow is ingested and the job's verdict is run. A job that will not run needs none of its secrets.",
+            ),
+          refs: z
+            .array(
+              z.object({
+                kind: z.enum(["secret", "var"]),
+                name: z.string().describe("The name only, never a value."),
+                where: z.array(z.string()).describe("Where the name is used, for example job env."),
+                provided: z
+                  .boolean()
+                  .describe("True for secrets.GITHUB_TOKEN, which Turntable provides."),
+              }),
+            )
+            .describe("Every secrets.* and vars.* name the job refers to."),
         }),
       ),
     }),
   ),
+  needs_summary: z.object({
+    needed: z.array(z.string()).describe("Secret names used by jobs that will run, sorted."),
+    text: z.string().describe('For example "2 secrets needed by jobs that will run: A, B".'),
+  }),
 });
+/** The one-line answer to "which secrets does this project need". Names only. */
+export function secretsSummary(
+  workflows: {
+    jobs: { will_run: boolean; refs: { kind: string; name: string; provided: boolean }[] }[];
+  }[],
+): { needed: string[]; text: string } {
+  const set = new Set<string>();
+  for (const w of workflows)
+    for (const j of w.jobs)
+      if (j.will_run)
+        for (const r of j.refs) if (r.kind === "secret" && !r.provided) set.add(r.name);
+  const needed = [...set].toSorted();
+  const text =
+    needed.length === 0
+      ? "0 secrets needed"
+      : `${needed.length} secret${needed.length === 1 ? "" : "s"} needed by jobs that will run: ${needed.join(", ")}`;
+  return { needed, text };
+}
+
 export type PreviewWorkflowsInput = z.infer<typeof previewWorkflowsInput>;
 export type PreviewWorkflowsOutput = z.infer<typeof previewWorkflowsOutput>;
 

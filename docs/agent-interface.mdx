@@ -203,6 +203,8 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `set_setting` | `POST /api/v1/settings` | yes |  | write | operator (per org policy) | token | Set an org or project setting (database layer). |
 | `instance_get_setting` | none | no |  | read | admin | instance | One instance setting: effective value, source and lock. |
 | `instance_list_settings` | none | no |  | read | admin | instance | Every instance setting with source and lock. |
+| `instance_sandbox_limits` | none | no |  | read | admin | instance | The sandbox limits with source and lock, and the concurrency they allow. |
+| `sandbox_limits` | `GET /api/v1/limits/sandbox` | yes |  | read | reader | token | The sandbox limits with source and lock, and the concurrency they allow. |
 | `instance_set_setting` | none | no |  | write | admin | instance | Set an instance setting (database layer, instance administrator only). |
 
 {/* ops:end */}

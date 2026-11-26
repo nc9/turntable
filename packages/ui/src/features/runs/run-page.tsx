@@ -21,7 +21,7 @@ import { retriedAutomatically } from "./infra-retry";
 import { ArtifactsPanel } from "./artifacts-panel";
 import { SandboxTimes } from "./sandbox-time";
 import { RerunButton } from "./rerun-dialog";
-import { EgressBadge, TrustBadge } from "./trust";
+import { ApprovalNote, EgressBadge, TrustBadge } from "./trust";
 import { JobGraph } from "./job-graph";
 import { ShardGroupRow } from "./shard-group";
 import { RefChip, ShaChip, useRunAttempts, useRunJobs, useRunRow } from "./common";
@@ -143,6 +143,7 @@ export function RunPage() {
             <StateBadge state={run.status} />
             <TrustBadge run={run} />
             <EgressBadge run={run} />
+            <ApprovalNote run={run} />
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-dim">
             <span>{run.workflowName}</span>

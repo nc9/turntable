@@ -9,9 +9,12 @@ export const RUN_LABEL = "turntable-run";
 /** Every sandbox we create is named with this prefix. */
 export const NAME_PREFIX = "longshore-dev-";
 
-/** Live sandboxes of ours at once. The default is 2; options can lower it, never past the ceiling. */
+/**
+ * Live sandboxes of ours at once. The default is 2. The ceiling is a sanity bound, not the capacity
+ * guard: the org CPU preflight (`ownerCiPreflight.cpuLimit`) is what really stops a create (#661).
+ */
 export const DEFAULT_MAX_LIVE = 2;
-export const HARD_MAX_LIVE = 10;
+export const HARD_MAX_LIVE = 500;
 
 /** Auto-stop, auto-delete and the hard TTL are never longer than this. */
 export const MAX_TTL_SECONDS = 30 * 60;

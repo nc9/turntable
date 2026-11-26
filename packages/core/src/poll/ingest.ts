@@ -38,9 +38,12 @@ import { assertRepoRelative, MAX_REPO_FILE_BYTES } from "../run/safe-read";
 import { checkScopeFor } from "../checks/mapping";
 import type { PollConfig, PollRepoConfig } from "./config";
 import { decideRun, type ForgePermission, needsApproval } from "../trust";
-import type { GithubClient, PullRequest, TagRuleset } from "./github";
+import { type GithubClient, type PullRequest, RateLimited, type TagRuleset } from "./github";
 import { patternProtected, protectingRulesets, type TagProtection } from "./tag-protection";
 import type { PollAuthMode } from "./status";
+import { releaseLabelApprovals } from "./label-approval";
+import type { PrNoticeWriter } from "./pr-notices";
+import { effectiveApproval, effectivePrApprovalLabel } from "../ops/setting-guard";
 
 export type Candidate = {
   /** For a pull request: the base branch it targets. */
@@ -305,6 +308,11 @@ export type IngestDeps = {
    * closed-PR check, whose per-PR reads would starve ingest. Left unset by direct callers.
    */
   authMode?: PollAuthMode;
+  /**
+   * The App's `issues: write` access to remove a stale approval label and comment once. Minted
+   * only when a label turns out stale; unset means no removal or comment (the run still waits).
+   */
+  notices?: () => Promise<PrNoticeWriter | undefined>;
 };
 
 export async function targetScope(db: Db, cfg: PollRepoConfig): Promise<Required<Scope>> {
@@ -324,6 +332,8 @@ export type IngestResult = {
   superseded: Superseded["running"];
   /** Set when the repo was not polled because another project holds its binding. */
   skipped?: string;
+  /** Runs released by an approval label this poll. */
+  released?: string[];
 };
 
 /**
@@ -1305,6 +1315,38 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
             : ""
         }`,
       );
+    }
+  }
+  // Approval by label: only on an approval-mode repo whose project set a label. Runs after this
+  // poll's own runs exist, so a label can never approve a run made in the same poll.
+  if (cfg.prMode === "approval") {
+    const label = await effectivePrApprovalLabel(undefined, deps.db, scope.orgId, scope.projectId);
+    // `human` means an enrolled approver's signed statement only: a label is not one.
+    const human =
+      label !== "" &&
+      (await effectiveApproval(undefined, deps.db, scope.orgId, scope.projectId)) === "human";
+    if (human)
+      log(`poll ${repo}: pr_approval_label is ignored while untrusted_run_approval is human`);
+    if (label !== "" && !human) {
+      try {
+        const released = await releaseLabelApprovals(
+          {
+            db: deps.db,
+            github: deps.github,
+            ...(deps.notices ? { notices: deps.notices } : {}),
+            log,
+            ...(deps.now ? { now: deps.now } : {}),
+          },
+          { repo, workflow: cfg.workflow },
+          scope,
+          label,
+          await openPulls(),
+        );
+        if (released.length > 0) result.released = released;
+      } catch (err) {
+        if (err instanceof RateLimited) throw err;
+        log(`poll ${repo}: label approval failed: ${String(err)}`);
+      }
     }
   }
   return result;
