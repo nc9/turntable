@@ -3,7 +3,7 @@ title: "Design: the release lane on a hosted deployment"
 description: Four ways to run the release lane for a single-tenant hosted deployment, what each costs, what a compromise of the web or worker process reaches, and how to move from one to the next.
 ---
 
-This is a design comparison. Only option A exists today; B, C and D are not built. It extends [the hosted deployment guide](/hosted#running-the-release-lane-on-one-hosted-service), which says what is true now and lists the blockers. The decision is the maintainers'.
+This is a design comparison. Only option A exists today. D was chosen and is being built (#678); B and C are not planned. It extends [the hosted deployment guide](/hosted#running-the-release-lane-on-one-hosted-service), which says what is true now and lists the blockers. The decision is the maintainers'.
 
 ## The problem
 
@@ -125,4 +125,4 @@ The reviewer leans D for the beta period and C before 0.1.0. D keeps the separat
 
 If D ships, the docs should say plainly that it is weaker than C, and the release lane page should state which option an instance runs.
 
-Decision: maintainer's call.
+Decision: **D, two processes in one container** (maintainer, 2026-11-26: "D: child process"). The server spawns the release lane as a supervised child that alone holds the release keys. Implementation: [#678](https://github.com/turntable-ci/turntable/issues/678).
