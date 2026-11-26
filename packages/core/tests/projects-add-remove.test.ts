@@ -19,7 +19,12 @@ import {
 } from "../src/db";
 import { eq } from "drizzle-orm";
 import { projects } from "../src/db/schema";
-import { putStoredSetting, upsertInstallation } from "../src/db/repos";
+import {
+  getProjectSandboxSettings,
+  putStoredSetting,
+  setProjectSandboxSettings,
+  upsertInstallation,
+} from "../src/db/repos";
 import { syncInstallation } from "../src/github/installations";
 import { dispatch, registry, type Principal } from "../src/ops";
 import type { DispatchEnv } from "../src/ops/dispatch";
@@ -77,6 +82,54 @@ describe("add_project", () => {
     await call(as("admin"), "add_project", { installation_id: "100", repo: "acme/web" });
     const p = await getProjectBySlug(db, { orgId }, "web");
     expect(p?.name).toBe("web");
+  });
+
+  test("a new project gets max_concurrent 2 by default, the caller's value when given, and the instance cap clamps", async () => {
+    const dflt = await call(as("admin"), "add_project", {
+      installation_id: "100",
+      repo: "acme/api",
+    });
+    expect(dflt.ok).toBe(true);
+    expect((await getProjectSandboxSettings(db, await scopeOf("api"))).maxConcurrent).toBe(2);
+    const given = await call(as("admin"), "add_project", {
+      installation_id: "100",
+      repo: "acme/web",
+      max_concurrent: 5,
+    });
+    expect(given.ok).toBe(true);
+    expect((await getProjectSandboxSettings(db, await scopeOf("web"))).maxConcurrent).toBe(5);
+    const capped = { ...env, instanceOrgCap: 1 };
+    const c = await dispatch(capped, as("admin"), "add_project", {
+      installation_id: "100",
+      repo: "acme/My.Repo",
+    });
+    expect(c.ok).toBe(true);
+    expect((await getProjectSandboxSettings(db, await scopeOf("my-repo"))).maxConcurrent).toBe(1);
+  });
+
+  test("the default is the org's default_project_max_concurrent setting; existing projects keep their cap", async () => {
+    await call(as("admin"), "add_project", { installation_id: "100", repo: "acme/api" });
+    const api = await scopeOf("api");
+    await setProjectSandboxSettings(db, api, { maxConcurrent: 7 });
+    await putStoredSetting(
+      db,
+      { kind: "org", id: orgId, orgId },
+      "default_project_max_concurrent",
+      4,
+      "test",
+      1,
+    );
+    // Changing the default touches no project; adding the same repo again changes nothing.
+    expect((await getProjectSandboxSettings(db, api)).maxConcurrent).toBe(7);
+    const again = await call(as("admin"), "add_project", {
+      installation_id: "100",
+      repo: "acme/api",
+      max_concurrent: 1,
+    });
+    expect(again.ok && again.output).toMatchObject({ created: false });
+    expect((await getProjectSandboxSettings(db, api)).maxConcurrent).toBe(7);
+    await call(as("admin"), "add_project", { installation_id: "100", repo: "acme/web" });
+    expect((await getProjectSandboxSettings(db, await scopeOf("web"))).maxConcurrent).toBe(4);
   });
 
   test("the project slug is optional, validated, and never an existing one", async () => {

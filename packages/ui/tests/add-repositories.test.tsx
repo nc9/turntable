@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createOnboardingApi, type InstallationRepo } from "../src/api/onboarding";
-import { addableRepos, AddRepositoriesView } from "../src/features/onboarding/add-repositories";
+import {
+  addableRepos,
+  AddRepositoriesView,
+  capToSend,
+  DEFAULT_NEW_PROJECT_CAP,
+} from "../src/features/onboarding/add-repositories";
 import { RemoveProjectPanel } from "../src/features/runs/remove-project";
 
 const repo = (id: string, name: string, status: "new" | "in_org"): InstallationRepo => ({
@@ -33,6 +38,31 @@ describe("Add repositories", () => {
     expect(html).toContain("acme/api");
     expect(html).toContain('aria-label="Add acme/api"');
     expect(html).not.toContain("acme/web");
+  });
+
+  test("shows an editable cap per repo, defaulting to 2", () => {
+    const html = renderToStaticMarkup(
+      <AddRepositoriesView
+        repos={[repo("1", "api", "new"), repo("3", "docs", "new")]}
+        busyRepo={null}
+        error={null}
+        added={[]}
+        onAdd={() => {}}
+      />,
+    );
+    expect(DEFAULT_NEW_PROJECT_CAP).toBe(2);
+    expect(html).toContain('aria-label="Max concurrent runs for acme/api"');
+    expect(html).toContain('aria-label="Max concurrent runs for acme/docs"');
+    expect(html.match(/value="2"/g)?.length).toBe(2);
+  });
+
+  test("the cap passes through only when changed; junk disables nothing it can send", () => {
+    expect(capToSend(undefined)).toBeUndefined();
+    expect(capToSend("5")).toBe(5);
+    expect(capToSend("0")).toBe(0);
+    expect(capToSend("")).toBeNull();
+    expect(capToSend("-1")).toBeNull();
+    expect(capToSend("1.5")).toBeNull();
   });
 
   test("says so when everything is added, shows an error and what was just added", () => {
@@ -106,6 +136,24 @@ describe("the onboarding client's project calls", () => {
       url: "/api/v1/projects",
       body: { org: "acme", installation_id: "100", repo: "acme/api", project: "api" },
     });
+  });
+
+  test("addProject sends max_concurrent only when given", async () => {
+    const { api, calls } = client({ project: "api", repo: "acme/api", created: true });
+    await api.addProject({
+      org: "acme",
+      installationId: "100",
+      repo: "acme/api",
+      maxConcurrent: 4,
+    });
+    await api.addProject({ org: "acme", installationId: "100", repo: "acme/api" });
+    expect(calls[0]!.body).toEqual({
+      org: "acme",
+      installation_id: "100",
+      repo: "acme/api",
+      max_concurrent: 4,
+    });
+    expect(calls[1]!.body).toEqual({ org: "acme", installation_id: "100", repo: "acme/api" });
   });
 
   test("removeProject sends delete_history and the step-up only when asked", async () => {

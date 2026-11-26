@@ -19,6 +19,7 @@ import {
   getOnboarding,
   getProjectBySlug,
   listRepos,
+  putStoredSetting,
   getProjectIngest,
   getProjectSandboxSettings,
   setProjectIngest,
@@ -428,6 +429,46 @@ describe("onboard_repos", () => {
         (a) => a.op === "add_project" && JSON.parse(a.input).via === "onboard_repos",
       ),
     ).toBe(true);
+  });
+
+  test.each([5, 0])(
+    "an org default cap of %d: an added project still gets the onboarding defaults",
+    async (dflt) => {
+      await putStoredSetting(
+        db,
+        { kind: "org", id: orgId, orgId },
+        "default_project_max_concurrent",
+        dflt,
+        "test",
+        1,
+      );
+      const added = await dispatch(env(), asPrincipal(session()), "add_project", {
+        installation_id: INSTALL,
+        repo: "acme/new-one",
+      });
+      expect(added.ok).toBe(true);
+      const p = (await getProjectBySlug(db, { orgId }, "new-one"))!;
+      const scope = { orgId, projectId: p.id };
+      expect((await getProjectSandboxSettings(db, scope)).maxConcurrent).toBe(dflt);
+      expect(await getProjectIngest(db, scope)).toBeNull();
+      const r = await call(session(), [{ repo_id: "1003", enable: true }]);
+      expect(r.ok).toBe(true);
+      expect(await getProjectIngest(db, scope)).not.toBeNull();
+      expect((await getProjectSandboxSettings(db, scope)).maxConcurrent).toBe(2);
+    },
+  );
+
+  test("a project whose cap was changed after creation is not fresh", async () => {
+    await setProjectSandboxSettings(
+      db,
+      scopeOf("web"),
+      { maxConcurrent: 7 },
+      { id: userId, now: NOW },
+    );
+    const r = await call(session(), [{ repo_id: "1001", enable: true }]);
+    expect(r.ok).toBe(true);
+    expect(await getProjectIngest(db, scopeOf("web"))).toBeNull();
+    expect((await getProjectSandboxSettings(db, scopeOf("web"))).maxConcurrent).toBe(7);
   });
 
   test("more than 100 repos, or a repo twice, is refused", async () => {

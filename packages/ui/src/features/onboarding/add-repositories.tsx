@@ -18,6 +18,20 @@ export function addableRepos(repos: readonly InstallationRepo[]): InstallationRe
   return repos.filter((r) => r.status === "new");
 }
 
+/** What a new project's cap starts at when the org has not changed `default_project_max_concurrent`. */
+export const DEFAULT_NEW_PROJECT_CAP = 2;
+
+/**
+ * The cap to send for an add: undefined when the person left the field alone (the server applies
+ * the org's default), a whole number when they changed it, and null when what they typed is not
+ * a whole number from 0 up (the Add button stays disabled).
+ */
+export function capToSend(typed: string | undefined): number | undefined | null {
+  if (typed === undefined) return undefined;
+  if (!/^\d{1,4}$/.test(typed.trim())) return null;
+  return Number(typed.trim());
+}
+
 export function AddRepositoriesView({
   repos,
   busyRepo,
@@ -30,8 +44,10 @@ export function AddRepositoriesView({
   error: string | null;
   /** The repos added in this visit, for the confirmation line. */
   added: readonly string[];
-  onAdd: (repo: InstallationRepo) => void;
+  onAdd: (repo: InstallationRepo, maxConcurrent?: number) => void;
 }) {
+  // Typed caps by repo id; a repo with no entry shows the default and sends nothing.
+  const [caps, setCaps] = useState<Record<string, string>>({});
   const todo = addableRepos(repos);
   return (
     <div className="space-y-4">
@@ -59,12 +75,26 @@ export function AddRepositoriesView({
                 {sanitize(r.repo)}
                 {r.private ? <span className="ml-2 text-xs text-faint">private</span> : null}
               </span>
+              <label className="flex items-center gap-1.5 text-xs text-dim">
+                Max concurrent
+                <input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  step={1}
+                  inputMode="numeric"
+                  className="h-8 w-16 rounded-md border border-line bg-transparent px-2 text-sm"
+                  aria-label={`Max concurrent runs for ${sanitize(r.repo)}`}
+                  value={caps[r.repo_id] ?? String(DEFAULT_NEW_PROJECT_CAP)}
+                  onChange={(e) => setCaps((c) => ({ ...c, [r.repo_id]: e.target.value }))}
+                />
+              </label>
               <Button
                 type="button"
                 size="sm"
-                disabled={busyRepo !== null}
+                disabled={busyRepo !== null || capToSend(caps[r.repo_id]) === null}
                 aria-label={`Add ${sanitize(r.repo)}`}
-                onClick={() => onAdd(r)}
+                onClick={() => onAdd(r, capToSend(caps[r.repo_id]) ?? undefined)}
               >
                 {busyRepo === r.repo ? "Adding" : "Add"}
               </Button>
@@ -100,7 +130,7 @@ function InstallationRepos({
       busyRepo={busyRepo}
       error={error}
       added={added}
-      onAdd={(r) => {
+      onAdd={(r, maxConcurrent) => {
         setBusyRepo(r.repo);
         setError(null);
         api
@@ -108,6 +138,7 @@ function InstallationRepos({
             org,
             installationId: installation.installation_id,
             repo: r.repo,
+            ...(maxConcurrent !== undefined ? { maxConcurrent } : {}),
           })
           .then(
             (p) => {
@@ -139,8 +170,8 @@ export function AddRepositoriesPage() {
       <h1 className="text-xl font-semibold tracking-tight">Add repositories</h1>
       <p className="mt-0.5 text-sm text-dim">
         The GitHub App can reach these repositories, but a repository becomes a project only when
-        you add it. Adding one does not turn CI on: set that up from the onboarding page or the
-        project's settings.
+        you add it. A new project may run two attempts at once unless you change it here. Adding one
+        does not turn CI on: set that up from the onboarding page or the project's settings.
       </p>
       <div className="mt-6 space-y-8">
         {installations.error ? (
