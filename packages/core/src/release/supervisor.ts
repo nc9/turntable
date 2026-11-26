@@ -182,7 +182,7 @@ export function selfCommand(): string[] {
 
 /** Spawns with an explicit environment: Bun.spawn's `env` replaces, never extends, the parent's. */
 export const spawnLane: LaneSpawner = (argv, env) => {
-  const p = Bun.spawn(argv, { env, stdin: "ignore", stdout: "inherit", stderr: "inherit" });
+  const p = Bun.spawn(argv, { env: env, stdin: "ignore", stdout: "inherit", stderr: "inherit" });
   return {
     pid: p.pid,
     exited: p.exited.then((code) => ({ code, signal: (p.signalCode as string | null) ?? null })),

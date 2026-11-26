@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { getReleaseRequest, openDatabase, type Db } from "../src/db";
 import * as s from "../src/db/schema";
+import { onPostgres } from "./pg-mode";
 import { checkReleaseLane } from "../src/doctor/checks";
 import type { DoctorInputs } from "../src/doctor/types";
 import { dispatch, registry } from "../src/ops";
@@ -418,7 +419,8 @@ describe("through a real child process (fakes for the forge and the signer)", ()
       },
     );
 
-  test(
+  // the child opens its own SQLite file; on Postgres it would need the lane's own database URL
+  test.skipIf(onPostgres)(
     "request_release with dry_run round-trips through the child; a killed child restarts and the gap fails by name",
     { timeout: 90_000 },
     async () => {

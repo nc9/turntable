@@ -998,6 +998,11 @@ export const NOT_CONFIGURATION: readonly string[] = [
   "TURNTABLE_STEP_IO", // set by the step shim for the processes it starts
   "TURNTABLE_RELEASE", // the prefix of the release lane variables
   "TURNTABLE_CHECKOUT", // the prefix of the checkout variables
+  "TURNTABLE_LANE_CHILD", // set by the supervisor on the release lane child it starts, never by an operator
+  "TURNTABLE_RELEASE_CHANNEL_KEY", // the inline form of the documented _KEY_FILE variable; the supervisor sets it for its child
+  "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY", // the inline form of the documented _CONFIG_KEY_FILE variable
+  "TURNTABLE_RELEASE_CHANNEL", // the prefix of the release channel variables
+  "TURNTABLE_PUBLISH_CHANNEL", // the prefix of the publish channel variables
   "TURNTABLE_CI", // an example project var name in the `policy set --var` help text
   "TURNTABLE_TEST_DB", // the test harness: run the suites against Postgres
   "TURNTABLE_TEST_PGLITE_ISOLATED", // the test harness
