@@ -14,6 +14,7 @@ import {
 } from "@turntable/act-runner";
 import type { Provider, ProxyEndpoint, SandboxResources } from "@turntable/provider-sdk";
 import { Redactor, SecretRegistry, redactString } from "@turntable/redact";
+import { type ErrorDetail, errorDetailOf } from "../scheduler/error-detail";
 import { renderEvent, stepLabel } from "./render";
 import type { JobIds, RunStore, StepRecord } from "./store";
 
@@ -98,6 +99,9 @@ export interface JobOutcome {
   outputs?: Record<string, string>;
   /** For infra_error: the named kind, when one is known. */
   infraKind?: InfraKind;
+  /** For infra_error: the underlying error's name and code (identifiers only), when known. */
+  errorName?: string;
+  errorCode?: string;
 }
 
 const enc = new TextEncoder();
@@ -131,6 +135,7 @@ export async function executeJob(
     code?: number,
     outputs?: Record<string, string>,
     infraKind?: InfraKind,
+    detail?: ErrorDetail,
   ): Promise<JobOutcome> => {
     const reason = clean(rawReason);
     const exitCode =
@@ -146,6 +151,8 @@ export async function executeJob(
       ...(code !== undefined ? { actExitCode: code } : {}),
       ...(outputs ? { outputs } : {}),
       ...(state === "infra_error" && infraKind ? { infraKind } : {}),
+      ...(state === "infra_error" && detail?.name ? { errorName: detail.name } : {}),
+      ...(state === "infra_error" && detail?.code ? { errorCode: detail.code } : {}),
     };
   };
 
@@ -196,11 +203,12 @@ export async function executeJob(
     code?: number,
     outputs?: Record<string, string>,
     infraKind?: InfraKind,
+    detail?: ErrorDetail,
   ): Promise<JobOutcome> => {
     clearInterval(idle);
     watch.clear();
     await log.close();
-    return finish(state, reason, code, outputs, infraKind);
+    return finish(state, reason, code, outputs, infraKind, detail);
   };
 
   // A resumed job owns the sandbox it re-attaches to from the start, so every exit destroys it.
@@ -407,6 +415,7 @@ export async function executeJob(
       undefined,
       undefined,
       creating ? "sandbox_create_failed" : "unknown",
+      errorDetailOf(e),
     );
   } finally {
     clearInterval(idle);

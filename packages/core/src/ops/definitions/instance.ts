@@ -60,7 +60,7 @@ import { syncInstallation } from "../../github/installations";
 import { staticPollKey } from "../project-setup";
 import { resolveGithubUserId } from "../../approvals/github-id";
 import { OpError } from "../errors";
-import { redactString } from "@turntable/redact";
+import { sanitizeInfraError } from "../../infra-error-text";
 import { rotateInstanceToken } from "../instance-token-cli";
 import { generateToken, hashToken } from "../tokens";
 import { ambientSettings } from "../../settings/ambient";
@@ -1518,26 +1518,7 @@ export const instanceRunSummaryOp = defineOp({
   },
 });
 
-const INFRA_ERROR_MAX_CHARS = 500;
-
-/**
- * The stored text of an infra error, made safe for the instance administrator (#670): secrets and
- * tokens redacted by the shared redactor, credentials and query strings and fragments stripped from
- * URLs, control characters and runs of whitespace folded, and the length capped. Exported for tests.
- */
-export function sanitizeInfraError(raw: string | null): string {
-  if (!raw) return "";
-  const noSecrets = redactString(raw);
-  const noUrlSecrets = noSecrets.replace(
-    /\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/?#@]*@)?([^\s?#]*)(?:\?[^\s#]*)?(?:#\S*)?/gi,
-    "$1$2",
-  );
-  const flat = noUrlSecrets
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return flat.length > INFRA_ERROR_MAX_CHARS ? `${flat.slice(0, INFRA_ERROR_MAX_CHARS)}...` : flat;
-}
+export { sanitizeInfraError };
 
 export const instanceInfraErrorsOp = defineOp({
   name: "instance_infra_errors",
@@ -1548,7 +1529,8 @@ export const instanceInfraErrorsOp = defineOp({
     "time or a duration like 24h; default 24 hours, at most 7 days). Each row has the org and " +
     "project slug, run id, job key, attempt number, infra kind (`unknown` when none was " +
     "recorded), the error text sanitized (secrets and tokens redacted, URL credentials, query " +
-    "strings and fragments removed, at most 500 characters) and timestamps. Never log or job " +
+    "strings and fragments removed, at most 500 characters), the underlying error's name and code " +
+    "when recorded (`error_name`, `error_code`) and timestamps. Never log or job " +
     "output. Narrow it with `target_org`, `target_project` (needs target_org) and `run_id`. Use " +
     "it to diagnose an infra error with no tenant token. The read is audited in the system " +
     "chain. Only the instance administrator can call it. Read-only. Not an MCP tool.",
@@ -1579,6 +1561,8 @@ export const instanceInfraErrorsOp = defineOp({
         attempt: z.int(),
         infra_kind: z.string(),
         error_class: z.string(),
+        error_name: z.string().nullable(),
+        error_code: z.string().nullable(),
         created_at: z.string(),
         started_at: z.string().nullable(),
         finished_at: z.string().nullable(),
@@ -1633,6 +1617,8 @@ export const instanceInfraErrorsOp = defineOp({
         attempt: r.attempt,
         infra_kind: r.infraKind ?? "unknown",
         error_class: sanitizeInfraError(r.errorClass),
+        error_name: r.errorName === null ? null : sanitizeInfraError(r.errorName).slice(0, 60),
+        error_code: r.errorCode === null ? null : sanitizeInfraError(r.errorCode).slice(0, 60),
         created_at: new Date(r.createdAt).toISOString(),
         started_at: iso(r.startedAt),
         finished_at: iso(r.finishedAt),
