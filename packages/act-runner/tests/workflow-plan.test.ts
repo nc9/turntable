@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { PlanError } from "../src/plan";
-import { expandMatrix, planWorkflow, topoSort } from "../src/workflow-plan";
+import {
+  expandMatrix,
+  planWorkflow,
+  plannedNoArtifactAccess,
+  topoSort,
+} from "../src/workflow-plan";
 
 const customer = await Bun.file(`${import.meta.dir}/fixtures/customer-like.yml`).text();
 const readFile = (): undefined => undefined;
@@ -262,6 +267,30 @@ describe("the id-token flag on a planned job", () => {
     expect(flag(plan("permissions: write-all\n", ""), "a")).toBe(true);
     expect(flag(plan("permissions: read-all\n", ""), "a")).toBeUndefined();
     expect(flag(plan("permissions:\n  id-token: read\n", ""), "a")).toBeUndefined();
+  });
+});
+
+describe("the artifact-access flag on a planned job", () => {
+  const flag = (step: string) =>
+    planWorkflow(
+      `name: t\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - ${step}\n`,
+      push,
+      { readFile },
+    ).jobs[0]!.artifactAccess;
+
+  test("false only for a job with no artifact step and no local action", () => {
+    expect(flag("run: echo hi")).toBe(false);
+    expect(flag("uses: actions/checkout@v4")).toBe(false);
+  });
+  test("a job that uses an artifact action or a local action is left unflagged", () => {
+    expect(flag("uses: actions/upload-artifact@v4")).toBeUndefined();
+    expect(flag("uses: actions/download-artifact@v4")).toBeUndefined();
+    expect(flag("uses: ./.github/actions/x")).toBeUndefined();
+  });
+  test("only an explicit false rules artifacts out", () => {
+    expect(plannedNoArtifactAccess(JSON.stringify({ artifactAccess: false }))).toBe(true);
+    expect(plannedNoArtifactAccess(JSON.stringify({ id: "x" }))).toBe(false);
+    expect(plannedNoArtifactAccess(null)).toBe(false);
   });
 });
 

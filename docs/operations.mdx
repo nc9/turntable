@@ -18,11 +18,13 @@ These phases are **not adoptable**, and a restart during them cuts the attempt a
 | Setting up: egress canary, checkout upload, act install, action delivery | These are short calls the old process makes into the sandbox. They are not a detached exec. |
 | A job behind the secrets proxy | The proxy's registration of the attempt (vault rules, a held token, OIDC) lives in the old process. |
 | A job holding a GitHub token in its environment (a `protected` or `release` job with no proxy) | The new process cannot rebuild the redaction of the token's encoded forms. |
-| A job holding an artifact credential | The artifact grant lives in the old process's memory. Open-egress jobs and jobs that upload through the proxy get one. |
+| A job holding an artifact credential | The artifact grant lives in the old process's memory. Only a job with an `actions/upload-artifact` or `download-artifact` step, or a local action that could hold one, gets one. |
 
 A job with a cache grant is adoptable: after the restart its cache calls fail, which `actions/cache` reports as a miss on restore and a warning on save.
 
-A cut attempt is resolved by the next boot exactly as a drain timeout cut is: if its exec still runs and it is adoptable, it is re-attached; otherwise it ends `infra_error` (`controller_lost`) and the job is requeued once under a new attempt, with no rerun used. A `protected` or `release` job cut after a step started is not requeued (see [Hosted](/hosted#deploying-without-killing-runs)).
+A blocked attempt is never handed off by a drain, but a crash or a drain timeout does not change how it ends: if its exec still runs at the next boot it is re-attached and keeps its real result, exactly as before. A `release` or `protected` job holding a token is never killed half-published by that.
+
+A cut attempt is resolved by the next boot exactly as a drain timeout cut is: if its exec still runs, it is re-attached; otherwise it ends `infra_error` (`controller_lost`) and the job is requeued once under a new attempt, with no rerun used. A `protected` or `release` job cut after a step started is not requeued (see [Hosted](/hosted#deploying-without-killing-runs)).
 
 ## Deploying without a drain
 
@@ -54,3 +56,5 @@ While it watches an exec, a controller records a checkpoint about once a second:
 The controller that re-attaches deletes whatever was stored past the checkpoint, reads the exec's output from the start to rebuild the step list and the verdict without writing anything, and writes only what follows the checkpoint. Its log is byte for byte what one controller watching from the start would have written. An attempt with no checkpoint yet (an older release) is replayed from the start instead, as before.
 
 A live log viewer that had already shown text past the checkpoint sees it again after the re-attach.
+
+The sandbox keeps a bounded amount of exec output (a head and a tail). If a job wrote more than that, the output in between is gone. The re-attach reads the exec from the start, so it rebuilds steps and the verdict from what survives and records a cut marker where output was dropped: a step whose events fell inside the dropped range is missing from the rebuilt list, as it would be for one controller watching the whole run.

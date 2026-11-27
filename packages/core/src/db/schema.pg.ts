@@ -445,7 +445,7 @@ export const jobAttempts = pgTable(
     execId: text("exec_id"),
     /**
      * Why this attempt cannot be re-attached by another controller (#761), written before its exec
-     * starts: `secrets proxy` or `artifact credential`, credentials only this process holds. Null:
+     * starts: `secrets proxy`, `artifact credential` or `job token`, credentials only this process holds. Null:
      * re-attachable once its exec is recorded.
      */
     adoptBlock: text("adopt_block"),

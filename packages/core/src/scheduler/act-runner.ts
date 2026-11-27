@@ -17,6 +17,7 @@ import {
   PlanError,
   type PlannedJob,
   planJob,
+  plannedNoArtifactAccess,
   rebuildArgv,
   splitJob,
   workflowFullHistoryJobs,
@@ -1134,8 +1135,10 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
             })
           : undefined;
       // Likewise the artifact credential (ACTIONS_RUNTIME_TOKEN), for upload and download-artifact.
+      // Only a job that can use artifacts gets one (a plan with no artifact step and no local
+      // action says it cannot), so an ordinary job stays adoptable (#761).
       const jobArtifacts =
-        o.artifacts && jobKlass
+        o.artifacts && jobKlass && !plannedNoArtifactAccess(ctx.job.planned)
           ? o.artifacts({
               runId: dbRun.id,
               attemptId: ctx.attempt.id,

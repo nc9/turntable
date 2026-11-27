@@ -4,7 +4,6 @@ import {
   DRAIN_CUT_NOT_RETRIED,
   finishAttempt,
   CONTROLLER_LOST,
-  isAdoptable,
   DRAIN_CUT,
   listExpiredLeases,
   listUndestroyedSandboxes,
@@ -30,8 +29,7 @@ export type ReconcileReport = {
  * Resolves attempts left running by a worker that is gone (crash, kill -9, lost host): every
  * running attempt whose lease has expired. For each, probes the sandbox with `exec.status`.
  *
- * - The exec still exists (running, exited or killed), the attempt is adoptable (`isAdoptable`:
- *   no credential only the dead controller held) and an `adopt` callback is given: the
+ * - The exec still exists (running, exited or killed) and an `adopt` callback is given: the
  *   attempt is taken over and handed to a worker to RE-ATTACH. The detached exec outlives the
  *   controller, so a job that finished meanwhile keeps its real result: the worker replays the
  *   exec's log by offset, rewrites the stored log and steps, and records the real verdict.
@@ -81,17 +79,11 @@ export async function reconcileExpired(
       probe = `no provider named ${attempt.provider}`;
     }
 
-    // An attempt that holds a credential only its dead controller had (the secrets proxy's
-    // registration, an artifact grant) is never re-attached (#761): it ends like a lost one.
-    if (alive && !isAdoptable(attempt)) probe = `${probe}, not adoptable: ${attempt.adoptBlock}`;
-    if (
-      alive &&
-      isAdoptable(attempt) &&
-      opts.adopt &&
-      opts.owner &&
-      attempt.sandboxId &&
-      attempt.execId
-    ) {
+    // An attempt with an adopt block (the secrets proxy, an artifact credential, a job token) is
+    // never handed off by a drain (#761), but one whose exec still runs when the controller dies
+    // is re-attached exactly as before: it keeps its real result, and a release or protected job
+    // holding a token is never killed half-published.
+    if (alive && opts.adopt && opts.owner && attempt.sandboxId && attempt.execId) {
       const claim = await takeExpiredLease(db, attempt.id, {
         owner: opts.owner,
         leaseMs: opts.leaseMs ?? 30_000,

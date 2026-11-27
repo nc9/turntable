@@ -1136,13 +1136,13 @@ const drainOutput = z.object({
         .int()
         .describe(
           "Running attempts the next controller can re-attach to: act runs in a live sandbox and " +
-            "the attempt holds no credential only this process has. A restart hands them off.",
+            "the attempt holds no credential only this process has (secrets proxy, artifact credential, job token). A restart hands them off.",
         ),
       not_adoptable: z
         .int()
         .describe(
           "Running attempts a restart would cut: still claiming, creating the sandbox or uploading " +
-            "the checkout, or behind the secrets proxy or holding an artifact credential.",
+            "the checkout, or behind the secrets proxy, or holding an artifact credential or a job token. A crash still re-attaches to those whose exec runs.",
         ),
     })
     .describe(

@@ -1270,7 +1270,9 @@ export function handOffAttempt(
  * Whether a running attempt can be re-attached by another controller (#761): its exec is recorded
  * (act is running in a live sandbox) and it holds no credential only this process has. The other
  * phases (claimed, sandbox being created, setup and checkout upload before act starts) and a job
- * behind the secrets proxy or with an artifact credential are not.
+ * behind the secrets proxy, with an artifact credential or holding a job token are not. That is
+ * about the drain's hand-off only: when a controller dies, reconcile re-attaches to any attempt
+ * whose exec still runs, blocked or not.
  */
 export function isAdoptable(a: {
   sandboxId: string | null;

@@ -252,10 +252,10 @@ test("two controllers: an attempt is never adopted while another live controller
   expect((await row(o.job.id)).state).toBe("success");
 });
 
-test("an attempt holding a credential only its controller had is not adopted, and the drain op counts it apart", async () => {
-  const blocked = await orphaned("5");
-  await recordExec(db, scope, blocked.attempt.id, "dead", { adoptBlock: "secrets proxy" });
-  const open = await orphaned("5");
+test("the drain op counts a blocked attempt apart, and a crash still re-attaches to it with its real result", async () => {
+  const blocked = await orphaned("0.3");
+  await recordExec(db, scope, blocked.attempt.id, "dead", { adoptBlock: "job token" });
+  const open = await orphaned("0.3");
   // A third attempt claimed but not yet in a sandbox (still setting up).
   const run = await createRun(db, scope, {
     workflowPath: "w.yml",
@@ -274,15 +274,15 @@ test("an attempt holding a credential only its controller had is not adopted, an
   });
   expect(await countRunningByAdoptability(db)).toEqual({ adoptable: 1, notAdoptable: 2 });
 
-  const adopted: string[] = [];
-  const rep = await reconcileExpired(db, () => provider, {
-    owner: "new",
-    adopt: (c) => void adopted.push(c.attempt.id),
-  });
-  expect(adopted).toEqual([open.attempt.id]);
-  const lost = rep.resolved.find((r) => r.attemptId === blocked.attempt.id);
-  expect(lost?.probe).toBe("exec running, not adoptable: secrets proxy");
-  expect((await row(blocked.job.id)).state).toBe("infra_error");
-  // Its exec was stopped and its sandbox destroyed, as for any attempt that cannot be re-attached.
-  expect((await provider.list({})).map((x) => x.id)).not.toContain(blocked.sandboxId);
+  // The block only keeps a drain from handing the attempt off. The controller died with its exec
+  // alive, so the next boot re-attaches as it always did: never killed, sandbox kept.
+  const next = controller("next");
+  const rep = await reconcile(next);
+  expect(rep.adopted.map((x) => x.attemptId).sort()).toEqual(
+    [blocked.attempt.id, open.attempt.id].sort(),
+  );
+  expect(rep.resolved.find((r) => r.attemptId === blocked.attempt.id)).toBeUndefined();
+  await next.idle();
+  expect((await row(blocked.job.id)).state).toBe("success");
+  expect((await row(blocked.job.id)).errorClass).toBeNull();
 });
