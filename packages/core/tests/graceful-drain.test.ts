@@ -423,6 +423,7 @@ describe("instance_drain and instance_drain_status", () => {
       running_by_mode: { live: 0, shadow: 0 },
       shadow_mode: "wait",
       shadow_cut: 0,
+      running_by_adoption: { adoptable: 0, not_adoptable: 0 },
     });
     const status = await asInstance("instance_drain_status");
     expect(status.ok && status.output).toEqual(on.output);
@@ -434,6 +435,7 @@ describe("instance_drain and instance_drain_status", () => {
       running_by_mode: { live: 0, shadow: 0 },
       shadow_mode: "wait",
       shadow_cut: 0,
+      running_by_adoption: { adoptable: 0, not_adoptable: 0 },
     });
   });
 
@@ -442,6 +444,11 @@ describe("instance_drain and instance_drain_status", () => {
     await claimNextAttempt(db, { owner: "w", leaseMs: 1000, now: T0, globalCap: 9, perOrgCap: 9 });
     const r = await asInstance("instance_drain_status");
     expect(r.ok && (r.output as { running_attempts: number }).running_attempts).toBe(1);
+    // Claimed, no sandbox yet: a restart could not hand it off (#761).
+    expect(r.ok && (r.output as { running_by_adoption: unknown }).running_by_adoption).toEqual({
+      adoptable: 0,
+      not_adoptable: 1,
+    });
   });
 
   test("a reason is required", async () => {

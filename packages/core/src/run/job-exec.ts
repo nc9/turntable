@@ -88,6 +88,15 @@ export interface JobEnv {
   oidc?: { requestUrl: string; requestToken: string };
   /** Seconds to wait for the sandbox's Docker daemon (a container-mode plan). Default 30. */
   dockerWaitSeconds?: number;
+  /**
+   * Hand-off (#761): when this aborts, the job stops watching at once and leaves everything as it
+   * is for another controller to re-attach: the exec keeps running, the sandbox is not destroyed,
+   * nothing is finished, and the log stops at its last checkpoint. Only a scheduler that releases
+   * the lease right after sets it.
+   */
+  detach?: AbortSignal | undefined;
+  /** Least time between two log checkpoints. Default 1000 ms. */
+  checkpointMs?: number;
 }
 
 export interface JobOutcome {
@@ -110,7 +119,20 @@ const enc = new TextEncoder();
 export interface ResumeFrom {
   sandboxId: string;
   execId: string;
+  /**
+   * The previous controller's log checkpoint (#761). With it the stored log is kept up to
+   * `logOffset` and only the exec's output from `execOffset` on is rendered after it. Without it
+   * the stored output is reset and the whole exec log replayed.
+   */
+  checkpoint?: { execOffset: number; logOffset: number } | undefined;
 }
+
+/** What `executeJob` returns for a run that was handed off (#761): no verdict, nothing finished. */
+export const DETACHED = "detached for another controller";
+
+/** act's stage as `attempt_steps` stores it. */
+const storedStage = (stage: string): string =>
+  stage === "Pre" ? "pre" : stage === "Post" ? "post" : "main";
 
 /**
  * Runs one planned job in a fresh sandbox: streams redacted log text to `out` and the store
@@ -161,9 +183,15 @@ export async function executeJob(
   if (!resume) for (const n of env.notices ?? []) log.push(`${n}\n`);
 
   const steps = new Map<string, StepRecord>();
+  /** Steps the previous controller stored before its checkpoint, by `stepKey\0stage` (stored stage). */
+  const kept = new Map<string, { index: number; startedAt?: number; logOffset: number }>();
   const hidden = new Set<string>();
   const watch = new MissingToolWatch();
-  const onAct = (e: ActEvent): void => {
+  /**
+   * `replay`: the event comes from output the stored log already holds (before the checkpoint).
+   * It rebuilds the step map and the missing-tool watch, and writes nothing.
+   */
+  const onAct = (e: ActEvent, replay = false): void => {
     // The generated output-export step is plumbing, not part of the user's job.
     if ((e.type === "step-start" || e.type === "step-end") && e.name === EXPORT_STEP_NAME) {
       hidden.add(e.stepKey);
@@ -171,29 +199,31 @@ export async function executeJob(
     }
     if ((e.type === "output" || e.type === "command") && hidden.has(e.stepKey)) return;
     if (e.type === "step-start") {
+      const was = replay ? kept.get(`${e.stepKey}\0${storedStage(e.stage)}`) : undefined;
       const rec: StepRecord = {
         stepKey: e.stepKey,
         stage: e.stage,
-        index: steps.size,
+        index: was?.index ?? steps.size,
         name: clean(stepLabel(e.name, e.stage)),
-        startedAt: Date.now(),
-        logOffset: log.stored,
+        startedAt: replay ? (was?.startedAt ?? Date.now()) : Date.now(),
+        logOffset: was?.logOffset ?? log.stored,
       };
       steps.set(`${e.stepKey}\0${e.stage}`, rec);
-      log.chain(() => env.store.recordStep(ids.attemptId, { ...rec }));
+      if (!replay) log.chain(() => env.store.recordStep(ids.attemptId, { ...rec }));
     } else if (e.type === "step-end") {
       const rec = steps.get(`${e.stepKey}\0${e.stage}`);
       if (rec) {
         rec.result = e.result;
         rec.endedAt = Date.now();
         if (e.durationMs !== undefined) rec.durationMs = e.durationMs;
-        log.chain(() => env.store.recordStep(ids.attemptId, { ...rec }));
+        if (!replay) log.chain(() => env.store.recordStep(ids.attemptId, { ...rec }));
       }
     }
+    const tool = watch.see(e);
+    if (replay) return;
     log.push(renderEvent(e));
     // A failed step whose output ends in a shell "not found" says which tool the image lacks. The
     // result is act's, unchanged.
-    const tool = watch.see(e);
     if (tool) log.push(missingToolNotice(tool));
   };
 
@@ -213,6 +243,12 @@ export async function executeJob(
 
   // A resumed job owns the sandbox it re-attaches to from the start, so every exit destroys it.
   let sandboxId: string | undefined = resume?.sandboxId;
+  // Handed off (#761): the sandbox and exec now belong to the next controller.
+  let detached = false;
+  const detachedP = new Promise<"detach">((resolve) => {
+    if (env.detach?.aborted) resolve("detach");
+    env.detach?.addEventListener("abort", () => resolve("detach"), { once: true });
+  });
   let cancelled = env.signal?.aborted ?? false;
   // True while `provider.create` is in flight: a throw then is a sandbox that could not be made.
   let creating = false;
@@ -228,12 +264,24 @@ export async function executeJob(
     let run;
     if (resume) {
       sandboxId = resume.sandboxId;
-      await env.store.resetOutput?.(ids.attemptId);
+      const cp = resume.checkpoint;
+      if (cp && env.store.truncateOutput) {
+        // Keep what the previous controller stored up to its checkpoint; render only what follows.
+        for (const st of await env.store.truncateOutput(ids.attemptId, cp.logOffset)) {
+          kept.set(`${st.stepKey}\0${st.stage}`, st);
+        }
+        log.resumeAt(cp.execOffset, cp.logOffset);
+      } else {
+        await env.store.resetOutput?.(ids.attemptId);
+      }
       run = resumeJob(
         env.provider,
         resume.sandboxId,
         resume.execId,
-        { pollMs: env.pollMs ?? 500 },
+        {
+          pollMs: env.pollMs ?? 500,
+          ...(cp && env.store.truncateOutput ? { replayBefore: cp.execOffset } : {}),
+        },
         plan,
       );
     } else {
@@ -395,7 +443,17 @@ export async function executeJob(
       );
     }
     for (;;) {
-      const next = await Promise.race([run.next(), aborted]);
+      const next = await Promise.race([run.next(), aborted, detachedP]);
+      if (next === "detach") {
+        // Stop here and leave the exec and sandbox to the next controller. The log ends at its last
+        // checkpoint: what was written after it is rendered again by whoever re-attaches.
+        detached = true;
+        void run.return({ state: "infra_error", reason: DETACHED });
+        clearInterval(idle);
+        watch.clear();
+        await log.detach();
+        return { state: "cancelled", exitCode: EXIT.cancelled, reason: DETACHED };
+      }
       if (next === "abort") {
         void run.return({ state: "infra_error", reason: "cancelled" });
         return await settle("cancelled", "cancelled by user");
@@ -404,8 +462,10 @@ export async function executeJob(
         const r = next.value;
         return await settle(r.state, r.reason, r.exitCode, r.outputs, r.infraKind);
       }
-      if (next.value.kind === "act") onAct(next.value.event);
-      else if (next.value.kind === "cut") log.cut(next.value.omittedBytes);
+      const ev = next.value;
+      if (ev.kind === "act") onAct(ev.event, ev.replay === true);
+      else if (ev.kind === "cut" && !ev.replay) log.cut(ev.omittedBytes);
+      else if (ev.kind === "mark") log.mark(ev.offset, env.checkpointMs ?? 1000);
     }
   } catch (e) {
     if (cancelled) return await settle("cancelled", "cancelled by user");
@@ -419,7 +479,7 @@ export async function executeJob(
     );
   } finally {
     clearInterval(idle);
-    if (sandboxId) {
+    if (sandboxId && !detached) {
       try {
         await env.provider.destroy(sandboxId);
         // Confirmed gone: the sandbox's billed life ends here. A destroy that failed records
@@ -501,10 +561,51 @@ export class LogPipe {
   #atLineStart = true;
   #writes: Promise<void> = Promise.resolve();
 
+  /** The last clean point (#761): exec offset and stored length, and the last one recorded. */
+  #clean: { exec: number; log: number } | undefined;
+  #recorded: { exec: number; at: number } | undefined;
+
   constructor(env: JobEnv, attemptId: string) {
     this.#redactor = new Redactor({ registry: env.registry });
     this.#env = env;
     this.#attemptId = attemptId;
+  }
+
+  /** Continues a stored log from a checkpoint: the next byte is written at `logOffset`. */
+  resumeAt(execOffset: number, logOffset: number): void {
+    this.stored = logOffset;
+    this.#clean = { exec: execOffset, log: logOffset };
+    this.#recorded = { exec: execOffset, at: Date.now() };
+  }
+
+  /**
+   * The exec's output before `execOffset` has all been pushed (#761). When nothing is held for
+   * redaction, the stored log up to `stored` is exactly its rendering: a checkpoint. Recorded in
+   * order with the log writes, at most once per `everyMs`.
+   */
+  mark(execOffset: number, everyMs: number): void {
+    if (this.#redactor.holding) return;
+    this.#clean = { exec: execOffset, log: this.stored };
+    const last = this.#recorded;
+    if (last && (last.exec === execOffset || Date.now() - last.at < everyMs)) return;
+    this.#record();
+  }
+
+  #record(): void {
+    const cp = this.#clean;
+    if (!cp || !this.#env.store.setLogCheckpoint) return;
+    if (this.#recorded?.exec === cp.exec) return;
+    this.#recorded = { exec: cp.exec, at: Date.now() };
+    this.chain(() => this.#env.store.setLogCheckpoint!(this.#attemptId, cp.exec, cp.log));
+  }
+
+  /**
+   * Hand-off: records the last clean point and waits for every pending write. What the redactor
+   * holds is dropped, never flushed: it is past the checkpoint, so the next controller renders it.
+   */
+  async detach(): Promise<void> {
+    this.#record();
+    await this.#writes;
   }
 
   push(text: string): void {

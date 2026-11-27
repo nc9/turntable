@@ -79,6 +79,22 @@ export interface RunStore {
   setExec?(attemptId: string, execId: string): Promise<void>;
   /** Clears stored log, steps and cuts before a re-attached run replays the whole exec log. */
   resetOutput?(attemptId: string): Promise<void>;
+  /**
+   * Re-attach from a checkpoint (#761): drops stored log bytes, cuts and steps at or past
+   * `logOffset` (written after the checkpoint, so they are rendered again) and returns the steps
+   * kept, with their stored stage (`pre`, `main` or `post`).
+   */
+  truncateOutput?(
+    attemptId: string,
+    logOffset: number,
+  ): Promise<
+    { stepKey: string; stage: string; index: number; startedAt?: number; logOffset: number }[]
+  >;
+  /**
+   * Records the log checkpoint (#761): the first `logOffset` stored bytes are exactly the
+   * rendering of the exec's output before `execOffset`. Called in order with the log writes.
+   */
+  setLogCheckpoint?(attemptId: string, execOffset: number, logOffset: number): Promise<void>;
   appendLog(attemptId: string, offset: number, bytes: Uint8Array): Promise<void>;
   /**
    * Records where output was dropped (the sandbox's head and tail caps) as metadata beside the

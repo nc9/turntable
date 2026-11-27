@@ -34,6 +34,8 @@ export interface AttemptStore {
     sandboxCreatedAt?: number;
     sandboxTtlSeconds?: number;
     sandboxDestroyedAt?: number;
+    /** Why another controller may not re-attach (#761); null: it may. */
+    adoptBlock?: string | null;
   }): Promise<void>;
   /** Stores the resolved job plan (JSON), so a restarted controller can re-attach without the repo. */
   setPlan(planJson: string): Promise<void>;
@@ -41,6 +43,17 @@ export interface AttemptStore {
   setTrustClass(klass: string): Promise<void>;
   /** Clears stored log, steps and cuts. Only a run that re-attaches calls it, to replay the whole exec log; an early exit keeps the partial log. */
   reset(): Promise<void>;
+  /**
+   * Re-attach from a checkpoint (#761): drops stored log, cuts and steps at or past `logOffset`
+   * and returns the steps kept.
+   */
+  truncate?(
+    logOffset: number,
+  ): Promise<
+    { stepKey: string; stage: string; index: number; startedAt?: number; logOffset: number }[]
+  >;
+  /** Records the log checkpoint (#761): see `job_attempts.exec_log_offset`. */
+  setLogCheckpoint?(execOffset: number, logOffset: number): Promise<void>;
   appendLog(offset: number, bytes: Uint8Array): Promise<void>;
   recordStep(step: Omit<StepInput, "attemptId">): Promise<void>;
   addCut(cut: { atOffset: number; omittedBytes: number; reason: string }): Promise<void>;
@@ -72,6 +85,11 @@ export interface AttemptContext {
   redact?: SecretRegistry;
   /** Aborted when the lease is lost (cancelled, reconciled) or the scheduler stops hard. */
   signal: AbortSignal;
+  /**
+   * Aborted when the scheduler hands the attempt off to the next controller (#761): stop watching
+   * and return at once, leaving the exec running, the sandbox alive and any job token valid.
+   */
+  detach?: AbortSignal;
   store: AttemptStore;
 }
 

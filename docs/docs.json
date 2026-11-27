@@ -40,6 +40,7 @@
           "releasing",
           "github-app",
           "hosted",
+          "operations",
           "tenant-isolation",
           "postgres",
           "log-store",
