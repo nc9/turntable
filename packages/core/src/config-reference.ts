@@ -652,6 +652,34 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Postgres connection URL. Every subcommand that opens the database uses it. See [Postgres](/postgres).",
   },
   {
+    name: "TURNTABLE_PG_POOL_MAX",
+    area: "Server",
+    default: "10",
+    description:
+      "Most connections the Postgres pool opens (1 to 200). Size it under the managed instance's connection limit, shared with every other client. Ignored on SQLite. See [Postgres](/postgres#pool-and-timeouts).",
+  },
+  {
+    name: "TURNTABLE_PG_STATEMENT_TIMEOUT_MS",
+    area: "Server",
+    default: "off",
+    description:
+      "Postgres `statement_timeout` in milliseconds (1 to 3600000) for every pooled connection, so one slow statement cannot hold a connection forever. Unset or 0 leaves it off. Ignored on SQLite.",
+  },
+  {
+    name: "TURNTABLE_PG_REQUIRE_TLS",
+    area: "Server",
+    default: "off",
+    description:
+      "Set to `1` to refuse a `TURNTABLE_DATABASE_URL` that lacks `sslmode=require` (or `verify-ca`, `verify-full`). Ignored on SQLite.",
+  },
+  {
+    name: "TURNTABLE_COPY_TARGET_URL",
+    area: "Server",
+    default: "",
+    description:
+      "Postgres URL that `instance_db_copy` copies the SQLite database into (any `TURNTABLE_*_URL` name except `TURNTABLE_DATABASE_URL` works; the op names the variable). Set it only for the move, on a server still running SQLite. See [SQLite to Postgres](/deploy/sqlite-to-postgres).",
+  },
+  {
     name: "TURNTABLE_UI_DIR",
     area: "Server",
     default: "`packages/ui/dist`",
