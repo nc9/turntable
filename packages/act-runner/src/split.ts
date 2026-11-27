@@ -29,6 +29,18 @@ const OUTPUT_NAME = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 const literal = (value: string): string => `\${{ '${value.replaceAll("'", "''")}' }}`;
 
 /**
+ * The generated workflow's trigger. For workflow_dispatch it keeps the declared `inputs`: act
+ * builds the typed `inputs.*` context (and applies defaults) only for inputs the workflow declares,
+ * so a bare `on: workflow_dispatch` left every `inputs.*` empty in the job (#780).
+ */
+function onFor(doc: Obj, event: string): unknown {
+  if (event !== "workflow_dispatch") return event;
+  const on = doc.on ?? doc["true"];
+  const cfg = isObj(on) ? on.workflow_dispatch : undefined;
+  return isObj(cfg) && isObj(cfg.inputs) ? { workflow_dispatch: { inputs: cfg.inputs } } : event;
+}
+
+/**
  * Generates a single-job workflow for one job (one matrix leg):
  *  - the other jobs are replaced by stub need jobs that carry the real outputs as literals and
  *    the real result, so `needs.x.outputs.y`, `needs.x.result`, `!cancelled()` and friends
@@ -115,7 +127,7 @@ export function splitJob(
 
   const out: Obj = {
     name: typeof doc.name === "string" ? doc.name : "workflow",
-    on: opts.event,
+    on: onFor(doc, opts.event),
     ...(isObj(doc.env) ? { env: doc.env } : {}),
     ...(isObj(doc.defaults) ? { defaults: doc.defaults } : {}),
     ...(doc.permissions !== undefined ? { permissions: doc.permissions } : {}),
