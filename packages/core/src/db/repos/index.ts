@@ -599,7 +599,13 @@ const ATTEMPT_COLS = { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.proj
 export function createAttempt(
   db: Db,
   scope: Scope,
-  input: { jobId: string; provider: string; rerunReason?: string | undefined },
+  input: {
+    jobId: string;
+    provider: string;
+    rerunReason?: string | undefined;
+    /** Keeps an earlier attempt's place in the claim order (ids sort by time): a network requeue (#698). */
+    sortLike?: string | undefined;
+  },
 ): Promise<JobAttempt | undefined> {
   return db.run(async (h) => {
     const { projectId } = requireProject(scope);
@@ -610,7 +616,7 @@ export function createAttempt(
       .where(scoped(scope, ATTEMPT_COLS, eq(s.jobAttempts.jobId, input.jobId)))
       .orderBy(desc(s.jobAttempts.attempt))
       .limit(1);
-    const id = ulid();
+    const id = input.sortLike ? input.sortLike.slice(0, 10) + ulid().slice(10) : ulid();
     await h.orm.insert(s.jobAttempts).values({
       id,
       orgId: scope.orgId,

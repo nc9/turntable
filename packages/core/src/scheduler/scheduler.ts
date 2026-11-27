@@ -7,6 +7,9 @@ import {
   type Claim,
   claimNextAttempt,
   earlierInfraReason,
+  listAttempts,
+  NETWORK_REQUEUE,
+  requeuePreSandbox,
   CONTROLLER_LOST,
   finishAttempt,
   getAttempt,
@@ -27,6 +30,7 @@ import {
   truncateAttemptOutput,
   upsertStep,
 } from "../db/repos";
+import { type NetworkHealth, processNetwork } from "../network";
 import { effectiveChecksMode } from "../ops/setting-guard";
 import { ambientSettings } from "../settings/ambient";
 import { preemptMaxPerJobSetting, preemptWindowMinutesSetting } from "../settings/definitions";
@@ -73,6 +77,8 @@ export type SchedulerOptions = {
   settings?: SettingsRuntime;
   /** While draining it claims nothing (#446). Default: the process's own (`processDrain`). */
   drain?: DrainState;
+  /** While degraded it claims nothing and requeues pre-sandbox failures (#698). Default: the process's own. */
+  network?: NetworkHealth;
   /** Wait before an infra retry (#517) starts its new attempt. Default 10 s. */
   infraRetryBackoffMs?: number;
   now?: () => number;
@@ -124,6 +130,7 @@ export class Scheduler {
       | "observer"
       | "settings"
       | "drain"
+      | "network"
       | "globalCap"
       | "perOrgCap"
       | "limits"
@@ -138,6 +145,7 @@ export class Scheduler {
     log: (message: string) => void;
     readiness: Readiness;
     drain: DrainState;
+    network: NetworkHealth;
   };
   readonly #active = new Map<
     string,
@@ -178,6 +186,7 @@ export class Scheduler {
       settings: o.settings,
       observer: o.observer,
       drain: o.drain ?? processDrain,
+      network: o.network ?? processNetwork,
       infraRetryBackoffMs: o.infraRetryBackoffMs ?? INFRA_RETRY_BACKOFF_MS,
       now: o.now ?? Date.now,
       log: o.log ?? (() => {}),
@@ -248,6 +257,8 @@ export class Scheduler {
     for (;;) {
       // Draining: nothing new starts. Queued work stays queued; running attempts carry on.
       if (this.#o.drain.draining) return started;
+      // Degraded network (#698): nothing is claimed; the queue waits and resumes in order.
+      if (this.#o.network.degraded) return started;
       const now = this.#o.now();
       // Read at every claim (cached for seconds): a raised cap applies to the next one, a lowered
       // one holds new claims and never touches what is running.
@@ -438,6 +449,60 @@ export class Scheduler {
     }
   }
 
+  /**
+   * After a pre-sandbox failure: probes once more (the failure may land before two scheduled probes
+   * have said so), and requeues when the network is degraded or the probe just failed.
+   */
+  async #requeueForNetwork(claim: Claim, reason: string): Promise<boolean> {
+    const net = this.#o.network;
+    await net.probeNow();
+    if (!net.degraded && !net.suspect) return false;
+    return requeuePreSandbox(this.#o.db, claim.scope, {
+      attemptId: claim.attempt.id,
+      owner: this.owner,
+      reason,
+      now: this.#o.now(),
+    });
+  }
+
+  /** One job-log line for each degraded window a requeued job waited through (#698). */
+  async #networkNotices(claim: Claim): Promise<string[]> {
+    if (claim.attempt.attempt <= 1) return [];
+    // Only the requeues directly behind this attempt: a later retry does not repeat the line.
+    const before = (await listAttempts(this.#o.db, claim.scope, claim.job.id)).filter(
+      (a) => a.attempt < claim.attempt.attempt,
+    );
+    const earlier: typeof before = [];
+    for (const a of before.toReversed()) {
+      if (!a.errorClass?.startsWith(NETWORK_REQUEUE)) break;
+      earlier.push(a);
+    }
+    if (earlier.length === 0) return [];
+    const now = this.#o.now();
+    const seen = new Map<number, string>();
+    let unknown = false;
+    for (const a of earlier) {
+      const wins = this.#o.network.windowsBetween(a.finishedAt ?? now, now);
+      if (wins.length === 0) unknown = true;
+      for (const w of wins) {
+        if (seen.has(w.start)) continue;
+        const end = w.end ?? now;
+        const secs = Math.max(0, Math.round((end - w.start) / 1000));
+        seen.set(
+          w.start,
+          `[turntable] waited out a network degraded window (${new Date(w.start).toISOString()} to ${new Date(end).toISOString()}, ${secs}s)`,
+        );
+      }
+    }
+    const lines = [...seen.values()];
+    if (lines.length === 0 && unknown) {
+      lines.push(
+        "[turntable] waited out a network degraded window (re-queued before a sandbox existed)",
+      );
+    }
+    return lines;
+  }
+
   #launch(claim: Claim, resume?: { sandboxId: string; execId: string }): void {
     const { attempt, scope } = claim;
     const controller = new AbortController();
@@ -505,7 +570,9 @@ export class Scheduler {
         if (!provider) {
           outcome = infra(`no provider named ${attempt.provider}`);
         } else {
+          const notices = resume ? [] : await this.#networkNotices(claim);
           const ctx: AttemptContext = {
+            ...(notices.length > 0 ? { notices } : {}),
             attempt,
             job: claim.job,
             run: claim.run,
@@ -527,6 +594,27 @@ export class Scheduler {
       if (this.#handingOff.delete(attempt.id) && outcome.reason === DETACHED) {
         clearInterval(beat);
         return;
+      }
+      // The network is degraded and this attempt failed before its sandbox existed (#698): it is
+      // requeued, not finished, and does not use the one automatic retry. An attempt that had a
+      // sandbox is never requeued here (see `requeuePreSandbox`).
+      if (
+        outcome.state === "infra_error" &&
+        (outcome.infraKind === "sandbox_create_failed" ||
+          outcome.infraKind === "checkout_fetch_failed" ||
+          outcome.infraKind === "unknown") &&
+        !controller.signal.aborted &&
+        !this.#cutting.has(attempt.id)
+      ) {
+        const requeued = await this.#requeueForNetwork(claim, outcome.reason).catch((err) => {
+          this.#o.log(`could not requeue ${attempt.id} for the network: ${String(err)}`);
+          return false;
+        });
+        if (requeued) {
+          clearInterval(beat);
+          this.nudge();
+          return;
+        }
       }
       // A transient infra failure waits out the backoff while the lease is still held (the
       // heartbeat runs, a cancel still lands), then retries below. The sandbox is already gone.

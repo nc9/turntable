@@ -60,6 +60,7 @@ A transient infrastructure failure is retried once. An `infra_error` carries a k
 | `sandbox_create_failed` | the provider could not create the sandbox | yes, every class |
 | `sandbox_lost` | the sandbox or the act process in it vanished, possibly mid-run | only `trusted_pr` and `untrusted_pr` jobs |
 | `image_pull_rate_limited` | reserved, nothing produces it yet (preflight) | yes, every class |
+| `checkout_fetch_failed` | the control plane could not fetch the sources (full history or submodules) because of a network error, before any sandbox exists | yes, every class. While the network is degraded it is requeued without using the retry. This is a change: on a healthy network every such fetch error that is not an auth or tree-scan error now gets the one retry, deterministic ones included |
 | `checkout_auth_failed` | GitHub refused the checkout (HTTP 401 or 403, or 404 to a request with a token) | no |
 | `tree_scan` | the strict scan of the checkout's tarball refused it, with the rule in the reason and the job log | no |
 | `fetch_limit` | the checkout ran over its pack, unpacked, tarball or memory budget, with the limit, its value and the setting that raises it in the reason and the job log | no |

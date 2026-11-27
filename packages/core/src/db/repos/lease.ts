@@ -1090,6 +1090,119 @@ export async function requeueInfraFailureOnce(
   });
 }
 
+/** The error class an attempt ends with when a degraded network requeued it (#698). */
+export const NETWORK_REQUEUE = "network_degraded";
+/** Most requeues one job gets for a degraded network, so a flapping probe cannot loop forever. */
+export const MAX_NETWORK_REQUEUES = 10;
+
+/**
+ * Requeues an attempt that failed BEFORE its sandbox existed because the network is degraded
+ * (#698). The failed attempt ends `infra_error` with no infra kind, so it does NOT spend the job's
+ * one automatic retry (`earlierInfraReason` counts only attempts with a kind), and the job goes
+ * back to `queued` under a new attempt that inherits the check, so the check ends with the real
+ * result. The invariant: an attempt that had a sandbox, an exec or a started step may have had
+ * side effects and is never requeued here (it keeps today's one retry). A NULL `sandbox_id` is the
+ * proof: the runner records it, awaited, before anything runs in the sandbox. Fenced like
+ * `finishAttempt`: the attempt must still run under `owner`; `requireExpired` (a vanished
+ * controller, found by the reconciler) also needs its lease to have expired before `now`.
+ * Returns true when it requeued; false changes nothing.
+ */
+export async function requeuePreSandbox(
+  db: Db,
+  scope: Scope,
+  input: {
+    attemptId: string;
+    owner: string;
+    reason: string;
+    now: number;
+    requireExpired?: boolean;
+  },
+): Promise<boolean> {
+  // With an external log store the log size is an HTTP call, read before the transaction opens;
+  // when the store is down the marker line is skipped and the requeue still happens.
+  const external = externalLogStore() !== undefined;
+  const early = external ? await logSize(db, scope, input.attemptId).catch(() => null) : null;
+  return db.transaction(async (tx) => {
+    const [cur] = await tx.orm
+      .select()
+      .from(s.jobAttempts)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, input.attemptId),
+        ),
+      )
+      .limit(1);
+    if (!cur || cur.state !== "running" || cur.leaseOwner !== input.owner) return false;
+    if (input.requireExpired && (cur.leaseExpiresAt === null || cur.leaseExpiresAt >= input.now)) {
+      return false;
+    }
+    if (cur.sandboxId !== null || cur.execId !== null) return false;
+    const [started] = await tx.orm
+      .select({ stepKey: s.attemptSteps.stepKey })
+      .from(s.attemptSteps)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.attemptSteps.orgId, projectId: s.attemptSteps.projectId },
+          and(eq(s.attemptSteps.attemptId, cur.id), isNotNull(s.attemptSteps.startedAt)),
+        ),
+      )
+      .limit(1);
+    if (started) return false;
+    const all = await listAttempts(tx, scope, cur.jobId);
+    const spent = all.filter((a) => a.errorClass?.startsWith(NETWORK_REQUEUE)).length;
+    if (spent >= MAX_NETWORK_REQUEUES) return false;
+    await updateAttempt(tx, scope, cur.id, {
+      state: "infra_error",
+      errorClass: `${NETWORK_REQUEUE}: ${sanitizeInfraError(input.reason).slice(0, 160)}`,
+    });
+    await tx.orm
+      .update(s.jobAttempts)
+      .set({ leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(s.jobAttempts.id, cur.id));
+    const tail = external ? early : await logSize(tx, scope, cur.id);
+    if (tail !== null) {
+      await appendLog(
+        tx,
+        scope,
+        cur.id,
+        tail,
+        new TextEncoder().encode(
+          "network degraded: this attempt failed before a sandbox existed; it is re-queued and does not use the retry\n",
+        ),
+      );
+    }
+    await transitionJob(tx, scope, cur.jobId, "infra_error", { reason: NETWORK_REQUEUE });
+    const job = await transitionJob(tx, scope, cur.jobId, "queued", { reason: NETWORK_REQUEUE });
+    const next = await createAttempt(tx, scope, {
+      jobId: cur.jobId,
+      provider: cur.provider,
+      sortLike: cur.id,
+    });
+    if (next && cur.checkRunId) {
+      await tx.orm
+        .update(s.jobAttempts)
+        .set({ checkRunId: cur.checkRunId })
+        .where(eq(s.jobAttempts.id, next.id));
+    }
+    if (job) {
+      const states = effectiveStates(await listJobs(tx, scope, job.runId));
+      await setRunStatus(tx, scope, job.runId, aggregateRunStatus(states));
+    }
+    await appendAudit(tx, scope, {
+      principalKind: "system",
+      principalId: "scheduler",
+      op: "attempt.network_requeue",
+      effect: "write",
+      outcome: "ok",
+      input: { attempt_id: cur.id, job_id: cur.jobId, at: input.now },
+    });
+    return true;
+  });
+}
+
 /**
  * The reason of an earlier infra failure of this attempt's job that already used its one infra
  * retry: an attempt that ended `infra_error` with a kind, since the latest manual rerun (which

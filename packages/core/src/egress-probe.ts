@@ -9,6 +9,7 @@
 import { readFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import { safeFetch } from "@turntable/net";
+import { errorCode, withDeadline } from "./network/probe";
 
 const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const SLOW_MS = 2_000;
@@ -48,18 +49,8 @@ export function egressProbeConfigFromEnv(
   return { periodSeconds: n, hosts, dnsOnly: DNS_ONLY_HOSTS };
 }
 
-/** The error code of a failed call: the error's own, or its cause's (fetch wraps the system error). */
-export function errorCode(e: unknown): string {
-  const pick = (x: unknown): string | undefined => {
-    if (typeof x !== "object" || x === null) return undefined;
-    const o = x as { code?: unknown; name?: unknown };
-    if (typeof o.code === "string" && /^[A-Z0-9_]{1,40}$/.test(o.code)) return o.code;
-    return undefined;
-  };
-  const cause = typeof e === "object" && e !== null ? (e as { cause?: unknown }).cause : undefined;
-  const name = typeof e === "object" && e !== null ? (e as { name?: unknown }).name : undefined;
-  return pick(e) ?? pick(cause) ?? (typeof name === "string" ? name.slice(0, 40) : "Error");
-}
+// One implementation for both probes: the degraded-state probe lives in ./network.
+export { errorCode } from "./network/probe";
 
 export type ProbeResult = {
   host: string;
@@ -91,15 +82,7 @@ export async function probeHost(
       safeFetch(url, { method: "HEAD", signal, redirect: "manual", timeoutMs: TIMEOUT_MS }));
   const t0 = now();
   try {
-    await Promise.race([
-      resolve(host),
-      new Promise((_, rej) =>
-        setTimeout(
-          () => rej(Object.assign(new Error("dns timeout"), { code: "DNS_TIMEOUT" })),
-          TIMEOUT_MS,
-        ),
-      ),
-    ]);
+    await withDeadline(Promise.resolve(resolve(host)), TIMEOUT_MS);
   } catch (e) {
     return { host, dnsMs: now() - t0, dnsError: errorCode(e) };
   }

@@ -36,6 +36,15 @@ export const INFRA_KINDS = {
     label: "the checkout was refused by GitHub",
   },
   /**
+   * The control plane could not fetch the sources (full history or submodules, #698): a network
+   * error before any sandbox exists. Requeued while the network is degraded, else retried once.
+   */
+  checkout_fetch_failed: {
+    transient: true,
+    beforeSteps: true,
+    label: "the checkout could not be fetched",
+  },
+  /**
    * GitHub rate limited the control plane's action lookups past the job's wait budget (#621).
    * Nothing ran, so it is safe for every trust class; the retry waits for the reset first.
    */

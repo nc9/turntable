@@ -64,6 +64,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: instance-wide readiness facts, never an agent's",
   instance_ingest_status:
     "instance administrator ops are REST only: cross-tenant poll health is the operator's view, never an agent's",
+  instance_network_status:
+    "instance administrator ops are REST only: probe timings are the operator's view; agents read network_status",
   log_store_migrate:
     "instance administrator ops are REST only: copying logs between stores is the operator's job, never an agent's",
   instance_audit_verify:

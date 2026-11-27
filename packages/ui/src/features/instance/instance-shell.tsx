@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { getInstanceApi, type InstanceWhoami } from "@/api/instance";
 import { Button } from "@/components/ui/button";
 import { disconnectInstance, useInstanceAuth } from "@/lib/instance-auth";
+import { NetworkStatusBar } from "./network-status";
 import { InstanceSignIn } from "./sign-in";
 import { RotatedNotice } from "./rotated-notice";
 
@@ -71,6 +72,7 @@ export function InstanceShell() {
           Sign out
         </Button>
       </header>
+      <NetworkStatusBar />
       <main id="main" className="min-w-0 flex-1">
         <Outlet />
       </main>

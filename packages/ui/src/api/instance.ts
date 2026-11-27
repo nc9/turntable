@@ -34,6 +34,20 @@ export type ProjectPatch = {
   sandboxSnapshot?: string | null;
   maxConcurrent?: number | null;
 };
+/** The instance's outbound network state (#698). Times are epoch ms. */
+export type NetworkStatus = {
+  state: "healthy" | "degraded" | "unknown";
+  since: number | null;
+  windows: { start: number; end: number | null }[];
+  consecutiveFailures: number;
+  targets: {
+    target: string;
+    ok: boolean;
+    dnsMs: number | null;
+    httpMs: number | null;
+    error: string | null;
+  }[];
+};
 export type CreatedProject = { org: string; project: string; id: string; name: string };
 export type BackupResult = { path: string; sizeBytes: number; sha256: string };
 export type RotatedToken = { id: string; secret: string; expiresAt: number; revokedId: string };
@@ -41,6 +55,7 @@ export type RotatedToken = { id: string; secret: string; expiresAt: number; revo
 export interface InstanceApi {
   whoami(): Promise<InstanceWhoami>;
   listOrgs(): Promise<InstanceOrg[]>;
+  networkStatus(): Promise<NetworkStatus>;
   listSettings(): Promise<Setting[]>;
   sandboxLimits(): Promise<EffectiveConcurrency>;
   setSetting(args: { key: string; value?: unknown; unset?: boolean }): Promise<Setting>;
@@ -127,6 +142,34 @@ export function createInstanceApi(options: InstanceApiOptions): InstanceApi {
     },
     async listOrgs() {
       return (await call<{ orgs: InstanceOrg[] }>("GET", "/orgs")).orgs;
+    },
+    async networkStatus() {
+      const w = await call<{
+        state: "healthy" | "degraded" | "unknown";
+        since: string | null;
+        windows: { start: string; end: string | null }[];
+        consecutive_failures: number;
+        targets: {
+          target: string;
+          ok: boolean;
+          dns_ms: number | null;
+          http_ms: number | null;
+          error: string | null;
+        }[];
+      }>("GET", "/network");
+      return {
+        state: w.state,
+        since: ms(w.since),
+        windows: w.windows.map((x) => ({ start: ms(x.start) ?? 0, end: ms(x.end) })),
+        consecutiveFailures: w.consecutive_failures,
+        targets: w.targets.map((x) => ({
+          target: x.target,
+          ok: x.ok,
+          dnsMs: x.dns_ms,
+          httpMs: x.http_ms,
+          error: x.error,
+        })),
+      };
     },
     async listSettings() {
       const w = await call<{ settings: WireSetting[] }>("GET", "/settings");
