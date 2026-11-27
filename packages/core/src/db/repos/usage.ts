@@ -5,8 +5,8 @@
 // runs to now. An estimated end (no confirmed destroy) never exceeds the attempt's recorded
 // sandbox TTL. The interval is clipped to the window. An attempt's own duration also covers
 // waiting for provider capacity, so it is not used.
-import { and, eq, gt, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
-import type { Db } from "..";
+import { and, eq, gt, gte, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
+import type { Db, Orm } from "..";
 import * as s from "../schema";
 import { PREEMPTED } from "./lease";
 import { yieldProjects } from "./project-settings";
@@ -52,6 +52,59 @@ export interface Span {
 }
 
 /**
+ * The longest a sandbox can stay alive after its recorded create time, so an attempt created
+ * before `window.from - MAX_SPAN` cannot overlap the window, and `sandboxSpans` leaves it out by a
+ * range bound on `(org_id, sandbox_created_at)` instead of reading the org's whole history.
+ *
+ * Why 48 hours: the job runner asks the provider for a TTL of `timeoutSeconds + 900`, default
+ * 3600 + 900 = 4500 s (job-exec.ts), and a provider cap shortens it (Daytona: 30 min, policy.ts;
+ * the effective value is stored as `sandbox_ttl_seconds`). An attempt with a TTL ends at
+ * `min(end, created + ttl)`, and the provider destroys the sandbox at that TTL, so a recorded
+ * destroy follows it closely. The TTL is a per-job request, not a global cap (Docker has none,
+ * and the job timeout is an operator setting), so no config value bounds it; 48 h is two orders
+ * above the default and far above any cap, and it is a margin, not a limit on sandboxes.
+ * The one thing it drops: an attempt older than that with no destroy, no finish and no TTL
+ * (stuck "running" or lost), which today would count as alive up to now. That is an unbounded
+ * estimate for a row nothing will ever close, and the scheduler's reconcile ends such rows.
+ */
+export const MAX_SPAN_MS = 48 * 3_600_000;
+
+/** The rows `sandboxSpans` reads (exported so a test can ask the database for its plan). */
+export function spanRowsQuery(orm: Orm, scope: Partial<Scope>, w: SandboxUsageWindow) {
+  return orm
+    .select({
+      created: s.jobAttempts.sandboxCreatedAt,
+      destroyed: s.jobAttempts.sandboxDestroyedAt,
+      finished: s.jobAttempts.finishedAt,
+      state: s.jobAttempts.state,
+      ttl: s.jobAttempts.sandboxTtlSeconds,
+      orgId: s.jobAttempts.orgId,
+      projectId: s.jobAttempts.projectId,
+      jobId: s.jobAttempts.jobId,
+      errorClass: s.jobAttempts.errorClass,
+    })
+    .from(s.jobAttempts)
+    .where(
+      and(
+        scope.orgId === undefined ? undefined : eq(s.jobAttempts.orgId, scope.orgId),
+        scope.projectId === undefined ? undefined : eq(s.jobAttempts.projectId, scope.projectId),
+        isNotNull(s.jobAttempts.sandboxCreatedAt),
+        lt(s.jobAttempts.sandboxCreatedAt, w.to),
+        gte(s.jobAttempts.sandboxCreatedAt, w.from - MAX_SPAN_MS),
+        // Alive during the window: a destroy after its start; or no destroy and a finish after
+        // it; or neither (still running, or lost).
+        or(
+          gt(s.jobAttempts.sandboxDestroyedAt, w.from),
+          and(
+            isNull(s.jobAttempts.sandboxDestroyedAt),
+            or(isNull(s.jobAttempts.finishedAt), gt(s.jobAttempts.finishedAt, w.from)),
+          ),
+        ),
+      ),
+    );
+}
+
+/**
  * The sandbox lives of attempts that overlap the window, for an org, a project or (no org) the
  * whole instance. Only attempts with a recorded sandbox create time have one.
  */
@@ -60,38 +113,7 @@ export async function sandboxSpans(
   scope: Partial<Scope>,
   w: SandboxUsageWindow,
 ): Promise<Span[]> {
-  const rows = await db.run((h) =>
-    h.orm
-      .select({
-        created: s.jobAttempts.sandboxCreatedAt,
-        destroyed: s.jobAttempts.sandboxDestroyedAt,
-        finished: s.jobAttempts.finishedAt,
-        state: s.jobAttempts.state,
-        ttl: s.jobAttempts.sandboxTtlSeconds,
-        orgId: s.jobAttempts.orgId,
-        projectId: s.jobAttempts.projectId,
-        jobId: s.jobAttempts.jobId,
-        errorClass: s.jobAttempts.errorClass,
-      })
-      .from(s.jobAttempts)
-      .where(
-        and(
-          scope.orgId === undefined ? undefined : eq(s.jobAttempts.orgId, scope.orgId),
-          scope.projectId === undefined ? undefined : eq(s.jobAttempts.projectId, scope.projectId),
-          isNotNull(s.jobAttempts.sandboxCreatedAt),
-          lt(s.jobAttempts.sandboxCreatedAt, w.to),
-          // Alive during the window: a destroy after its start; or no destroy and a finish after
-          // it; or neither (still running, or lost).
-          or(
-            gt(s.jobAttempts.sandboxDestroyedAt, w.from),
-            and(
-              isNull(s.jobAttempts.sandboxDestroyedAt),
-              or(isNull(s.jobAttempts.finishedAt), gt(s.jobAttempts.finishedAt, w.from)),
-            ),
-          ),
-        ),
-      ),
-  );
+  const rows = await db.run((h) => spanRowsQuery(h.orm, scope, w));
   return rows.flatMap((r) => {
     const begin = r.created as number;
     let end: number;

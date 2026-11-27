@@ -14,8 +14,15 @@ import { parseArgs } from "node:util";
 import { readTarGz } from "@turntable/act-runner";
 import { gitRepoSource } from "../scheduler/act-runner";
 import { isRepoPart, packCheckout, performCheckout } from "./checkout";
-import { checkoutConfigFromEnv } from "./checkout-child";
-import { clean, EXIT_AUTH_REFUSED, GitAuthError, type FetchLimits } from "./git-fetch";
+import { checkoutConfigFromEnv, EXIT_MEMORY_STOP } from "./checkout-child";
+import {
+  budgetLimitOf,
+  clean,
+  EXIT_AUTH_REFUSED,
+  EXIT_FETCH_LIMIT,
+  GitAuthError,
+  type FetchLimits,
+} from "./git-fetch";
 import { parseTokenMessage, scrubToken } from "./scrub-token";
 
 export const FETCH_SOURCE_USAGE = `Usage: turntable fetch-source <owner/name> <sha> [--file <path>]
@@ -137,7 +144,7 @@ export async function fetchSourceCommand(
       maxRssBytes: Number(values["max-memory-mib"] ?? 0) * 1024 * 1024,
       onStop: (why) => {
         console.error(`fetch-source failed: ${why}`);
-        process.exit(70);
+        process.exit(EXIT_MEMORY_STOP);
       },
     });
   let token: string | undefined;
@@ -217,6 +224,11 @@ export async function fetchSourceCommand(
     if (e instanceof GitAuthError) {
       console.error(`fetch-source failed: checkout_auth_failed HTTP ${e.status}`);
       return EXIT_AUTH_REFUSED;
+    }
+    const limit = budgetLimitOf(e);
+    if (limit) {
+      console.error(`fetch-source failed: fetch_limit ${limit}`);
+      return EXIT_FETCH_LIMIT;
     }
     const text = scrubToken(e instanceof Error ? e.message : String(e), token);
     console.error(`fetch-source failed: ${clean(text, 300)}`);

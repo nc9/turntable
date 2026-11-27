@@ -26,7 +26,7 @@ async function boot(
       env: {
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? dir,
-        // A root sandbox is refused at boot; allow it so the test covers settings, not privileges.
+        // The server refuses to run as root; a root sandbox or container opts in for the test.
         ...(process.getuid?.() === 0 ? { TURNTABLE_ALLOW_ROOT: "1" } : {}),
         ...env,
       },

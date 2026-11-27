@@ -10,6 +10,8 @@ import { dirname, join } from "node:path";
 import { checkoutScript, readTarGz, workflowSubmodulesJobs } from "@turntable/act-runner";
 import { resolveSubmodules } from "../src/run/submodules";
 import { gitRepoSource } from "../src/scheduler";
+import { CheckoutLimitError } from "../src/run/checkout-child";
+import { fetchLimitOutcome } from "../src/scheduler/fetch-limit-outcome";
 import { CHECKOUT_COMMAND, serveGitRepo, type GitHttpServer } from "./git-http-server";
 
 const base = mkdtempSync(join(tmpdir(), "ls-submod-"));
@@ -426,6 +428,59 @@ describe("the checkout limits are one budget", () => {
     } finally {
       ok.stop();
       over.stop();
+    }
+  });
+
+  test("a project limit below the default stops a checkout whose submodule pushes it over, as fetch_limit", async () => {
+    const lib = makeRepo({ "big.bin": "x".repeat(300 * 1024) });
+    const web = makeRepo({ "a.txt": "a\n" }, [
+      { path: "deps/lib", sha: lib.sha, url: "https://github.com/acme/lib.git" },
+    ]);
+    const w = world({ "acme/web": web.dir, "acme/lib": lib.dir });
+    const sub = { submodules: "true", submoduleCredentials: true } as const;
+    try {
+      // the default budget holds both, and the repository alone fits under the project's limit
+      await w.src.checkout(run(web.sha), bound, sub);
+      await w.src.checkout(run(web.sha), bound, { limits: { maxInflatedBytes: 100 * 1024 } });
+      const err = await w.src
+        .checkout(run(web.sha), bound, { ...sub, limits: { maxInflatedBytes: 100 * 1024 } })
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(CheckoutLimitError);
+      expect(err.limit).toBe("maxInflatedBytes");
+      const o = fetchLimitOutcome(err);
+      expect(o?.outcome.infraKind).toBe("fetch_limit");
+      expect(o?.outcome.reason).toContain("TURNTABLE_CHECKOUT_MAX_UNPACKED_MIB");
+    } finally {
+      w.stop();
+    }
+  });
+
+  test("fetch-depth 0 with submodules shares the multiplied budget, and names it when over", async () => {
+    const lib = makeRepo({ "big.bin": "x".repeat(300 * 1024) });
+    const web = makeRepo({ "a.txt": "a\n" }, [
+      { path: "deps/lib", sha: lib.sha, url: "https://github.com/acme/lib.git" },
+    ]);
+    const w = world({ "acme/web": web.dir, "acme/lib": lib.dir });
+    const sub = { submodules: "true", submoduleCredentials: true, fullHistory: true } as const;
+    try {
+      // 100 KiB x4 = 400 KiB: the tree alone passes at 100 KiB, and the module fits the x4 budget
+      await w.src.checkout(run(web.sha), bound, {
+        fullHistory: true,
+        limits: { maxInflatedBytes: 100 * 1024 },
+      });
+      await w.src.checkout(run(web.sha), bound, {
+        ...sub,
+        limits: { maxInflatedBytes: 100 * 1024 },
+      });
+      // 50 KiB x4 = 200 KiB: the module is over, and the error reports the full-history value
+      const err = await w.src
+        .checkout(run(web.sha), bound, { ...sub, limits: { maxInflatedBytes: 50 * 1024 } })
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(CheckoutLimitError);
+      expect(err.limit).toBe("maxInflatedBytes");
+      expect(err.fullHistory).toBe(true);
+    } finally {
+      w.stop();
     }
   });
 

@@ -92,6 +92,14 @@ export async function guardSettingChange(
     subject.orgSlug ?? (subject.orgId ? (await getOrgById(db, subject.orgId))?.slug : undefined);
   const refused = def.refuse?.(parsed.data, orgSlug !== undefined ? { orgSlug } : {});
   if (refused) throw new OpError("invalid_input", refused);
+  if (def.ceiling && typeof parsed.data === "number") {
+    const max = (await resolveSetting(rt, db, def.ceiling, {})).value as number;
+    if (parsed.data > max)
+      throw new OpError(
+        "invalid_input",
+        `${def.key} is at most ${max}: that is the instance ceiling (${def.ceiling}), which only the instance administrator raises`,
+      );
+  }
   if (oneWay && p) refuseLoosening(def, before, parsed.data, caller);
   if (def.key === untrustedRunApprovalSetting.key && parsed.data === "human") {
     await requireApprover(db, subject.orgId);
