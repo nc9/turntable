@@ -287,6 +287,8 @@ export interface RealOptions {
   db?: DbReader | undefined;
   /** The keys the server took at boot (TURNTABLE_MASTER_KEY is deleted from its environment). */
   masterKeys?: MasterKeys | undefined;
+  /** See `DoctorInputs.releaseLane`; only the server that supervises the lane sets it. */
+  releaseLane?: DoctorInputs["releaseLane"];
   /** See `DoctorInputs.humanApprovalGaps`; only the server, which has the settings layers, sets it. */
   humanApprovalGaps?: (() => Promise<number>) | undefined;
   /** See `DoctorInputs.humanAnyKeyPolicy`; only the server sets it. */
@@ -368,6 +370,7 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
       }),
       channel: channelProbe(o.env),
       configChannel: configChannelProbe(o.env),
+      releaseLane: o.releaseLane,
       observed: o.observed,
       now: Date.now,
     },

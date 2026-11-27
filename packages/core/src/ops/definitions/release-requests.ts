@@ -200,6 +200,15 @@ export const requestReleaseOp = defineOp({
     if ((await getFreeze(ctx.db, ctx.scope)).frozen) {
       throw new OpError("conflict", "this org or project is frozen; releases are paused");
     }
+    // A lane this process supervises may be down or restarting: say so by name rather than queue
+    // a request nothing is there to claim.
+    const lane = ctx.releaseLane?.availability();
+    if (lane && !lane.ok) {
+      throw new OpError("unavailable", `${lane.code}: ${lane.message}`, {
+        code: lane.code,
+        state: lane.state,
+      });
+    }
     const run = await getRun(ctx.db, ctx.scope, i.run_id);
     if (!run) throw new OpError("not_found", "no such run in this project");
     const row = await createReleaseRequest(ctx.db, ctx.scope, {
