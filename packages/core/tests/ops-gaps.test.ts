@@ -11,6 +11,7 @@ import {
   listAttempts,
   listAudit,
   listEvents,
+  resolveDependents,
   setRunStatus,
   transitionJob,
   updateAttempt,
@@ -500,6 +501,77 @@ test("rerun: a dependent skipped by a real failure is charged to the job-outcome
   expect(!refused.ok && refused.error.message).toMatch(
     /already rerun 2 times.*limit 2.*0 of 2 job-outcome reruns and 5 of 5 infra-error reruns remain/,
   );
+});
+
+/** build -> test -> deploy: build ends `upstream`, readiness skips the two dependents. */
+async function chain(sha: string, upstream: "failure" | "infra_error") {
+  const r = await createRun(db, a.scope, {
+    workflowPath: "w.yml",
+    event: "push",
+    ref: "main",
+    sha,
+  });
+  const mk = async (key: string, needs: string[]) => {
+    const j = (await createJob(db, a.scope, { runId: r.id, jobKey: key, name: key, needs }))!;
+    await createAttempt(db, a.scope, { jobId: j.id, provider: "docker" });
+    return j.id;
+  };
+  const ids = {
+    build: await mk("build", []),
+    test: await mk("test", ["build"]),
+    deploy: await mk("deploy", ["test"]),
+  };
+  const endBuild = async () => {
+    const at = (await listAttempts(db, a.scope, ids.build)).at(-1)!;
+    await transitionJob(db, a.scope, ids.build, "running");
+    await updateAttempt(db, a.scope, at.id, { state: "running" });
+    await updateAttempt(db, a.scope, at.id, {
+      state: upstream,
+      errorClass: upstream === "infra_error" ? "lost" : null,
+      exitCode: upstream === "failure" ? 1 : null,
+    });
+    await transitionJob(
+      db,
+      a.scope,
+      ids.build,
+      upstream,
+      upstream === "failure" ? { exitCode: 1 } : {},
+    );
+    await resolveDependents(db, a.scope, r.id);
+  };
+  await endBuild();
+  return { run: r, ids, endBuild };
+}
+
+test("readiness: the root cause carries down a three-level chain", async () => {
+  for (const [upstream, sha] of [
+    ["infra_error", "6".repeat(40)],
+    ["failure", "7".repeat(40)],
+  ] as const) {
+    const c = await chain(sha, upstream);
+    for (const id of [c.ids.test, c.ids.deploy]) {
+      expect((await getJob(db, a.scope, id))!.state).toBe("skipped");
+      expect((await listAttempts(db, a.scope, id)).at(-1)!.errorClass).toBe(
+        `dependency:${upstream}`,
+      );
+    }
+  }
+});
+
+test("rerun: jobs=failed on a three-level infra chain uses the infra budget, 5 times", async () => {
+  const c = await chain("8".repeat(40), "infra_error");
+  for (let i = 0; i < 5; i++) {
+    const out = await run(operator, "rerun", { run_id: c.run.id, jobs: "failed", reason: `i${i}` });
+    expect(out.reruns.map((x: { job_key: string }) => x.job_key).sort()).toEqual([
+      "build",
+      "deploy",
+      "test",
+    ]);
+    expect(out.reruns.every((x: { reruns_used: number }) => x.reruns_used === 0)).toBe(true);
+    await c.endBuild();
+  }
+  const sixth = await call(operator, "rerun", { run_id: c.run.id, jobs: "failed", reason: "x" });
+  expect(!sixth.ok && sixth.error.message).toMatch(/after infra errors.*infra limit 5/);
 });
 
 test("rerun: cross-tenant denial", async () => {

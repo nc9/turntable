@@ -63,7 +63,17 @@ export const INFRA_KINDS = {
     beforeSteps: true,
     label: "the checkout's tree scan refused the repository",
   },
-  /** Everything else: a deterministic cause. Never retried. */
+  /**
+   * The checkout ran over a size budget (pack, unpacked data, tarball or memory). Deterministic for
+   * that sha and those budgets, so never retried; the reason and the job log name the limit, its
+   * value and the setting that raises it.
+   */
+  fetch_limit: {
+    transient: false,
+    beforeSteps: true,
+    label: "the checkout ran over a size limit",
+  },
+  /** Everything else: a deterministic or unknown cause. Never retried. */
   other: {
     transient: false,
     beforeSteps: false,

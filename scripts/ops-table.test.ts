@@ -138,6 +138,8 @@ const MCP_OFF: Record<string, string> = {
     "granting membership binds a person's identity: never an agent's act (an agent token is refused too)",
   db_backup:
     "instance administrator ops are REST only: it writes a copy of the whole database, never an agent's act",
+  instance_db_copy:
+    "instance administrator ops are REST only: it moves the whole database to another server, never an agent's act",
   rotate_instance_token:
     "instance administrator ops are REST only: instance tokens are never MCP credentials, and minting one must not land in an agent's context",
   bootstrap_approver:

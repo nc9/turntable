@@ -260,6 +260,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "instance_audit_verify",
       "instance_bind_github_login",
       "instance_bind_installation",
+      "instance_db_copy",
       "instance_doctor",
       "instance_drain",
       "instance_drain_status",

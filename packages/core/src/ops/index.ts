@@ -20,6 +20,7 @@ import {
 import { getApprovalPolicyOp, setApprovalPolicyOp } from "./definitions/approval-policy";
 import { dbBackupOp } from "./definitions/db-backup";
 import { logStoreMigrateOp } from "./definitions/log-store-migrate";
+import { instanceDbCopyOp } from "./definitions/instance-db-copy";
 import { approveRunChallengeOp, approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
 import { doctor } from "./definitions/doctor";
@@ -235,6 +236,7 @@ export const registry = createRegistry([
   bootstrapApprover,
   dbBackupOp,
   logStoreMigrateOp,
+  instanceDbCopyOp,
   acceptActionMoveOp,
   setSecretOp,
   rotateSecretOp,

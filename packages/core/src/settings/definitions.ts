@@ -10,7 +10,8 @@ import {
 import { readFileSync } from "node:fs";
 import { DEFAULT_ORG_CPU_LIMIT, HARD_MAX_LIVE } from "@turntable/provider-daytona";
 import { refuseLabelMap } from "../scheduler/sandbox-size";
-import { createSettingsRegistry, defineSetting } from "./define";
+import { FULL_HISTORY_FACTOR } from "../run/git-fetch";
+import { createSettingsRegistry, defineSetting, type SettingDef } from "./define";
 
 /** How many backups `db_backup` keeps when nothing says otherwise. */
 export const DEFAULT_BACKUP_KEEP = 10;
@@ -632,6 +633,110 @@ export const providerDaytonaCpuLimitSetting = defineSetting({
 });
 
 /** The shipped registry. */
+/**
+ * Checkout size budgets (#677): what a checkout of a repository may fetch, unpack and pack. The
+ * instance value is the default for every project (the environment variables that always set it
+ * still lock it), a project may override it up to the instance ceiling, and a full-history
+ * delivery multiplies all three by `FULL_HISTORY_FACTOR` (4). Raising a budget raises what a
+ * hostile repository may make the checkout child use, so every one is instance-administrator only
+ * and never an MCP edit; the guards that are not budgets (per-object, tree, entry, delta chain,
+ * deadline, symlink and name checks) do not change.
+ */
+type BudgetSpec = {
+  name: "pack" | "unpacked" | "tarball";
+  /** Default, ceiling default and top, in MiB. The top is the environment variable's own bound. */
+  def: number;
+  ceiling: number;
+  max: number;
+  what: string;
+  env: string;
+};
+
+const CHECKOUT_BUDGETS: readonly BudgetSpec[] = [
+  {
+    name: "pack",
+    def: 128,
+    ceiling: 1024,
+    max: 4096,
+    what: "the packfile the server sends",
+    env: "TURNTABLE_CHECKOUT_MAX_PACK_MIB",
+  },
+  {
+    name: "unpacked",
+    def: 512,
+    ceiling: 4096,
+    max: 16384,
+    what: "all object data once the pack is unpacked, deltas included, and the files written from it",
+    env: "TURNTABLE_CHECKOUT_MAX_UNPACKED_MIB",
+  },
+  {
+    name: "tarball",
+    def: 256,
+    ceiling: 1024,
+    max: 4096,
+    what: "the gzip tarball handed to the sandbox",
+    env: "TURNTABLE_CHECKOUT_MAX_TARBALL_MIB",
+  },
+];
+
+const mibEnv = (raw: string): unknown => (/^\d+$/.test(raw) ? Number(raw) : raw);
+
+function checkoutBudgetSettings(b: BudgetSpec): SettingDef[] {
+  const inst = `checkout_max_${b.name}_mib`;
+  const ceil = `checkout_ceiling_${b.name}_mib`;
+  const why =
+    "raising it raises what one repository may make the checkout use, so a person does it";
+  return [
+    defineSetting({
+      key: inst,
+      scope: "instance",
+      type: z.int().min(1).max(b.max),
+      default: b.def,
+      role: "instance_admin",
+      instanceAdminOnly: true,
+      mcpEditable: false,
+      mcpReason: why,
+      description: `Most MiB of ${b.what} that a checkout of a shallow tree may take, for every project (1 to ${b.max}). A full-history checkout (\`fetch-depth: 0\`) gets ${FULL_HISTORY_FACTOR} times this. A project overrides it with \`project_${inst}\`, up to \`${ceil}\`. A checkout over it ends \`infra_error\` with kind \`fetch_limit\`. Memory: the checkout child holds unpacked data in memory, so the effective budget is clamped to \`TURNTABLE_CHECKOUT_MAX_MEMORY_MIB\` minus the pack budget and 256 MiB: raise the memory ceiling with it.`,
+      warning:
+        "Raising this lets a hostile repository make the checkout child use more disk and memory.",
+      env: [b.env],
+      envParse: mibEnv,
+      toml: `checkout.max_${b.name}_mib`,
+    }),
+    defineSetting({
+      key: ceil,
+      scope: "instance",
+      type: z.int().min(1).max(b.max),
+      default: Math.min(b.ceiling, b.max),
+      role: "instance_admin",
+      instanceAdminOnly: true,
+      mcpEditable: false,
+      mcpReason: why,
+      description: `The most MiB a project's \`project_${inst}\` may be set to (1 to ${b.max}). A higher value is refused, and a stored one above it is clamped to it. It does not limit the full-history multiplier.`,
+      env: [b.env.replace("_MAX_", "_CEILING_")],
+      envParse: mibEnv,
+      toml: `checkout.ceiling_${b.name}_mib`,
+    }),
+    defineSetting({
+      key: `project_${inst}`,
+      scope: "project",
+      type: z.int().min(0).max(b.max),
+      default: 0,
+      role: "admin",
+      instanceAdminOnly: true,
+      ceiling: ceil,
+      mcpEditable: false,
+      mcpReason: why,
+      description: `Most MiB of ${b.what} that a checkout of this project's shallow tree may take (0 uses \`${inst}\`, else up to \`${ceil}\`). A full-history checkout gets ${FULL_HISTORY_FACTOR} times it. Raise it for one large repository without raising the limit for every project.`,
+      warning:
+        "Raising this lets this project's repository make the checkout child use more disk and memory.",
+      toml: `checkout_max_${b.name}_mib`,
+    }),
+  ];
+}
+
+export const checkoutBudgetSettingList = CHECKOUT_BUDGETS.flatMap(checkoutBudgetSettings);
+
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
   jobLogGrepScanBytesSetting,
@@ -660,4 +765,5 @@ export const settingsRegistry = createSettingsRegistry([
   selfServeOrgLoginsSetting,
   orgRunnerLabelsSetting,
   projectRunnerLabelsSetting,
+  ...checkoutBudgetSettingList,
 ]);

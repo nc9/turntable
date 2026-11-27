@@ -177,7 +177,7 @@ describe("a full-history delivery", () => {
       ]) {
         const err = await deliver(f, server, { fullHistory: true, limits }).catch((e) => e);
         // a named kind: the fetch's own error, or the net client's timeout when the clock runs out first
-        expect(["GitFetchError", "RequestTimeoutError"]).toContain(err?.name);
+        expect(["GitFetchError", "FetchLimitError", "RequestTimeoutError"]).toContain(err?.name);
         expect(String(err.message)).toMatch(
           /too many objects|too large|more than 1 tags|Maximum|exceed|time|too long/i,
         );

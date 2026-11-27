@@ -122,6 +122,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `bootstrap_approver` | none | no |  | write | admin | instance | Enrol an org's first approver from an offline ed25519 public key (instance administrator only). |
 | `db_backup` | none | no | `turntable db backup` | write | admin | instance | Back up the SQLite database into the data dir (instance administrator only). |
 | `log_store_migrate` | none | no |  | write | admin | instance | Copy recent job logs into the external log store (instance administrator only). |
+| `instance_db_copy` | none | no |  | write | admin | instance | Copy the SQLite database into Postgres (instance administrator only). |
 | `accept_action_move` | `POST /api/v1/action-pins/accept-move` | no |  | write | operator | token | Accept a moved action tag: re-pin it to the commit it now points at. |
 | `set_secret` | `POST /api/v1/secrets` | no | `turntable secret set` | write | release_operator | token | Store a scoped secret value (new, or a new version of an existing scope). |
 | `rotate_secret` | `POST /api/v1/secrets/rotate` | no | `turntable secret rotate` | write | release_operator | token | Give an existing secret a new value; keep the old one usable for an overlap window. |

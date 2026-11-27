@@ -14,11 +14,15 @@ import { join } from "node:path";
 import {
   type CheckoutConfig,
   CheckoutAuthError,
+  budgetError,
+  CheckoutLimitError,
+  DEFAULT_CHECKOUT_CONFIG,
+  limitsFor,
   type ChildResult,
   runCheckoutChild,
 } from "./checkout-child";
 import { assertCloneHost } from "./checkout";
-import { clean, DEFAULT_FETCH_LIMITS, GitFetchError } from "./git-fetch";
+import { clean, GitFetchError } from "./git-fetch";
 import { scrubToken } from "./scrub-token";
 import { moduleGitDir, readManifest, type SubmoduleSpec } from "./submodules";
 
@@ -47,6 +51,8 @@ export interface SubmoduleDelivery {
   startedAt: number;
   signal?: AbortSignal | undefined;
   command?: string[] | undefined;
+  /** The tree was fetched as a full history: the shared budget is its multiplied one. */
+  fullHistory?: boolean | undefined;
 }
 
 /**
@@ -54,7 +60,11 @@ export interface SubmoduleDelivery {
  * was spent. Throws with a reason that names the module when one cannot be delivered.
  */
 export async function deliverSubmodules(o: SubmoduleDelivery): Promise<void> {
-  const lim = { ...DEFAULT_FETCH_LIMITS, ...o.config.limits };
+  // The whole budget, as the tree's own child ran under it: times four for a full history, and the
+  // unpacked part clamped to the memory ceiling.
+  const full = o.fullHistory === true;
+  const memoryMb = o.config.memoryMb ?? DEFAULT_CHECKOUT_CONFIG.memoryMb;
+  const lim = limitsFor(o.config.limits ?? {}, full, memoryMb);
   const used = {
     ...(o.main.usage ?? { files: o.main.files, packBytes: 0, inflatedBytes: 0, objects: 0 }),
   };
@@ -79,8 +89,12 @@ export async function deliverSubmodules(o: SubmoduleDelivery): Promise<void> {
     };
     if (left.files <= 0)
       throw new GitFetchError("the repository and its submodules have too many files");
-    if (left.inflatedBytes <= 0 || left.packBytes <= 0)
-      throw new GitFetchError("the repository and its submodules are too large");
+    // The one budget: a size spent up by the repository and its modules is the `fetch_limit` kind,
+    // naming the whole limit (not what was left for this module) and the setting that raises it.
+    if (left.inflatedBytes <= 0)
+      throw budgetError("maxInflatedBytes", o.config.limits ?? {}, full, memoryMb);
+    if (left.packBytes <= 0)
+      throw budgetError("maxPackBytes", o.config.limits ?? {}, full, memoryMb);
     if (left.objects <= 0)
       throw new GitFetchError("the repository and its submodules have too many objects");
     if (left.ms <= 1000) throw new GitFetchError("the checkout took too long");
@@ -139,6 +153,9 @@ export async function deliverSubmodules(o: SubmoduleDelivery): Promise<void> {
         for (const child of readManifest(nested, { maxSubmodules: lim.maxSubmodules }))
           queue.push({ spec: child, chain: [...chain, child.name], depth: depth + 1 });
     } catch (e) {
+      // The module's child ran over what was left of the shared budget: report the whole budget.
+      if (e instanceof CheckoutLimitError && e.limit !== "memory")
+        throw budgetError(e.limit, o.config.limits ?? {}, full, memoryMb);
       if (e instanceof CheckoutAuthError)
         throw new CheckoutAuthError(
           e.status,

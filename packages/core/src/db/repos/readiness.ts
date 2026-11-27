@@ -193,7 +193,10 @@ export async function resolveDependents(
         await updateAttempt(db, scope, live.id, {
           state: to,
           errorClass: culprit
-            ? `${DEPENDENCY_SKIP_PREFIX}${culprit.state}`
+            ? // A dependency-skipped culprit passes its own root cause down the chain.
+              culprit.state === "skipped" && culprit.reason
+              ? culprit.reason
+              : `${DEPENDENCY_SKIP_PREFIX}${culprit.state}`
             : `skipped: ${verdict.reason}`.slice(0, 200),
         });
         await appendLog(
