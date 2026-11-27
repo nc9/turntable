@@ -1,0 +1,60 @@
+---
+title: Operations
+description: Restarting and deploying a Turntable instance while jobs run, and when a drain is still needed.
+---
+
+A restart no longer has to wait for every running job. A running attempt whose job is already executing in its sandbox is handed to the next process, which re-attaches to it and records its real result with the complete log. Only attempts in a phase that cannot be handed off still need a drain.
+
+## Which attempts survive a restart
+
+An attempt is **adoptable** when act already runs in a live sandbox under a detached exec (its exec id is recorded) and it holds no credential that only the old process has. A restart hands it off: the job keeps running in the sandbox and the next process watches it to the end.
+
+These phases are **not adoptable**, and a restart during them cuts the attempt as before:
+
+| Phase | Why |
+| --- | --- |
+| Claimed, waiting for a sandbox | Nothing runs yet, and the create call belongs to the old process. |
+| Creating the sandbox | The provider's create is in flight in the old process. |
+| Setting up: egress canary, checkout upload, act install, action delivery | These are short calls the old process makes into the sandbox. They are not a detached exec. |
+| A job behind the secrets proxy | The proxy's registration of the attempt (vault rules, a held token, OIDC) lives in the old process. |
+| A job holding a GitHub token in its environment (a `protected` or `release` job with no proxy) | The new process cannot rebuild the redaction of the token's encoded forms. |
+| A job holding an artifact credential | The artifact grant lives in the old process's memory. A job gets one unless every `uses:` step is a known-safe remote action (`actions/checkout`, `actions/setup-*`, `actions/cache`, and a few setup actions). A local action, a reusable workflow or any other remote action, such as a Pages upload or a wrapper, could call the artifact service, so those jobs keep the grant and are not adoptable. |
+
+A job with a cache grant is adoptable: after the restart its cache calls fail, which `actions/cache` reports as a miss on restore and a warning on save.
+
+A blocked attempt is never handed off by a drain, but a crash or a drain timeout does not change how it ends: if its exec still runs at the next boot it is re-attached and keeps its real result, exactly as before, with one exception: a job behind the secrets proxy with vault rules still ends `infra_error`, because the new process cannot rebuild the proxy's registration. A `release` or `protected` job holding a token is never killed half-published by that.
+
+A cut attempt is resolved by the next boot exactly as a drain timeout cut is: if its exec still runs, it is re-attached; otherwise it ends `infra_error` (`controller_lost`) and the job is requeued once under a new attempt, with no rerun used. A `protected` or `release` job cut after a step started is not requeued (see [Hosted](/hosted#deploying-without-killing-runs)).
+
+## Deploying without a drain
+
+1. Check `GET /api/v1/instance/drain` (`instance_drain_status`). `running_by_adoption` splits `running_attempts` into `adoptable` and `not_adoptable`.
+2. Stop the old process with `SIGTERM`. It starts a drain (nothing new starts), hands off every adoptable attempt at once, and keeps handing off attempts as they reach that phase. It waits up to `drain_timeout_seconds` only for the rest.
+3. Start the new process. Its boot reconcile re-attaches to every handed-off attempt at once: the old process expired their leases instead of leaving them to lapse.
+
+When `not_adoptable` is 0 the restart waits for nothing. Otherwise it waits for those attempts, which are mostly a few seconds of setup. Keep the platform's stop grace period above `drain_timeout_seconds`.
+
+## When a drain is still needed
+
+Turn the drain on (`instance_drain`) and wait before the deploy when:
+
+- `not_adoptable` stays above 0 because of jobs behind the secrets proxy or with an artifact credential or a job token, and you do not want them cut. Wait for `running_by_adoption.not_adoptable` to be 0, not `running_attempts`.
+- The deploy changes the database in a way the old and new process must not share (a migration with a manual step, `instance_db_copy`). Wait for `running_attempts` 0.
+
+Several worker processes: drain or restart each one. A handed-off attempt is taken by whichever controller reconciles first.
+
+## How a hand-off is safe
+
+- **One owner at a time.** Every attempt has a lease (owner and expiry) that its controller renews. Another controller takes an attempt only when the lease has expired, in one conditional update, so of two controllers that try at once exactly one wins. A controller with a live lease is never displaced. A hand-off is the old owner expiring its own lease after its watcher has stopped.
+- **Fenced writes.** Every log, step and result write checks the lease owner in the same transaction, so a controller that lost the lease cannot write into the attempt any more.
+- **One watcher per process.** A process never runs two watchers for the same attempt.
+
+## How the log resumes with no gap and no duplicate bytes
+
+While it watches an exec, a controller records a checkpoint about once a second: an exec log offset and a stored log length, taken only at a line boundary with nothing held back for redaction, and written after every log write before it. At that point the stored log is exactly the rendering of the exec's output up to that offset.
+
+The controller that re-attaches deletes whatever was stored past the checkpoint, reads the exec's output from the start to rebuild the step list and the verdict without writing anything, and writes only what follows the checkpoint. Its log is byte for byte what one controller watching from the start would have written. An attempt with no checkpoint yet (an older release) is replayed from the start instead, as before.
+
+A live log viewer that had already shown text past the checkpoint sees it again after the re-attach.
+
+The sandbox keeps a bounded amount of exec output (a head and a tail). If a job wrote more than that, the output in between is gone. The re-attach reads the exec from the start, so it rebuilds steps and the verdict from what survives and records a cut marker where output was dropped: a step whose events fell inside the dropped range is missing from the rebuilt list, as it would be for one controller watching the whole run.

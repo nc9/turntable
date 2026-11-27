@@ -601,6 +601,8 @@ export function recordExec(
     sandboxTtlSeconds?: number | undefined;
     /** Epoch ms the provider confirmed the destroy. */
     sandboxDestroyedAt?: number | undefined;
+    /** Why another controller may not re-attach (#761); null: it may. */
+    adoptBlock?: string | null | undefined;
   },
 ): Promise<boolean> {
   return db.run(async (h) => {
@@ -618,6 +620,7 @@ export function recordExec(
         ...(where.sandboxDestroyedAt === undefined
           ? {}
           : { sandboxDestroyedAt: where.sandboxDestroyedAt }),
+        ...(where.adoptBlock === undefined ? {} : { adoptBlock: where.adoptBlock }),
       })
       .where(
         scoped(
@@ -1134,6 +1137,167 @@ export function listUndestroyedSandboxes(db: Db, limit = 2000): Promise<JobAttem
       .orderBy(desc(s.jobAttempts.id))
       .limit(limit),
   );
+}
+
+/**
+ * Records the log checkpoint (#761): the first `logOffset` bytes of the stored log are exactly the
+ * rendering of the exec's output before `execOffset`. Fenced by the lease holder.
+ */
+export function recordLogCheckpoint(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  owner: string,
+  execOffset: number,
+  logOffset: number,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.jobAttempts)
+      .set({ execLogOffset: execOffset, logCheckpoint: logOffset })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, attemptId),
+          eq(s.jobAttempts.state, "running"),
+          eq(s.jobAttempts.leaseOwner, owner),
+        ),
+      )
+      .returning({ id: s.jobAttempts.id });
+    return rows.length > 0;
+  });
+}
+
+/**
+ * Re-attach from a checkpoint (#761): drops the log chunks, cuts and steps an attempt stored at or
+ * past `logOffset` (the previous controller wrote them after its last checkpoint, and the new one
+ * renders that output again) and returns the steps kept. Fenced by the lease: undefined when
+ * `owner` does not hold it. Chunks start where a write started, and a checkpoint is only taken
+ * between writes, so no chunk straddles `logOffset`.
+ */
+export function truncateAttemptOutput(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  owner: string,
+  logOffset: number,
+): Promise<
+  | { stepKey: string; stage: string; index: number; startedAt?: number; logOffset: number }[]
+  | undefined
+> {
+  return db.transaction(async (tx) => {
+    if (!(await holdsLease(tx, scope, attemptId, owner))) return undefined;
+    await tx.orm
+      .delete(s.logChunks)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.logChunks.orgId, projectId: s.logChunks.projectId },
+          and(eq(s.logChunks.attemptId, attemptId), gte(s.logChunks.offset, logOffset)),
+        ),
+      );
+    await tx.orm
+      .delete(s.logCuts)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.logCuts.orgId, projectId: s.logCuts.projectId },
+          and(eq(s.logCuts.attemptId, attemptId), gte(s.logCuts.atOffset, logOffset)),
+        ),
+      );
+    await tx.orm
+      .delete(s.attemptSteps)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.attemptSteps.orgId, projectId: s.attemptSteps.projectId },
+          and(eq(s.attemptSteps.attemptId, attemptId), gte(s.attemptSteps.logOffset, logOffset)),
+        ),
+      );
+    const kept = await tx.orm
+      .select()
+      .from(s.attemptSteps)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.attemptSteps.orgId, projectId: s.attemptSteps.projectId },
+          eq(s.attemptSteps.attemptId, attemptId),
+        ),
+      );
+    return kept.map((r) => ({
+      stepKey: r.stepKey,
+      stage: r.stage,
+      index: r.stepIndex,
+      ...(r.startedAt === null ? {} : { startedAt: r.startedAt }),
+      logOffset: r.logOffset,
+    }));
+  });
+}
+
+/**
+ * Hands a running attempt to the next controller (#761): its lease is expired now, so the next
+ * reconcile (this instance's successor, or another live controller) may take it at once with
+ * `takeExpiredLease`, and it is marked cut by the drain, so a sandbox that is gone by then is
+ * resolved exactly like a drain-timeout cut. Fenced by the lease holder, who must have stopped
+ * every write first. The owner is kept: the reconciler finishes a lost attempt under it.
+ */
+export function handOffAttempt(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  owner: string,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.jobAttempts)
+      .set({ errorClass: DRAIN_CUT, leaseExpiresAt: 0 })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, attemptId),
+          eq(s.jobAttempts.state, "running"),
+          eq(s.jobAttempts.leaseOwner, owner),
+        ),
+      )
+      .returning({ id: s.jobAttempts.id });
+    return rows.length > 0;
+  });
+}
+
+/**
+ * Whether a running attempt can be re-attached by another controller (#761): its exec is recorded
+ * (act is running in a live sandbox) and it holds no credential only this process has. The other
+ * phases (claimed, sandbox being created, setup and checkout upload before act starts) and a job
+ * behind the secrets proxy, with an artifact credential or holding a job token are not. That is
+ * about the drain's hand-off only: when a controller dies, reconcile re-attaches to any attempt
+ * whose exec still runs, blocked or not.
+ */
+export function isAdoptable(a: {
+  sandboxId: string | null;
+  execId: string | null;
+  adoptBlock: string | null;
+}): boolean {
+  return a.sandboxId !== null && a.execId !== null && a.adoptBlock === null;
+}
+
+/** Running attempts instance-wide, split by whether another controller can re-attach (#761). */
+export function countRunningByAdoptability(
+  db: Db,
+): Promise<{ adoptable: number; notAdoptable: number }> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({
+        sandboxId: s.jobAttempts.sandboxId,
+        execId: s.jobAttempts.execId,
+        adoptBlock: s.jobAttempts.adoptBlock,
+      })
+      .from(s.jobAttempts)
+      .where(eq(s.jobAttempts.state, "running"));
+    const adoptable = rows.filter(isAdoptable).length;
+    return { adoptable, notAdoptable: rows.length - adoptable };
+  });
 }
 
 /** Number of attempts currently running, overall or for one org. */

@@ -53,8 +53,18 @@ export type RunEvent =
    * The sandbox dropped `omittedBytes` of output at logical `offset` (its head and tail caps).
    * A record, never text: it is not in any log bytes, so job output cannot forge it.
    */
-  | { kind: "cut"; offset: number; omittedBytes: number }
-  | { kind: "act"; event: ActEvent };
+  | { kind: "cut"; offset: number; omittedBytes: number; replay?: true }
+  /**
+   * `replay`: the event comes from output before `RunOptions.replayBefore`, which the caller
+   * already stored: it rebuilds state (steps, verdict) and is not shown again.
+   */
+  | { kind: "act"; event: ActEvent; replay?: true }
+  /**
+   * A clean point in the exec's output (#761): every byte before `offset` has been parsed and
+   * yielded as events, and no partial line is held. A caller that has stored the rendering of
+   * those events can resume from here with `replayBefore: offset` and lose or repeat nothing.
+   */
+  | { kind: "mark"; offset: number };
 
 export interface RunInput {
   /** Tarball of the repository to run, .git included. */
@@ -103,6 +113,12 @@ export interface RunOptions {
    * restarted controller needs `{sandboxId, execId}` to re-attach with `resumeJob`.
    */
   onExec?: (info: { sandboxId: string; execId: string }) => void | Promise<void>;
+  /**
+   * Re-attach from a checkpoint (#761): output before this exec offset is still read and parsed
+   * (the verdict needs every event) but its events carry `replay`, and the first read stops
+   * exactly at it, so the caller renders only what comes after.
+   */
+  replayBefore?: number;
 }
 
 /** @deprecated The step environment lives in step-env.ts; kept for importers of the old name. */
@@ -480,34 +496,49 @@ export async function* watchExec(
     // Events of stub need jobs (split workflows) are not part of this job.
     const mine = (ev: ActEvent): boolean => !("jobId" in ev && plan?.stubIds.includes(ev.jobId));
     const parser = createActParser();
+    // One decoder per watch: a multi-byte character split across reads stays with its own exec.
+    const decoder = new TextDecoder();
     const events: ActEvent[] = [];
+    const replayBefore = opts.replayBefore ?? 0;
     let offset = 0;
     let status: ExecStatus = { state: "running" };
 
     const drainOnce = async function* (): AsyncGenerator<RunEvent, boolean> {
+      const replay = offset < replayBefore;
+      // While replaying, a read never crosses the checkpoint, so it is a read boundary here too.
+      const maxBytes = replay ? Math.min(chunk, replayBefore - offset) : chunk;
       const r = await withRetry(
-        () => provider.exec.logs(sandboxId, execId, { fromOffset: offset, maxBytes: chunk }),
+        () => provider.exec.logs(sandboxId, execId, { fromOffset: offset, maxBytes }),
         maxErr,
         pollMs,
       );
+      const flag = replay ? ({ replay: true } as const) : {};
       if (r.cut) {
-        yield { kind: "cut", offset, omittedBytes: r.cut.omittedBytes };
+        if (!replay) {
+          yield { kind: "cut", offset, omittedBytes: r.cut.omittedBytes };
+        } else if (r.nextOffset > replayBefore) {
+          // The sandbox dropped output across the checkpoint: only the part after it is news.
+          yield { kind: "cut", offset: replayBefore, omittedBytes: r.nextOffset - replayBefore };
+        } else {
+          yield { kind: "cut", offset, omittedBytes: r.cut.omittedBytes, replay: true };
+        }
         // Whatever line was in flight is cut off: finish it, so the tail starts a fresh line.
         for (const ev of parser.end()) {
           if (!mine(ev)) continue;
           events.push(ev);
-          yield { kind: "act", event: ev };
+          yield { kind: "act", event: ev, ...flag };
         }
       }
       if (r.bytes.length > 0) {
         yield { kind: "log", offset, bytes: r.bytes };
-        for (const ev of parser.push(dec.decode(r.bytes, { stream: true }))) {
+        for (const ev of parser.push(decoder.decode(r.bytes, { stream: true }))) {
           if (!mine(ev)) continue;
           events.push(ev);
-          yield { kind: "act", event: ev };
+          yield { kind: "act", event: ev, ...flag };
         }
       }
       offset = r.nextOffset;
+      if (offset >= replayBefore && !parser.pending) yield { kind: "mark", offset };
       return r.eof;
     };
 

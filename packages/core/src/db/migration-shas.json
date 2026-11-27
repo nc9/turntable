@@ -220,6 +220,10 @@
     {
       "tag": "0055_notifications",
       "sha256": "6d1b065b70c11178168e9cf54283aec1e2841c6a1db0a2d1641977a5723748fd"
+    },
+    {
+      "tag": "0056_attempt_adoption",
+      "sha256": "46c44a907dcc914ba0123fc26dcfddd7f2f3929fdb918dcf9753b88929f57563"
     }
   ],
   "pg": [
@@ -326,6 +330,10 @@
     {
       "tag": "0026_notifications",
       "sha256": "956d3e0f8cd52a0f6dd798300070f711d35ca5eda9ac2de3bddffd5bad492a24"
+    },
+    {
+      "tag": "0027_attempt_adoption",
+      "sha256": "90e611653ae00581bde9c609829d019e13e141dcd13f4ca14216fc1300fdecbf"
     }
   ]
 }

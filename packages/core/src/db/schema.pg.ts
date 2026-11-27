@@ -444,6 +444,20 @@ export const jobAttempts = pgTable(
     /** The provider exec running the attempt, so a restarted controller can probe it. */
     execId: text("exec_id"),
     /**
+     * Why this attempt cannot be re-attached by another controller (#761), written before its exec
+     * starts: `secrets proxy`, `artifact credential` or `job token`, credentials only this process holds. Null:
+     * re-attachable once its exec is recorded.
+     */
+    adoptBlock: text("adopt_block"),
+    /**
+     * The log checkpoint (#761): the stored log holds exactly the rendering of the exec's output up
+     * to `exec_log_offset` in its first `log_checkpoint` bytes. A controller that re-attaches
+     * truncates the stored log there and renders from that exec offset on, so nothing is lost or
+     * written twice. Null: no checkpoint yet (the whole exec log is replayed).
+     */
+    execLogOffset: bigint("exec_log_offset", { mode: "number" }),
+    logCheckpoint: bigint("log_checkpoint", { mode: "number" }),
+    /**
      * Scheduler lease. A worker that claims a queued attempt owns it until `lease_expires_at`
      * and extends it by heartbeat. An expired lease on a running attempt means its worker is
      * gone: the reconciler resolves it.

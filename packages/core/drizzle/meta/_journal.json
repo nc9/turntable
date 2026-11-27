@@ -386,6 +386,13 @@
       "when": 1795632438009,
       "tag": "0055_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "6",
+      "when": 1795745199500,
+      "tag": "0056_attempt_adoption",
+      "breakpoints": true
     }
   ]
 }

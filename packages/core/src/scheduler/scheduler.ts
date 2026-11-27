@@ -9,17 +9,22 @@ import {
   earlierInfraReason,
   CONTROLLER_LOST,
   finishAttempt,
+  getAttempt,
+  handOffAttempt,
   heartbeatAttempt,
   ifLeaseHeld,
+  isAdoptable,
   markDrainCut,
   type Readiness,
   recordExec,
+  recordLogCheckpoint,
   recordPlan,
   recordTrustClass,
   DRAIN_CUT_NOT_RETRIED,
   requeueInfraFailureOnce,
   requeueLostAttemptOnce,
   resetAttemptOutput,
+  truncateAttemptOutput,
   upsertStep,
 } from "../db/repos";
 import { effectiveChecksMode } from "../ops/setting-guard";
@@ -30,6 +35,7 @@ import { resolveSetting, type SettingsRuntime } from "../settings/resolve";
 import { type ErrorDetail, errorDetailOf } from "./error-detail";
 import { type DrainState, processDrain } from "./drain";
 import { workflowReadiness } from "./workflow-readiness";
+import { DETACHED } from "../run/job-exec";
 import type {
   AttemptContext,
   AttemptObserver,
@@ -135,8 +141,16 @@ export class Scheduler {
   };
   readonly #active = new Map<
     string,
-    { controller: AbortController; done: Promise<void>; scope: Claim["scope"] }
+    {
+      controller: AbortController;
+      /** Hand-off (#761): stops the runner without touching the exec, sandbox or token. */
+      detach: AbortController;
+      done: Promise<void>;
+      scope: Claim["scope"];
+    }
   >();
+  /** Attempts being handed off to the next controller (#761): no outcome is recorded for them. */
+  readonly #handingOff = new Set<string>();
   #timer: ReturnType<typeof setTimeout> | undefined;
   #running = false;
   #wake: (() => void) | undefined;
@@ -297,20 +311,73 @@ export class Scheduler {
   }
 
   /**
+   * Hands every running attempt that another controller can re-attach to over to it (#761): act
+   * runs in a live sandbox (its exec is recorded) and the attempt holds no credential only this
+   * process has. For each, the runner stops watching (the exec keeps running, the sandbox stays,
+   * the log ends at its last checkpoint), then the lease is expired and the attempt marked cut by
+   * the drain in one fenced write, so the next reconcile takes it over at once with no wait for
+   * the lease. Attempts in other phases are left running. Returns how many were handed off.
+   */
+  async handoff(): Promise<number> {
+    let n = 0;
+    for (const [id, a] of [...this.#active.entries()]) {
+      if (this.#handingOff.has(id) || this.#cutting.has(id)) continue;
+      try {
+        const row = await getAttempt(this.#o.db, a.scope, id);
+        if (!row || !isAdoptable(row)) continue;
+      } catch (err) {
+        this.#o.log(`could not read ${id} for the hand-off: ${String(err)}`);
+        continue;
+      }
+      this.#handingOff.add(id);
+      a.detach.abort("handoff");
+      await a.done;
+      const ok = await handOffAttempt(this.#o.db, a.scope, id, this.owner).catch((err) => {
+        this.#o.log(`could not hand off ${id}: ${String(err)}`);
+        return false;
+      });
+      // Not handed off (the lease was already gone): the attempt is someone else's now anyway.
+      if (ok) n++;
+    }
+    return n;
+  }
+
+  /**
    * Graceful shutdown (#446): starts a drain (no new attempt starts), waits up to `timeoutMs` for
    * the running ones, then marks those still running as cut by the drain so the next boot's
    * reconcile re-attaches to their execs or, failing that, retries each job once as an infra
    * error. Never aborts them. Returns how many were still running.
+   *
+   * With `handoff` (#761) it does not wait for attempts another controller can re-attach to: they
+   * are handed off at once, and again every `handoffEveryMs` as more reach that phase, so the wait
+   * covers only attempts in phases that cannot be handed off. `handedOff` counts them.
    */
-  async drainAndWait(timeoutMs: number, reason = "shutdown"): Promise<{ remaining: number }> {
+  async drainAndWait(
+    timeoutMs: number,
+    reason = "shutdown",
+    opts: { handoff?: boolean; handoffEveryMs?: number } = {},
+  ): Promise<{ remaining: number; handedOff?: number }> {
     this.#o.drain.set(true, reason, this.#o.now());
+    let handedOff = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
     const timedOut = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => resolve("timeout"), Math.max(0, timeoutMs));
     });
+    const handing = async (): Promise<void> => {
+      while (!stopped && this.#active.size > 0) {
+        handedOff += await this.handoff();
+        if (stopped || this.#active.size === 0) return;
+        await Promise.race([Bun.sleep(opts.handoffEveryMs ?? 1000), timedOut, this.idle()]);
+      }
+    };
     try {
-      await Promise.race([this.idle(), timedOut]);
+      await Promise.race([
+        opts.handoff ? Promise.all([this.idle(), handing()]) : this.idle(),
+        timedOut,
+      ]);
     } finally {
+      stopped = true;
       clearTimeout(timer);
     }
     const left = [...this.#active.entries()];
@@ -323,7 +390,7 @@ export class Scheduler {
     this.#running = false;
     this.#unsubscribe();
     clearTimeout(this.#timer);
-    return { remaining: left.length };
+    return opts.handoff ? { remaining: left.length, handedOff } : { remaining: left.length };
   }
 
   /**
@@ -352,8 +419,12 @@ export class Scheduler {
    * exec: the runner is called with `resume`, so it replays the exec and records the real result.
    * The claim comes from `takeExpiredLease`, so this worker already holds the lease.
    */
-  adopt(claim: Claim, resume: { sandboxId: string; execId: string }): void {
+  adopt(claim: Claim, resume: { sandboxId: string; execId: string }): boolean {
+    // Never twice in one process: an attempt this worker already runs keeps its one runner (its
+    // lease lapsed under a stall and the reconcile retook it for the same owner).
+    if (this.#active.has(claim.attempt.id)) return false;
     this.#launch(claim, resume);
+    return true;
   }
 
   /** Calls the observer without letting it affect the run. */
@@ -370,6 +441,7 @@ export class Scheduler {
   #launch(claim: Claim, resume?: { sandboxId: string; execId: string }): void {
     const { attempt, scope } = claim;
     const controller = new AbortController();
+    const detach = new AbortController();
     const db = this.#o.db;
     const owner = this.owner;
     // The class this attempt runs as, once known: a mid-run infra kind is retried only for PR jobs.
@@ -388,6 +460,14 @@ export class Scheduler {
       },
       reset: async () => {
         await resetAttemptOutput(db, scope, attempt.id, owner, { signal: controller.signal });
+      },
+      truncate: async (logOffset) => {
+        const kept = await truncateAttemptOutput(db, scope, attempt.id, owner, logOffset);
+        if (!kept) throw new Error("lease lost before re-attaching");
+        return kept;
+      },
+      setLogCheckpoint: async (execOffset, logOffset) => {
+        await recordLogCheckpoint(db, scope, attempt.id, owner, execOffset, logOffset);
       },
       // Everything a worker writes is fenced by its lease: after it loses the lease (reconciled,
       // cancelled) its writes are dropped instead of landing in a log someone else now owns.
@@ -432,6 +512,7 @@ export class Scheduler {
             scope,
             provider,
             signal: controller.signal,
+            detach: detach.signal,
             store,
             ...(resume ? { resume } : {}),
           };
@@ -440,6 +521,12 @@ export class Scheduler {
       } catch (err) {
         // An exception the runner did not classify: kind `unknown`, retried once (#670).
         outcome = infra(err instanceof Error ? err.message : String(err), "unknown", err);
+      }
+      // Handed off (#761): the next controller records the outcome. Nothing is finished here.
+      // A runner that reached its verdict before the hand-off landed records it as usual.
+      if (this.#handingOff.delete(attempt.id) && outcome.reason === DETACHED) {
+        clearInterval(beat);
+        return;
       }
       // A transient infra failure waits out the backoff while the lease is still held (the
       // heartbeat runs, a cancel still lands), then retries below. The sandbox is already gone.
@@ -553,7 +640,7 @@ export class Scheduler {
     };
 
     const done = run().finally(() => this.#active.delete(attempt.id));
-    this.#active.set(attempt.id, { controller, done, scope });
+    this.#active.set(attempt.id, { controller, detach, done, scope });
     this.#notify((o) => o.started(claim));
   }
 }
