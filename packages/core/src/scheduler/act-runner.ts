@@ -24,7 +24,9 @@ import {
   workflowSubmodulesJobs,
   workflowHeadCheckouts,
 } from "@turntable/act-runner";
-import type { JobArtifactProvider } from "../artifacts/job";
+import type { JobArtifactProvider, JobArtifacts } from "../artifacts/job";
+import { CONTROLLER_LOST } from "../db/repos/lease";
+import { type AdoptSpec, parseAdoptSpec } from "./adopt-credentials";
 import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
@@ -509,6 +511,10 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     }
     // Values that must never reach the job log: act echoes env and URLs when it is verbose.
     for (const v of secrets) registry.register(v);
+    // An adopted attempt behind the proxy (#787): the proxy URL's password is still in the job's
+    // environment, and this controller's registry has not seen it (the first one registered it
+    // when it created the sandbox).
+    if (ctx.resume && ctx.proxy) registry.register(ctx.proxy.credential.password);
     const planned = ctx.job.planned ? (JSON.parse(ctx.job.planned) as PlannedJob) : undefined;
     const untrusted = untrustedForSize(effectiveClass ?? ctx.attempt.trustClass, ctx.run.local);
     // Tenant label maps never apply to an untrusted run (sizeFor ignores labels for it anyway).
@@ -677,6 +683,94 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     }).catch(() => undefined);
   };
 
+  /**
+   * Re-attaches an attempt whose credentials the old controller held (#787), after rebuilding
+   * each one the stored spec names: the job's GitHub token (re-minted with the permissions it was
+   * first minted with, attached by the proxy, which `withSecretsProxy` registered again), its OIDC
+   * minter and its artifact grant (the same token, derived again). Any one that cannot be rebuilt
+   * ends the attempt as a lost controller, before anything is replayed: a job never runs on
+   * without a credential it had.
+   */
+  const adopted = async (
+    ctx: AttemptContext,
+    plan: JobPlan,
+    spec: AdoptSpec,
+  ): Promise<AttemptOutcome> => {
+    const lost = (what: string): AttemptOutcome => ({
+      state: "infra_error",
+      reason: `${CONTROLLER_LOST} (credential not re-established: ${what})`,
+    });
+    const klass = (ctx.attempt.trustClass ?? undefined) as TrustClass | undefined;
+    const egress = egressForRun(ctx.run.plan, o.egress) === "open" ? "open" : "none";
+    let issued: IssuedJobToken | undefined;
+    let artifacts: JobArtifacts | undefined;
+    const revoke = (): void => void issued?.revoke();
+    ctx.signal.addEventListener("abort", revoke, { once: true });
+    try {
+      if (spec.token) {
+        if (!o.jobTokens || !ctx.proxy) return lost("GitHub token, no proxy or token issuer");
+        try {
+          const readOnly =
+            (await effectiveChecksMode(
+              o.settings ?? ambientSettings(),
+              o.db,
+              ctx.scope.orgId,
+              ctx.scope.projectId,
+            )) !== "live";
+          issued = await o.jobTokens.reissue({
+            installationId: spec.token.installationId,
+            repo: spec.token.repo,
+            permissions: spec.token.permissions,
+            readOnly,
+          });
+        } catch {
+          return lost("GitHub token could not be minted again");
+        }
+        ctx.proxy.setGithubToken(issued.token);
+      }
+      if (spec.oidc) {
+        if (!o.jobOidc || !ctx.proxy || !klass) return lost("OIDC credential, no proxy or issuer");
+        const r = await o.jobOidc.issue({
+          orgId: ctx.scope.orgId,
+          attemptId: ctx.attempt.id,
+          klass,
+          planned: ctx.job.planned,
+        });
+        if ("none" in r) return lost(`OIDC credential, ${r.none}`);
+        ctx.proxy.setOidcMinter(r.credentialFor);
+      }
+      if (spec.artifact) {
+        if (!o.artifacts || !klass) return lost("artifact credential, no artifact service");
+        artifacts = o.artifacts({
+          runId: ctx.run.id,
+          attemptId: ctx.attempt.id,
+          scope: ctx.scope,
+          klass,
+          egress,
+          local: ctx.run.local === true,
+          proxyRoute: ctx.proxy?.artifactUpload === true && egress !== "open",
+          adopt: spec.artifact,
+        });
+        if (!artifacts) return lost("artifact credential");
+      }
+      return await run(
+        ctx,
+        plan,
+        undefined,
+        issued ? PROXIED_TOKEN_PLACEHOLDER : undefined,
+        artifacts ? [artifacts.token] : [],
+        undefined,
+        klass,
+      );
+    } finally {
+      artifacts?.release();
+      ctx.signal.removeEventListener("abort", revoke);
+      // The proxy attached it, the job never held it: revoked however this ends, a hand-off
+      // included (the next controller mints its own).
+      await issued?.revoke();
+    }
+  };
+
   const attemptRunner: AttemptRunner = async (ctx) => {
     // A job Turntable cannot run (macOS, Windows, arm without a capable provider, docker,
     // services, ...) fails with its reason. It is never `skipped`: branch protection counts a
@@ -693,7 +787,11 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     }
     // Re-attach with the plan stored when the attempt started: no repo fetch, no network.
     if (ctx.resume && ctx.attempt.plan) {
-      return run(ctx, JSON.parse(ctx.attempt.plan) as JobPlan, undefined);
+      const plan = JSON.parse(ctx.attempt.plan) as JobPlan;
+      const spec = parseAdoptSpec(ctx.attempt.adoptSpec);
+      // An older attempt (no spec recorded) re-attaches as before.
+      if (!spec) return run(ctx, plan, undefined);
+      return adopted(ctx, plan, spec);
     }
 
     const { run: dbRun, job } = ctx;
@@ -1150,21 +1248,46 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               proxyRoute: artifactsViaProxy,
             })
           : undefined;
-      // Whether another controller may re-attach to this job (#761), recorded before its exec
-      // starts. A job behind the secrets proxy or holding an artifact credential depends on state
-      // only this process has (the proxy's attempt registration, the in-memory grant): it is not.
-      // The cache grant is in memory too, but a job that loses it only loses its cache. A job
-      // holding a live GitHub token (no proxy) is not either: the adopter has no token to build
-      // its redaction registry from, so the token's base64 and URL-encoded forms would be stored.
+      // Whether another controller may re-attach to this job (#761, #787), recorded before its
+      // exec starts, with what it needs to rebuild the job's credentials (no secret in it):
+      // - behind the proxy, the proxy's spec (its credential and CA are derived from the master
+      //   key, so the next controller registers the same ones), plus the GitHub token's
+      //   permissions (it is minted again) and whether it had an OIDC minter;
+      // - an artifact grant, its spec (derived the same way).
+      // Not adoptable: a release-class job (its release-lane credential is not ours to rebuild);
+      // a job holding a GitHub token in its own environment (no proxy: the adopter could not
+      // rebuild its redaction set); a proxy or artifact service with no master key to derive from.
+      // The cache grant is in memory too, but a job that loses it only loses its cache.
+      const proxied = useProxy && access ? access : undefined;
+      const adoptBlock =
+        jobKlass === "release"
+          ? "release lane"
+          : issued && !proxied
+            ? "job token"
+            : proxied && !proxied.adopt
+              ? "secrets proxy"
+              : jobArtifacts && !jobArtifacts.adopt
+                ? "artifact credential"
+                : null;
+      const adoptSpec: AdoptSpec = {
+        v: 1,
+        ...(proxied?.adopt ? { proxy: proxied.adopt } : {}),
+        ...(issued && proxied && repo?.installationId
+          ? {
+              token: {
+                installationId: repo.installationId,
+                owner: repo.owner,
+                repo: repo.repo,
+                permissions: { ...issued.permissions },
+              },
+            }
+          : {}),
+        ...(oidcVars && proxied ? { oidc: true as const } : {}),
+        ...(jobArtifacts?.adopt ? { artifact: jobArtifacts.adopt } : {}),
+      };
       await ctx.store.setExec({
-        adoptBlock:
-          useProxy && access
-            ? "secrets proxy"
-            : jobArtifacts
-              ? "artifact credential"
-              : issued
-                ? "job token"
-                : null,
+        adoptBlock,
+        adoptSpec: adoptBlock === null ? JSON.stringify(adoptSpec) : null,
       });
       try {
         return await run(
@@ -1190,8 +1313,10 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         jobCache?.release();
         jobArtifacts?.release();
         ctx.signal.removeEventListener("abort", revoke);
-        // Handed off (#761): the job runs on under the next controller and keeps its token.
-        if (!ctx.detach?.aborted) await issued?.revoke();
+        // Revoked however it ends. A job handed off (#761) was behind the proxy (one holding its
+        // token itself is not adoptable): it never held this token, and the next controller mints
+        // its own with the same permissions (#787).
+        await issued?.revoke();
       }
     } finally {
       checkout.dispose?.();

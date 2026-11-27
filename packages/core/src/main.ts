@@ -72,6 +72,7 @@ import { defaultSettleMs, WebhookService } from "./webhooks/service";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { JobOidc } from "./oidc/job-delivery";
 import { artifactTargetOf, githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
+import { attemptSeeds, type AttemptSeeds } from "./scheduler/adopt-credentials";
 import { JobTokens, publicRepoCheck } from "./github/job-token";
 import { ArtifactGrants } from "./artifacts/grants";
 import { jobArtifactProvider } from "./artifacts/job";
@@ -274,6 +275,11 @@ async function startBackground(
     cache?: CacheService;
     artifacts?: ArtifactService;
     jobOidc?: JobOidc;
+    /**
+     * Per-attempt seeds from the master key (#787): proxy and artifact credentials are derived
+     * from them, so the next controller can take over a running attempt that holds them.
+     */
+    seeds?: AttemptSeeds;
     /** The supervised lane's channel client (no channel files: its keys are made at boot). */
     laneChannel?: ChannelClient;
   } = {},
@@ -382,6 +388,7 @@ async function startBackground(
       secretsProxy = await SecretsProxy.start({
         db,
         vault: extras.vault,
+        ...(extras.seeds ? { seeds: extras.seeds } : {}),
         ...(port ? { port: Number(port) } : {}),
         ...(process.env.TURNTABLE_PROXY_BIND?.trim()
           ? { bindHost: process.env.TURNTABLE_PROXY_BIND.trim() }
@@ -498,7 +505,14 @@ async function startBackground(
                 ...(jobTokens ? { jobTokens } : {}),
                 ...(extras.jobOidc ? { jobOidc: extras.jobOidc } : {}),
                 ...(extras.cache ? { cache: jobCacheProvider(db, extras.cache) } : {}),
-                ...(extras.artifacts ? { artifacts: jobArtifactProvider(extras.artifacts) } : {}),
+                ...(extras.artifacts
+                  ? {
+                      artifacts: jobArtifactProvider(
+                        extras.artifacts,
+                        extras.seeds ? { seeds: extras.seeds } : {},
+                      ),
+                    }
+                  : {}),
                 ...(v.image ? { image: v.image } : {}),
                 ...(sandboxSizes ? { sizes: sandboxSizes } : {}),
               }),
@@ -1358,6 +1372,7 @@ async function serve(args: string[]): Promise<void> {
       ...(cache ? { cache } : {}),
       ...(artifacts ? { artifacts } : {}),
       ...(jobOidc ? { jobOidc } : {}),
+      ...(masterKeys ? { seeds: attemptSeeds(masterKeys.key) } : {}),
       ...(preparedLane ? { laneChannel: preparedLane.channel } : {}),
     },
   );

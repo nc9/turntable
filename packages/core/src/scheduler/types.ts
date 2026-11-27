@@ -36,6 +36,8 @@ export interface AttemptStore {
     sandboxDestroyedAt?: number;
     /** Why another controller may not re-attach (#761); null: it may. */
     adoptBlock?: string | null;
+    /** What another controller needs to rebuild the attempt's credentials (#787); never a secret. */
+    adoptSpec?: string | null;
   }): Promise<void>;
   /** Stores the resolved job plan (JSON), so a restarted controller can re-attach without the repo. */
   setPlan(planJson: string): Promise<void>;

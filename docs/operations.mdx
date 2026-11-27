@@ -16,13 +16,22 @@ These phases are **not adoptable**, and a restart during them cuts the attempt a
 | Claimed, waiting for a sandbox | Nothing runs yet, and the create call belongs to the old process. |
 | Creating the sandbox | The provider's create is in flight in the old process. |
 | Setting up: egress canary, checkout upload, act install, action delivery | These are short calls the old process makes into the sandbox. They are not a detached exec. |
-| A job behind the secrets proxy | The proxy's registration of the attempt (vault rules, a held token, OIDC) lives in the old process. |
-| A job holding a GitHub token in its environment (a `protected` or `release` job with no proxy) | The new process cannot rebuild the redaction of the token's encoded forms. |
-| A job holding an artifact credential | The artifact grant lives in the old process's memory. A job gets one unless every `uses:` step is a known-safe remote action (`actions/checkout`, `actions/setup-*`, `actions/cache`, and a few setup actions). A local action, a reusable workflow or any other remote action, such as a Pages upload or a wrapper, could call the artifact service, so those jobs keep the grant and are not adoptable. |
+| A `release` job | Its release-lane credential belongs to the release lane, not to the controller, and is never rebuilt. Release-lane jobs stay not adoptable on purpose. |
+| A job holding a GitHub token in its environment (a `protected` job with no secrets proxy) | The new process cannot rebuild the redaction of the token's encoded forms. |
+| A job behind the secrets proxy, or holding an artifact credential, on a controller with no master key | Its credentials are random and live in the old process only. |
+
+A job behind the secrets proxy (vault rules, its GitHub token, OIDC) or holding an artifact credential is **adoptable** when the controller has a master key. The next process rebuilds each credential in memory and never reads one from storage:
+
+- **Secrets proxy.** The proxy URL's password and the per-attempt CA the sandbox trusts are derived from the master key (its `adopt` domain), the org id and the attempt id. The next process registers the same credential with the rules it was first registered with, so the job's later secret-using steps keep working. Secret values still come from the vault per request.
+- **Artifact credential.** The token the job holds is derived the same way and granted again for the rest of its lifetime.
+- **GitHub token (behind the proxy).** The job never held it. The next process mints a new one with the permissions recorded when the first was minted, never wider and lowered to read if the project is no longer live. The old one is revoked when the old process hands the attempt off. After a crash it expires on its own.
+- **OIDC.** The proxy mints the credential per request from the master key, as before.
+
+The attempt stores only what is needed to check this (`adopt_spec`): times, the token's permissions, a hash of the proxy rules, the proxy endpoint and a check value for each derived credential. It holds no secret. If anything differs at adoption (another master key, other proxy rules, another proxy endpoint, an expired credential, a token that cannot be minted), the attempt ends `infra_error` with `controller_lost (credential not re-established: ...)`. It never runs on without its credential. Do not rotate the master key in the same restart as a deploy that hands attempts off.
 
 A job with a cache grant is adoptable: after the restart its cache calls fail, which `actions/cache` reports as a miss on restore and a warning on save.
 
-A blocked attempt is never handed off by a drain, but a crash or a drain timeout does not change how it ends: if its exec still runs at the next boot it is re-attached and keeps its real result, exactly as before, with one exception: a job behind the secrets proxy with vault rules still ends `infra_error`, because the new process cannot rebuild the proxy's registration. A `release` or `protected` job holding a token is never killed half-published by that.
+A blocked attempt is never handed off by a drain, but a crash or a drain timeout does not change how it ends: if its exec still runs at the next boot it is re-attached and keeps its real result, exactly as before, with one exception: a job behind the secrets proxy with vault rules and no stored spec still ends `infra_error`, because the new process cannot rebuild the proxy's registration. A `protected` job holding a token is never killed half-published by that.
 
 A cut attempt is resolved by the next boot exactly as a drain timeout cut is: if its exec still runs, it is re-attached; otherwise it ends `infra_error` (`controller_lost`) and the job is requeued once under a new attempt, with no rerun used. A `protected` or `release` job cut after a step started is not requeued (see [Hosted](/hosted#deploying-without-killing-runs)).
 
@@ -38,7 +47,7 @@ When `not_adoptable` is 0 the restart waits for nothing. Otherwise it waits for 
 
 Turn the drain on (`instance_drain`) and wait before the deploy when:
 
-- `not_adoptable` stays above 0 because of jobs behind the secrets proxy or with an artifact credential or a job token, and you do not want them cut. Wait for `running_by_adoption.not_adoptable` to be 0, not `running_attempts`.
+- `not_adoptable` stays above 0 because of `release` jobs, jobs holding a GitHub token in their environment, or a controller with no master key, and you do not want them cut. Wait for `running_by_adoption.not_adoptable` to be 0, not `running_attempts`.
 - The deploy changes the database in a way the old and new process must not share (a migration with a manual step, `instance_db_copy`). Wait for `running_attempts` 0.
 
 Several worker processes: drain or restart each one. A handed-off attempt is taken by whichever controller reconciles first.

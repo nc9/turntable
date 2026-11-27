@@ -240,6 +240,42 @@ export class JobTokens {
     return this.#mint(r, capped, declared.notes, needs, lowered);
   }
 
+  /**
+   * A new token for an attempt another controller took over (#787), with the permissions the
+   * first one was minted with and never wider: the job's workflow was read and capped then. With
+   * `readOnly` (the project is no longer live) every write is lowered to read. The job never held
+   * the first token (the proxy attached it), so nothing it has changes.
+   */
+  async reissue(r: {
+    installationId: string;
+    repo: string;
+    permissions: Readonly<Record<string, string>>;
+    readOnly?: boolean;
+  }): Promise<IssuedJobToken> {
+    const permissions: Record<string, "read" | "write"> = {};
+    for (const [k, v] of Object.entries(r.permissions)) {
+      if (v !== "read" && v !== "write") throw new Error(`unexpected permission ${k}: ${v}`);
+      permissions[k] = r.readOnly === true ? "read" : v;
+    }
+    const minted = await this.#auth.mintFresh(r.installationId, {
+      repositories: [r.repo],
+      permissions,
+    });
+    let revoked = false;
+    return {
+      token: minted.token,
+      expiresAt: minted.expiresAt,
+      permissions,
+      notes: [],
+      needs: [],
+      revoke: async () => {
+        if (revoked) return;
+        revoked = true;
+        await this.#auth.revoke(minted.token);
+      },
+    };
+  }
+
   async #mint(
     r: IssueRequest,
     capped: CappedPermissions,

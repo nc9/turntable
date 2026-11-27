@@ -35,17 +35,37 @@ export class AttemptRegistry {
     this.#now = o.now ?? Date.now;
   }
 
-  /** Registers an attempt and returns what the job is given. The token is never shown again. */
-  register(spec: AttemptSpec): AttemptCredential {
+  /**
+   * Registers an attempt and returns what the job is given. The token is never shown again.
+   *
+   * `derive` (#787): the token and the CA key come from `seed` (a per-attempt key the caller
+   * derives from its master key, never stored) instead of randomness, and the lifetime is counted
+   * from `issuedAt`. Registering again with the same seed and time, in another process, gives a
+   * credential that the sandbox's proxy URL and trusted CA still match: that is how a controller
+   * takes over an attempt that is already running behind the proxy.
+   */
+  register(spec: AttemptSpec, derive?: { seed: Buffer; issuedAt: number }): AttemptCredential {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(spec.attemptId)) throw new Error("attempt id must be plain");
     if (this.#attempts.has(spec.attemptId)) throw new Error("attempt already registered");
     if (!(spec.ttlMs > 0)) throw new Error("ttl must be positive");
-    const now = this.#now();
-    const token = crypto.randomBytes(32).toString("base64url");
+    if (derive && derive.seed.length < 32) throw new Error("seed too short");
+    const now = derive ? derive.issuedAt : this.#now();
+    if (now + spec.ttlMs <= this.#now()) throw new Error("credential already expired");
+    const token = derive
+      ? crypto
+          .createHmac("sha256", derive.seed)
+          .update("turntable proxy credential v1")
+          .digest("base64url")
+      : crypto.randomBytes(32).toString("base64url");
     const attempt: Attempt = {
       spec,
       rules: compileRules(spec.rules),
-      ca: new JobCa({ label: spec.attemptId, now, ttlMs: spec.ttlMs }),
+      ca: new JobCa({
+        label: spec.attemptId,
+        now,
+        ttlMs: spec.ttlMs,
+        ...(derive ? { seed: derive.seed } : {}),
+      }),
       expiresAt: now + spec.ttlMs,
       revoked: false,
       tokenHash: sha(token),

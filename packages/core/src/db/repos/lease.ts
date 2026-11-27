@@ -603,6 +603,8 @@ export function recordExec(
     sandboxDestroyedAt?: number | undefined;
     /** Why another controller may not re-attach (#761); null: it may. */
     adoptBlock?: string | null | undefined;
+    /** What another controller needs to rebuild the attempt's credentials (#787); never a secret. */
+    adoptSpec?: string | null | undefined;
   },
 ): Promise<boolean> {
   return db.run(async (h) => {
@@ -621,6 +623,7 @@ export function recordExec(
           ? {}
           : { sandboxDestroyedAt: where.sandboxDestroyedAt }),
         ...(where.adoptBlock === undefined ? {} : { adoptBlock: where.adoptBlock }),
+        ...(where.adoptSpec === undefined ? {} : { adoptSpec: where.adoptSpec }),
       })
       .where(
         scoped(
