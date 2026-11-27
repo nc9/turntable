@@ -127,7 +127,7 @@ An instance operation takes the instance administrator and no one else: an org t
 
 ## Degraded network
 
-A host can lose outbound network for minutes with the process alive. Every 15 s a probe resolves and sends a `GET /rate_limit` request to the forge API (and the sandbox provider's API for a remote provider). The probe fails when every target failed. Two failures in a row mean `degraded`; two successes mean healthy again. The state lives in the server process (a restart boots `unknown` until the first probe), each change is logged and audited, and `doctor` has an `egress` check, the admin pages show a banner, and `network_status` (MCP) and `instance_network_status` (REST) return it with the recent windows.
+A host can lose outbound network for minutes with the process alive. The probe is on by default for the daytona provider and off for docker and local hosts, which may have restricted egress by design; `TURNTABLE_NETWORK_PROBE` (`auto`, `on`, `off`) changes that. Every 15 s it resolves and sends a `GET /rate_limit` request to the configured forge API base (`poll.apiBaseUrl`, the host ingest uses) (and the sandbox provider's API for a remote provider). The probe fails when every target failed. Two failures in a row mean `degraded`; two successes mean healthy again. The state lives in the server process (a restart boots `unknown` until the first probe), each change is logged and audited, and `doctor` has an `egress` check, the admin pages show a banner, and `network_status` (MCP) and `instance_network_status` (REST) return it with the recent windows.
 
 While degraded:
 
@@ -135,5 +135,7 @@ While degraded:
 - An attempt that failed before its sandbox existed (a create failure, an unclassified error before the sandbox was recorded, or a controller lost with no sandbox) is requeued, not finished. It does not use the job's one automatic retry, and its check ends with the real result instead of `infra_error`. A job gets at most ten such requeues.
 - An attempt that had a sandbox is never requeued this way, because it may have had side effects. It keeps the existing rule: one retry for a pull request job, none for a protected or release job.
 - Check posts wait for recovery (up to 30 minutes each), then go out.
+
+The probe never holds claims for good. Every step is bounded: a lookup or request that does not settle in time counts as a failure for that target. A degraded window also has a maximum length, `TURNTABLE_NETWORK_MAX_DEGRADED_SECONDS` (default 900). Past it claims resume with a logged warning and `doctor` `egress` fails, until the probe passes twice.
 
 The job log of a requeued attempt starts with one line for each degraded window it waited through.

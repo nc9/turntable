@@ -623,6 +623,20 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     description:
       "Comma-separated host names (1 to 5) the egress probe resolves and sends one HEAD. Host names only; the probe never sends a credential. `api.github.com` is refused here (its anonymous requests share the poller's REST budget); it is always probed by DNS lookup only.",
   },
+  {
+    name: "TURNTABLE_NETWORK_PROBE",
+    area: "Worker and provider",
+    default: "auto",
+    description:
+      "The degraded-network probe (`auto`, `on` or `off`). Every 15 s a worker resolves and GETs `<poll.apiBaseUrl>/rate_limit` (and calls the provider's API for a remote provider); two failures in a row hold back new claims. `auto` turns it on for the daytona provider only: a docker or local host may have restricted egress by design and would hold itself for nothing. See [Degraded network](/instance-admin#degraded-network).",
+  },
+  {
+    name: "TURNTABLE_NETWORK_MAX_DEGRADED_SECONDS",
+    area: "Worker and provider",
+    default: "900",
+    description:
+      "The longest one degraded window may hold claims (60 to 86400 seconds). Past it claims resume with a logged warning and a failing doctor `egress` check, so the probe itself can never hold the queue for good.",
+  },
   // ---- the checkout child (control plane fetches a run's commit without git) ----
   {
     name: "TURNTABLE_CHECKOUT_TIMEOUT_SECONDS",

@@ -913,6 +913,14 @@ export function checkEgress(net: NetworkHealth = processNetwork): DoctorCheck {
     n === 0
       ? ""
       : `; ${n} degraded window${n === 1 ? "" : "s"} since boot, the last from ${new Date(last?.start ?? 0).toISOString()}${last?.end ? ` to ${new Date(last.end).toISOString()}` : " (still open)"}`;
+  if (snap.gave_up) {
+    return fail(
+      "egress",
+      "network",
+      `outbound network probe has failed past its maximum degraded time: claims resumed anyway${recent}`,
+      "Check the host's outbound connectivity and DNS, and the probe's targets (the forge API base and the provider). Set TURNTABLE_NETWORK_PROBE=off to turn the probe off, or raise TURNTABLE_NETWORK_MAX_DEGRADED_SECONDS.",
+    );
+  }
   if (snap.state === "degraded") {
     return warn(
       "egress",

@@ -38,6 +38,8 @@ export type NetworkSnapshot = {
   consecutive_failures: number;
   last_probe_at: number | null;
   last_probe: ProbeResult | null;
+  /** True when the open degraded window passed its maximum and claims resumed regardless. */
+  gave_up: boolean;
   /** The most recent degraded windows, oldest first, including the open one. */
   windows: NetworkWindow[];
 };
@@ -53,11 +55,22 @@ export type NetworkHealthOptions = {
   intervalMs?: number;
   /** Degraded windows kept. Default 20. */
   maxWindows?: number;
+  /**
+   * Longest a degraded window may hold claims (ms). Past it claims resume, with `gave_up` set,
+   * whatever the probe says: the probe itself can never hold the queue for good. Default 15 min.
+   */
+  maxDegradedMs?: number;
+  /** Whole-probe deadline (ms). Default 20 s. */
+  probeDeadlineMs?: number;
+  /** Told once when a window passes `maxDegradedMs`. A throw is swallowed. */
+  onGiveUp?: (snapshot: NetworkSnapshot) => void;
   /** Told on every state change. A throw is swallowed. */
   onChange?: (state: "healthy" | "degraded", snapshot: NetworkSnapshot) => void;
 };
 
 export const PROBE_INTERVAL_MS = 15_000;
+export const PROBE_DEADLINE_MS = 20_000;
+export const MAX_DEGRADED_MS = 15 * 60_000;
 
 export class NetworkHealth {
   #probe: NetworkProbe | undefined;
@@ -66,6 +79,10 @@ export class NetworkHealth {
   readonly #successes: number;
   readonly #intervalMs: number;
   readonly #maxWindows: number;
+  #maxDegradedMs: number;
+  readonly #probeDeadlineMs: number;
+  #onGiveUp: NetworkHealthOptions["onGiveUp"];
+  #gaveUp = false;
   #onChange: NetworkHealthOptions["onChange"];
   #degraded = false;
   #since: number | null = null;
@@ -85,17 +102,48 @@ export class NetworkHealth {
     this.#intervalMs = o.intervalMs ?? PROBE_INTERVAL_MS;
     this.#maxWindows = o.maxWindows ?? 20;
     this.#onChange = o.onChange;
+    this.#maxDegradedMs = o.maxDegradedMs ?? MAX_DEGRADED_MS;
+    this.#probeDeadlineMs = o.probeDeadlineMs ?? PROBE_DEADLINE_MS;
+    this.#onGiveUp = o.onGiveUp;
   }
 
   /** Wires the probe and the state-change hook (boot). Without a probe the state stays healthy. */
-  configure(o: Pick<NetworkHealthOptions, "probe" | "now" | "onChange">): void {
+  configure(
+    o: Pick<NetworkHealthOptions, "probe" | "now" | "onChange" | "onGiveUp"> & {
+      maxDegradedMs?: number;
+    },
+  ): void {
     if (o.probe) this.#probe = o.probe;
+    if (o.onGiveUp) this.#onGiveUp = o.onGiveUp;
+    if (o.maxDegradedMs !== undefined) this.#maxDegradedMs = o.maxDegradedMs;
     if (o.now) this.#now = o.now;
     if (o.onChange) this.#onChange = o.onChange;
   }
 
+  /**
+   * True while claims are held back. Never longer than `maxDegradedMs` after the window opened:
+   * past that the probe's verdict is ignored for claims (doctor fails, a warning is logged).
+   */
   get degraded(): boolean {
-    return this.#degraded;
+    if (!this.#degraded) return false;
+    if (this.#gaveUp) return false;
+    if (
+      this.#maxDegradedMs > 0 &&
+      this.#since !== null &&
+      this.#now() - this.#since >= this.#maxDegradedMs
+    ) {
+      this.#gaveUp = true;
+      const waiting = this.#waiters;
+      this.#waiters = [];
+      for (const w of waiting) w();
+      try {
+        this.#onGiveUp?.(this.snapshot());
+      } catch {
+        // A hook must not break the claim loop.
+      }
+      return false;
+    }
+    return true;
   }
 
   /** True when the last probe failed but the state is not degraded yet. */
@@ -112,12 +160,33 @@ export class NetworkHealth {
     return this.#running;
   }
 
+  /** Whole-probe deadline: a probe that never settles counts as failed and frees the slot. */
+  #deadlineMs(): number {
+    return this.#probeDeadlineMs;
+  }
+
   async #run(): Promise<void> {
     let result: ProbeResult;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      result = await (this.#probe as NetworkProbe)();
+      result = await Promise.race([
+        (this.#probe as NetworkProbe)(),
+        new Promise<ProbeResult>((resolve) => {
+          timer = setTimeout(
+            () =>
+              resolve({
+                ok: false,
+                targets: [{ target: "probe", ok: false, error: "timeout" }],
+              }),
+            this.#deadlineMs(),
+          );
+          (timer as { unref?: () => void }).unref?.();
+        }),
+      ]);
     } catch {
       result = { ok: false, targets: [{ target: "probe", ok: false, error: "probe_threw" }] };
+    } finally {
+      clearTimeout(timer);
     }
     this.record(result);
   }
@@ -140,6 +209,7 @@ export class NetworkHealth {
   #set(degraded: boolean, at: number): void {
     this.#degraded = degraded;
     this.#since = at;
+    this.#gaveUp = false;
     if (degraded) {
       this.#windows.push({ start: at, end: null });
       if (this.#windows.length > this.#maxWindows) this.#windows.shift();
@@ -176,9 +246,14 @@ export class NetworkHealth {
    * waited that long goes on to its own retries).
    */
   waitHealthy(maxMs: number): Promise<void> {
-    if (!this.#degraded) return Promise.resolve();
+    if (!this.degraded) return Promise.resolve();
+    // Never past the point the window gives up: claims and posts resume together.
+    const left =
+      this.#maxDegradedMs > 0 && this.#since !== null
+        ? Math.max(0, this.#since + this.#maxDegradedMs - this.#now())
+        : maxMs;
     return new Promise<void>((resolve) => {
-      const t = setTimeout(done, maxMs);
+      const t = setTimeout(done, Math.min(maxMs, left));
       (t as { unref?: () => void }).unref?.();
       const self = this;
       function done(): void {
@@ -201,7 +276,9 @@ export class NetworkHealth {
   }
 
   snapshot(): NetworkSnapshot {
+    void this.degraded; // applies the give-up deadline
     return {
+      gave_up: this.#gaveUp,
       state: this.#degraded ? "degraded" : this.#last ? "healthy" : "unknown",
       since: this.#since,
       consecutive_failures: this.#fails,
@@ -215,6 +292,7 @@ export class NetworkHealth {
   reset(): void {
     this.stop();
     this.#degraded = false;
+    this.#gaveUp = false;
     this.#since = null;
     this.#fails = 0;
     this.#oks = 0;

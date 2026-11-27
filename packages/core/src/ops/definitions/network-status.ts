@@ -58,8 +58,8 @@ export const instanceNetworkStatusOp = defineOp({
   description:
     DESCRIPTION +
     "For the instance administrator it adds the consecutive failure count, the last probe time " +
-    "and, per probe target (a fixed label, never a URL), the DNS and HEAD timings and the error " +
-    "code. The read is audited in the system chain. Only the instance administrator can call " +
+    "and, per probe target (a fixed label, never a URL), the DNS and GET timings and the error " +
+    "code. Reads are not audited (the admin banner polls it). Only the instance administrator can call " +
     "it. Read-only. Not an MCP tool.",
   input: z.object({}),
   output: baseOutput.extend({

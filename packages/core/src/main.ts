@@ -57,7 +57,12 @@ import { RETIRE_FILE_ENV, retireMasterKeyFile } from "./secrets/retire-key-file"
 import { autoInitMasterKey, autoInitRequested } from "./secrets/autoinit";
 import { appendAudit } from "./db/repos";
 import { backfillApprovalDefaultStrict } from "./db/repos/approval-default";
-import { egressProbe as networkProbe, type ProbeCheck, processNetwork } from "./network";
+import {
+  egressProbe as networkProbe,
+  networkProbeConfig,
+  type ProbeCheck,
+  processNetwork,
+} from "./network";
 import { systemOrgId } from "./audit/failures";
 import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
@@ -284,11 +289,25 @@ async function startBackground(
   const pollConfig = resolvePollConfig(v.poll);
   // Egress health (#698): a probe every 15 s of the forge API and, with a remote provider, its API.
   const probeChecks: ProbeCheck[] = [];
+  const netCfg = networkProbeConfig(
+    process.env,
+    v.provider ?? "docker",
+    pollConfig?.apiBaseUrl ?? "https://api.github.com",
+  );
   processNetwork.configure({
-    probe: networkProbe({
-      targets: [{ label: "forge", url: "https://api.github.com/rate_limit" }],
-      checks: () => probeChecks,
-    }),
+    ...(netCfg.enabled
+      ? {
+          probe: networkProbe({
+            targets: [{ label: "forge", url: netCfg.forgeUrl }],
+            checks: () => probeChecks,
+          }),
+        }
+      : {}),
+    maxDegradedMs: netCfg.maxDegradedMs,
+    onGiveUp: () =>
+      log(
+        `network still degraded after ${Math.round(netCfg.maxDegradedMs / 60_000)} min: claims resume anyway; check the probe's targets (doctor egress)`,
+      ),
     onChange: (state, snap) => {
       log(
         `network ${state}${state === "degraded" ? ": no new attempt starts until it recovers" : ""}`,
@@ -333,7 +352,7 @@ async function startBackground(
     if (providerName === "daytona") {
       probeChecks.push({ label: "provider", run: () => provider.healthcheck() });
     }
-    processNetwork.start();
+    if (netCfg.enabled) processNetwork.start();
     // Fail at startup, with the provider named, instead of at the first job.
     try {
       await provider.healthcheck();

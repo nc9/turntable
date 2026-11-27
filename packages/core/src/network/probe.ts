@@ -21,12 +21,30 @@ export type EgressProbeOptions = {
   lookup?: (host: string) => Promise<unknown>;
 };
 
-const codeOf = (err: unknown): string => {
-  const e = err as { code?: unknown; name?: unknown } | null;
-  if (typeof e?.code === "string" && /^[A-Z0-9_]{2,40}$/.test(e.code)) return e.code;
-  if (e?.name === "TimeoutError" || e?.name === "AbortError") return "timeout";
-  return "error";
-};
+/** The error code of a failed call: the error's own, or its cause's (fetch wraps the system error). */
+export function errorCode(e: unknown): string {
+  const pick = (x: unknown): string | undefined => {
+    if (typeof x !== "object" || x === null) return undefined;
+    const o = x as { code?: unknown };
+    if (typeof o.code === "string" && /^[A-Z0-9_]{1,40}$/.test(o.code)) return o.code;
+    return undefined;
+  };
+  const cause = typeof e === "object" && e !== null ? (e as { cause?: unknown }).cause : undefined;
+  const name = typeof e === "object" && e !== null ? (e as { name?: unknown }).name : undefined;
+  return pick(e) ?? pick(cause) ?? (typeof name === "string" ? name.slice(0, 40) : "Error");
+}
+
+/** Races a call against a deadline; a call that never settles rejects with code `TIMEOUT`. */
+export function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error("timeout"), { code: "TIMEOUT" })), ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  return Promise.race([p, deadline]).finally(() => clearTimeout(timer));
+}
+
+const codeOf = errorCode;
 
 /**
  * A cheap egress probe: for each target, a DNS lookup then a GET (the forge target is `GET /rate_limit`, which GitHub does not count against the limit). Any HTTP answer counts as
@@ -43,13 +61,21 @@ export function egressProbe(o: EgressProbeOptions): NetworkProbe {
       o.targets.map(async (t): Promise<TargetResult> => {
         const t0 = performance.now();
         try {
-          await resolve(new URL(t.url).hostname);
+          await withDeadline(Promise.resolve(resolve(new URL(t.url).hostname)), timeoutMs);
         } catch (err) {
           return { target: t.label, ok: false, error: codeOf(err) };
         }
         const t1 = performance.now();
         try {
-          await doFetch(t.url, { method: "GET", signal: AbortSignal.timeout(timeoutMs) });
+          const res = await withDeadline(
+            Promise.resolve(
+              doFetch(t.url, { method: "GET", signal: AbortSignal.timeout(timeoutMs) }),
+            ),
+            timeoutMs,
+          );
+          void (res as { body?: { cancel?: () => Promise<void> } } | undefined)?.body
+            ?.cancel?.()
+            .catch(() => {});
           return {
             target: t.label,
             ok: true,
@@ -70,15 +96,7 @@ export function egressProbe(o: EgressProbeOptions): NetworkProbe {
       (o.checks?.() ?? []).map(async (c): Promise<TargetResult> => {
         const t0 = performance.now();
         try {
-          await Promise.race([
-            c.run(),
-            new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(Object.assign(new Error("timeout"), { name: "TimeoutError" })),
-                timeoutMs * 2,
-              ).unref?.(),
-            ),
-          ]);
+          await withDeadline(c.run(), timeoutMs * 2);
           return { target: c.label, ok: true, httpMs: Math.round(performance.now() - t0) };
         } catch (err) {
           return { target: c.label, ok: false, error: codeOf(err) };

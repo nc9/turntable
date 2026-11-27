@@ -13,3 +13,4 @@ packages/core/tests/infra-retry.test.ts
 packages/core/tests/scheduling-yield-claimable.test.ts
 packages/core/tests/sandbox-limits-live.test.ts
 packages/core/tests/network-degraded.test.ts
+packages/core/tests/network-probe-bounds.test.ts
