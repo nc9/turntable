@@ -732,7 +732,7 @@ export const RUN_NAME_MAX = 200;
 
 /**
  * A workflow's `run-name` (GitHub's rules: only the `github` and `inputs` contexts). An expression
- * that reads anything else, or fails to evaluate, falls back to the default title with a warning.
+ * that reads anything else, or fails to evaluate, falls back to the default title (the reason is returned as `runNameWarning`; the docs call the fallback silent because nothing surfaces it yet).
  */
 function evaluateRunName(
   raw: unknown,

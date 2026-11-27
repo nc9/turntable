@@ -224,6 +224,10 @@
     {
       "tag": "0056_attempt_adoption",
       "sha256": "46c44a907dcc914ba0123fc26dcfddd7f2f3929fdb918dcf9753b88929f57563"
+    },
+    {
+      "tag": "0057_run_name",
+      "sha256": "70bcb78ffd0c18936d57fafc9e94cbd4c089314c365418c321035972496aa770"
     }
   ],
   "pg": [
@@ -334,6 +338,10 @@
     {
       "tag": "0027_attempt_adoption",
       "sha256": "90e611653ae00581bde9c609829d019e13e141dcd13f4ca14216fc1300fdecbf"
+    },
+    {
+      "tag": "0028_run_name",
+      "sha256": "d0d9af443ce6cf6240461a0cd2c5b2df26e9df53a4ba729f35968b4f79e8bd46"
     }
   ]
 }
