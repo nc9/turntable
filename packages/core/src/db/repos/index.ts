@@ -5,15 +5,17 @@
 // the callback, use the handle it receives (`h`) for nested repo calls. Queries are written
 // `await orm.select()...` with no `.get()/.all()/.run()` so they run on sync and async drivers.
 import { clearRecentDismissals } from "./dismissals";
-import { and, asc, desc, eq, gte } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "..";
 import { canTransition, exitCodeValid, FINISHED_STATES } from "../job-state";
 import * as s from "../schema";
 import type { JobState } from "../schema";
 import { ulid } from "../ulid";
 import { ratchetApprovalDefault } from "./approval-default";
+import { logStoreFor } from "../../logstore/registry";
+import type { LogKey } from "../../logstore/types";
 import { appendEvent, notifyLogAppended } from "./events";
-import { requireProject, type Scope, scoped } from "./scope";
+import { logKey, requireProject, type Scope, scoped } from "./scope";
 
 export type { Scope } from "./scope";
 export * from "./activity";
@@ -21,6 +23,7 @@ export * from "./api";
 export * from "./approve";
 export * from "./artifacts";
 export * from "./quotas";
+export * from "./log-migrate";
 export * from "./settings";
 export * from "./project-settings";
 export * from "./approvals";
@@ -592,7 +595,6 @@ export function transitionJob(
 // ---- attempts ----
 
 const ATTEMPT_COLS = { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId };
-const LOG_COLS = { orgId: s.logChunks.orgId, projectId: s.logChunks.projectId };
 
 export function createAttempt(
   db: Db,
@@ -734,6 +736,20 @@ export function updateAttempt(
 
 // ---- logs ----
 
+/**
+ * The store key for reading an attempt's log. An org-wide scope looks the project up, which also
+ * proves the attempt is the scope's. Undefined when it is not.
+ */
+export async function readableLogKey(
+  h: Db,
+  scope: Scope,
+  attemptId: string,
+): Promise<LogKey | undefined> {
+  if (scope.projectId) return logKey(scope, attemptId);
+  const a = await getAttempt(h, scope, attemptId);
+  return a ? { orgId: scope.orgId, projectId: a.projectId, attemptId } : undefined;
+}
+
 /** Appends a chunk at a byte offset. Returns false when the attempt is not in scope. */
 export function appendLog(
   db: Db,
@@ -744,16 +760,7 @@ export function appendLog(
 ): Promise<boolean> {
   return db.run(async (h) => {
     if (!(await getAttempt(h, scope, attemptId))) return false;
-    await h.orm
-      .insert(s.logChunks)
-      .values({
-        orgId: scope.orgId,
-        projectId: requireProject(scope).projectId,
-        attemptId,
-        offset,
-        bytes: Buffer.from(bytes),
-      })
-      .onConflictDoNothing();
+    await logStoreFor(h).append(logKey(scope, attemptId), offset, bytes);
     notifyLogAppended(h, scope.orgId, attemptId);
     return true;
   });
@@ -766,20 +773,12 @@ export function readLog(
   attemptId: string,
   fromOffset = 0,
 ): Promise<{ offset: number; bytes: Buffer }[]> {
-  return db.run((h) =>
-    h.orm
-      .select({ offset: s.logChunks.offset, bytes: s.logChunks.bytes })
-      .from(s.logChunks)
-      .where(
-        scoped(
-          scope,
-          LOG_COLS,
-          eq(s.logChunks.attemptId, attemptId),
-          gte(s.logChunks.offset, fromOffset),
-        ),
-      )
-      .orderBy(asc(s.logChunks.offset)),
-  );
+  // The key is resolved in the database; the store is called after, so a slow store never holds
+  // the database gate.
+  return db
+    .run((h) => readableLogKey(h, scope, attemptId))
+    .then((key) => (key ? logStoreFor(db).read(key, fromOffset) : []));
 }
+
 export * from "./webhooks";
 export * from "./notifications";

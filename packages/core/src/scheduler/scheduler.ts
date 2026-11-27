@@ -387,7 +387,7 @@ export class Scheduler {
         await recordTrustClass(db, scope, attempt.id, owner, klass);
       },
       reset: async () => {
-        await resetAttemptOutput(db, scope, attempt.id, owner);
+        await resetAttemptOutput(db, scope, attempt.id, owner, { signal: controller.signal });
       },
       // Everything a worker writes is fenced by its lease: after it loses the lease (reconciled,
       // cancelled) its writes are dropped instead of landing in a log someone else now owns.

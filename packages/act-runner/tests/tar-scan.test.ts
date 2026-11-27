@@ -253,6 +253,30 @@ describe("size caps: names, pax bodies and the total of all names", () => {
     expect(m.get("c")).toMatchObject({ type: "file", size: 1 });
   });
 
+  test("files under .git never take capture budget, so .github is still captured (#778)", async () => {
+    const m = await scanTarGz(
+      arc(
+        ROOT,
+        dir(".git/"),
+        dir(".git/objects/"),
+        file(".git/objects/pack", "g".repeat(100)),
+        dir(".github/"),
+        dir(".github/actions/"),
+        dir(".github/actions/x/"),
+        file(".github/actions/x/action.yml", "runs: {}\n"),
+        file("zz-text", "t".repeat(40)),
+      ),
+      { ...OPTS, captureTotal: 10 },
+    );
+    expect(m.get(".git/objects/pack")).toMatchObject({ type: "file", size: 100 });
+    expect(m.get(".git/objects/pack")!.data).toBeUndefined();
+    expect(new TextDecoder().decode(m.get(".github/actions/x/action.yml")!.data)).toBe(
+      "runs: {}\n",
+    );
+    // Non-.git text over the cap is still not captured.
+    expect(m.get("zz-text")!.data).toBeUndefined();
+  });
+
   test("pax headers past their own total bound are refused (#671)", async () => {
     const long = "p".repeat(150);
     const parts: Buffer[][] = [ROOT];

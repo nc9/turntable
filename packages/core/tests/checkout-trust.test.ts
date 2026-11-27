@@ -184,6 +184,18 @@ describe("reading from the tarball keeps the safe reader's rules", () => {
     expect(() => read("c-later.txt")).toThrow(/more text than a checkout keeps/);
   });
 
+  test("a .git bigger than the keep budget does not stop planning from reading .github (#778)", async () => {
+    const tgz = await archive({
+      ".git/objects/pack": "g".repeat(500),
+      ".github/actions/x/action.yml": "runs: {}\n",
+      "zz-text": "t".repeat(40),
+    });
+    const read = await tarballReader(tgz, { maxUnpackedBytes: 1e6, captureTotal: 20 });
+    expect(read(".github/actions/x/action.yml")).toBe("runs: {}\n");
+    // Real text past the cap still gets the clear refusal.
+    expect(() => read("zz-text")).toThrow(/more text than a checkout keeps/);
+  });
+
   test("a path that is not in its canonical spelling is refused loudly, never read as missing", async () => {
     const tgz = await archive({ "a/b": "x" });
     const read = await tarballReader(tgz, { maxUnpackedBytes: 1e6 });

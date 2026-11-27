@@ -279,6 +279,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "instance_set_setting",
       "instance_start_installation_claim",
       "instance_whoami",
+      "log_store_migrate",
       "move_repo_binding",
       "rotate_instance_token",
       "set_project_settings",
