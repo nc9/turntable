@@ -9,6 +9,7 @@ import {
   earlierInfraReason,
   CONTROLLER_LOST,
   finishAttempt,
+  getAttempt,
   handOffAttempt,
   heartbeatAttempt,
   ifLeaseHeld,
@@ -26,8 +27,6 @@ import {
   truncateAttemptOutput,
   upsertStep,
 } from "../db/repos";
-import * as schema from "../db/schema";
-import { eq } from "drizzle-orm";
 import { effectiveChecksMode } from "../ops/setting-guard";
 import { ambientSettings } from "../settings/ambient";
 import { preemptMaxPerJobSetting, preemptWindowMinutesSetting } from "../settings/definitions";
@@ -324,18 +323,8 @@ export class Scheduler {
     for (const [id, a] of [...this.#active.entries()]) {
       if (this.#handingOff.has(id) || this.#cutting.has(id)) continue;
       try {
-        const rows = await this.#o.db.run((h) =>
-          h.orm
-            .select({
-              sandboxId: schema.jobAttempts.sandboxId,
-              execId: schema.jobAttempts.execId,
-              adoptBlock: schema.jobAttempts.adoptBlock,
-            })
-            .from(schema.jobAttempts)
-            .where(eq(schema.jobAttempts.id, id))
-            .limit(1),
-        );
-        if (!rows[0] || !isAdoptable(rows[0])) continue;
+        const row = await getAttempt(this.#o.db, a.scope, id);
+        if (!row || !isAdoptable(row)) continue;
       } catch (err) {
         this.#o.log(`could not read ${id} for the hand-off: ${String(err)}`);
         continue;
