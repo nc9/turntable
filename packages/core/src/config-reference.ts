@@ -357,6 +357,13 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Set to `1` to run the release lane as this server's supervised child process (`serve --roles release`, started once and never respawned: if it is lost the server exits non-zero and the platform restarts the container): one container, two processes. Every `TURNTABLE_RELEASE_*` variable is removed from the server's own environment and goes to the child alone; the channel between them is a unix socket in a 0700 directory under keys made at boot. Not with `TURNTABLE_PUBLISH_CHANNEL_*` or the lane's `TURNTABLE_RELEASE_CHANNEL_*` (the supervisor makes the channel). On Postgres the child also needs `TURNTABLE_RELEASE_DATABASE_URL`. See the release lane page.",
   },
   {
+    name: "TURNTABLE_LANE_STARTUP_TIMEOUT_SECONDS",
+    area: "Release lane",
+    default: "60",
+    description:
+      "With `TURNTABLE_LANE_SUPERVISED`: how many seconds the lane child has to answer its first health check. A child that is alive but never healthy in that time counts as lost, like one that exited: the server exits non-zero.",
+  },
+  {
     name: "TURNTABLE_RELEASE_DATABASE_URL",
     area: "Release lane",
     description:

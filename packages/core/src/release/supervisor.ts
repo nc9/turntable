@@ -264,6 +264,8 @@ export interface SupervisorOptions {
   log?: (m: string) => void;
   now?: () => number;
   readyPollMs?: number;
+  /** How long the child has to answer its first probe; later than that it is lost. Default 60 s. */
+  startupTimeoutMs?: number;
   /** How often a ready child is probed again, and how many misses in a row end it. */
   healthPollMs?: number;
   healthMisses?: number;
@@ -381,6 +383,8 @@ export class LaneSupervisor {
     this.proc = proc;
     let alive = true;
     let readyAt: number | undefined;
+    const startedAt = this.now();
+    const startupMs = this.o.startupTimeoutMs ?? 60_000;
     const exit = proc.exited.finally(() => (alive = false));
     this.log(`release lane started (pid ${proc.pid ?? "?"})`);
     void (async () => {
@@ -404,6 +408,15 @@ export class LaneSupervisor {
             proc.kill("SIGKILL");
             return;
           }
+        }
+        if (readyAt === undefined && this.now() - startedAt >= startupMs) {
+          // Alive but never healthy: the same path as a lane that exited.
+          this.set("exited");
+          this.lose(
+            `did not answer its first health check within ${Math.round(startupMs / 1000)}s`,
+          );
+          proc.kill("SIGKILL");
+          return;
         }
         await this.sleep(
           readyAt === undefined ? (this.o.readyPollMs ?? 200) : (this.o.healthPollMs ?? 5000),

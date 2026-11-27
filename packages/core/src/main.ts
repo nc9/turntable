@@ -833,11 +833,18 @@ async function serve(args: string[]): Promise<void> {
   // The child opens the same database, so it starts after this process has migrated it.
   // No respawn: a lane that is gone stops the other roles and exits non-zero (set below), so the
   // platform restarts the container and this process never keeps the lane's variables or root.
+  // The stop path is wired at the end of boot, so a loss before then (a spawn that throws, a child
+  // that exits while the server is still booting) is kept and replayed the moment it is wired.
   let laneLost: ((why: string) => void) | undefined;
+  let earlyLaneLoss: string | undefined;
   const laneSupervisor = preparedLane
     ? new LaneSupervisor({
         prepared: preparedLane,
-        onLaneLost: (why) => laneLost?.(why),
+        onLaneLost: (why) => {
+          if (laneLost) laneLost(why);
+          else earlyLaneLoss = why;
+        },
+        startupTimeoutMs: laneStartupMs(process.env),
         args: ["serve", "--roles", "release", "--data-dir", dataDir],
       })
     : undefined;
@@ -1313,8 +1320,20 @@ async function serve(args: string[]): Promise<void> {
     exitCode = 1;
     stop();
   };
+  if (earlyLaneLoss !== undefined) laneLost(earlyLaneLoss);
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
+}
+
+/** TURNTABLE_LANE_STARTUP_TIMEOUT_SECONDS: how long the supervised lane has to become healthy (default 60). */
+function laneStartupMs(env: Record<string, string | undefined>): number {
+  const raw = env.TURNTABLE_LANE_STARTUP_TIMEOUT_SECONDS?.trim();
+  if (!raw) return 60_000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error("TURNTABLE_LANE_STARTUP_TIMEOUT_SECONDS must be a positive number of seconds");
+  }
+  return Math.round(n * 1000);
 }
 
 const iso = (ms: number | null): string => (ms === null ? "-" : new Date(ms).toISOString());

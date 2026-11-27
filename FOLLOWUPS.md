@@ -22,10 +22,10 @@
 
 ## Separate-uid release lane (#678)
 
-- Run the supervised release lane as a separate uid with a non-dumpable launcher. The supervised child (#678) separates the lane from the server by process, not by uid. The server keeps the release values in a closure and in its boot-time `/proc/self/environ`, and the child runs as the same user, so code execution in the server can read them.
+- Run the supervised release lane as a separate uid with a non-dumpable launcher. The supervised child (#678) separates the lane from the server by process, not by uid. The server drops its copy after the spawn (it never respawns the lane), but its boot-time `/proc/self/environ` still lists them, and the child runs as the same user, so code execution in the server can read them.
   Acceptance:
   - A small launcher starts first (as root, before the server drops privileges), holds the release values, marks itself non-dumpable (`PR_SET_DUMPABLE=0`), and starts the lane child as a different uid.
   - The server process never receives any `TURNTABLE_RELEASE_*` value, in `process.env`, in `/proc/self/environ` or in memory.
   - The lane's data directory and key files belong to the child's uid and are unreadable by the server's uid; a test shows the server uid cannot read them or `/proc/<child pid>/environ`.
-  - Restart and backoff behaviour, the 0700 socket and the per-boot channel keys work as in the same-uid option.
+  - The 0700 socket, the per-boot channel keys and the rule that a lost lane stops the server (no respawn, no backoff) work as in the same-uid option.
   - `docs/release-lane.mdx` and `docs/hosted.mdx` drop the same-uid residual risk.

@@ -442,6 +442,54 @@ describe("supervision (fake child)", () => {
     expect(sup.status().state).toBe("stopped");
   });
 
+  test("a child that is alive but never healthy is lost after the startup deadline", async () => {
+    const f = fakeSpawner();
+    const lost: string[] = [];
+    const sup = new LaneSupervisor({
+      prepared: prepared(),
+      args: [],
+      command: ["x"],
+      spawn: f.spawn,
+      probe: async () => false,
+      onLaneLost: (w) => lost.push(w),
+      log: () => {},
+      readyPollMs: 10,
+      startupTimeoutMs: 150,
+    });
+    sup.start();
+    expect(sup.availability()).toMatchObject({ ok: false, state: "starting" });
+    await until(() => lost.length > 0);
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toContain("first health check");
+    expect(sup.availability()).toMatchObject({ ok: false, state: "exited" });
+    await sleep(50);
+    expect(f.procs).toHaveLength(1);
+    await sup.stop();
+    expect(lost).toHaveLength(1);
+  });
+
+  test("a child that answers before the deadline is not lost", async () => {
+    const f = fakeSpawner();
+    const lost: string[] = [];
+    const sup = new LaneSupervisor({
+      prepared: prepared(),
+      args: [],
+      command: ["x"],
+      spawn: f.spawn,
+      probe: async () => true,
+      onLaneLost: (w) => lost.push(w),
+      log: () => {},
+      readyPollMs: 10,
+      startupTimeoutMs: 100,
+    });
+    sup.start();
+    await until(() => sup.availability().ok);
+    await sleep(250);
+    expect(lost).toHaveLength(0);
+    expect(sup.availability().ok).toBe(true);
+    await sup.stop();
+  });
+
   test("an asked-for stop is not a lost lane", async () => {
     const f = fakeSpawner();
     const lost: string[] = [];
@@ -773,6 +821,89 @@ describe("the loopback release proxy", () => {
   });
 });
 
+describe("a lane lost while the server boots stops the server (real main)", () => {
+  const entry = join(import.meta.dir, "fixtures/main-lane-boot.ts");
+  async function boot(
+    childMode: "exit" | "hang" | "",
+    extra: Record<string, string>,
+  ): Promise<{ code: number | null; text: string }> {
+    const base = mkdtempSync(join(tmp, "boot-"));
+    if (childMode) writeFileSync(join(base, "child-mode"), childMode);
+    const env = parentEnv();
+    const clean: Record<string, string> = {};
+    for (const [k, v] of Object.entries(env))
+      if (v !== undefined && k !== "HOME" && !k.startsWith("LONGSHORE_")) clean[k] = v;
+    clean.TURNTABLE_RELEASE_DATA_DIR = join(base, "rel");
+    clean.TURNTABLE_RELEASE_ARTIFACT_DIR = join(base, "art");
+    const p = Bun.spawn(
+      [
+        process.execPath,
+        entry,
+        "serve",
+        "--roles",
+        "web",
+        "--port",
+        "0",
+        "--data-dir",
+        join(base, "data"),
+      ],
+      {
+        env: {
+          ...clean,
+          PATH: process.env.PATH ?? "/usr/bin",
+          HOME: base,
+          TURNTABLE_ALLOW_ROOT: "1",
+          TURNTABLE_DATABASE_URL: "",
+          ...extra,
+        },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    let text = "";
+    const pump = async (r: ReadableStream<Uint8Array>) => {
+      for await (const c of r) text += new TextDecoder().decode(c);
+    };
+    void pump(p.stdout);
+    void pump(p.stderr);
+    const timer = setTimeout(() => p.kill("SIGKILL"), 100_000);
+    const code = await p.exited;
+    clearTimeout(timer);
+    return { code, text };
+  }
+
+  test.skipIf(onPostgres)(
+    "a spawn that throws stops the server, non-zero",
+    { timeout: 120_000 },
+    async () => {
+      const r = await boot("", { TT_TEST_SPAWN_FAIL: "1" });
+      expect(r.text).toMatch(/release lane lost: could not be started/);
+      expect(r.code).toBe(1);
+    },
+  );
+
+  test.skipIf(onPostgres)(
+    "a child that exits during boot stops the server, non-zero",
+    { timeout: 120_000 },
+    async () => {
+      const r = await boot("exit", {});
+      expect(r.text).toMatch(/release lane lost: exited \(code 3/);
+      expect(r.code).toBe(1);
+    },
+  );
+
+  test.skipIf(onPostgres)(
+    "a child that never becomes healthy stops the server after the startup deadline",
+    { timeout: 120_000 },
+    async () => {
+      const r = await boot("hang", { TURNTABLE_LANE_STARTUP_TIMEOUT_SECONDS: "2" });
+      expect(r.text).toMatch(/release lane lost: did not answer its first health check within 2s/);
+      expect(r.code).toBe(1);
+    },
+  );
+});
+
 describe("the compiled binary", () => {
   // The compiled entry is /$bunfs/root/<name>; the child must be started as the binary alone.
   test.skipIf(onPostgres)(
@@ -822,7 +953,7 @@ describe("the compiled binary", () => {
         expect(text).not.toContain("unknown command");
         expect(text).toContain("[turntable release] release channel listening");
         expect(text).toContain("[turntable release] release lane started");
-        expect(text.match(/release lane exited/g)).toBeNull();
+        expect(text.match(/release lane lost: exited/g)).toBeNull();
         expect(p.exitCode).toBeNull();
       } finally {
         p.kill("SIGTERM");
