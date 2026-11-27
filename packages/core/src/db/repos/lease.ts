@@ -32,7 +32,7 @@ import {
   type Job,
   type JobAttempt,
   listJobs,
-  readLog,
+  logSize,
   type Run,
   setRunStatus,
   transitionJob,
@@ -995,7 +995,7 @@ export function requeueLostAttemptOnce(
  * Fenced like `finishAttempt` (the attempt must still run under `owner`). Returns true when it
  * requeued; false (changing nothing) when the budget is spent or the lease is gone.
  */
-export function requeueInfraFailureOnce(
+export async function requeueInfraFailureOnce(
   db: Db,
   scope: Scope,
   input: {
@@ -1007,6 +1007,10 @@ export function requeueInfraFailureOnce(
     now: number;
   },
 ): Promise<boolean> {
+  // The end of the log is read before the transaction opens: with an external store that is an HTTP
+  // call, which must not run (or hang) while the write lock is held. Appending inside is a queue push.
+  // When the store is down the marker line is skipped; the retry itself must not be lost.
+  const tail = await logSize(db, scope, input.attemptId).catch(() => null);
   return db.transaction(async (tx) => {
     const [cur] = await tx.orm
       .select()
@@ -1032,20 +1036,18 @@ export function requeueInfraFailureOnce(
       .set({ leaseOwner: null, leaseExpiresAt: null })
       .where(eq(s.jobAttempts.id, cur.id));
     // One line at the end of the failed attempt's job log: it was retried once, and why.
-    const tail = (await readLog(tx, scope, cur.id)).reduce(
-      (end, c) => Math.max(end, c.offset + c.bytes.length),
-      0,
-    );
     const why = sanitizeInfraError(input.reason).slice(0, 200);
-    await appendLog(
-      tx,
-      scope,
-      cur.id,
-      tail,
-      new TextEncoder().encode(
-        `infra error (${input.kind}), retrying once on a fresh sandbox: ${why}\n`,
-      ),
-    );
+    if (tail !== null) {
+      await appendLog(
+        tx,
+        scope,
+        cur.id,
+        tail,
+        new TextEncoder().encode(
+          `infra error (${input.kind}), retrying once on a fresh sandbox: ${why}\n`,
+        ),
+      );
+    }
     await transitionJob(tx, scope, cur.jobId, "infra_error", {
       reason: `infra_retry:${input.kind}`,
     });

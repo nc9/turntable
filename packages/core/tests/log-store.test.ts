@@ -21,6 +21,7 @@ import {
   readLogRange,
   setOrgQuotas,
   resetAttemptOutput,
+  requeueInfraFailureOnce,
 } from "../src/db";
 import { ClickHouseLogStore, createTableSql } from "../src/logstore/clickhouse-store";
 import { DbLogStore } from "../src/logstore/db-store";
@@ -590,6 +591,42 @@ describe("review fixes (#719)", () => {
       expect(await deleteProjectCascade(tx, { orgId: t.orgId }, t.projectId)).toBe(true);
     });
     expect(performance.now() - t0).toBeLessThan(150);
+    await Bun.sleep(450);
+  });
+
+  test("an infra retry does not hold the write lock on the store and is not lost", async () => {
+    const db = openDatabase(":memory:");
+    const t = await seedTenant(db, "org-infra");
+    const { fake, store } = hungWorld();
+    setLogStore(store);
+    const run = await createRun(db, t.scope, {
+      workflowPath: "w.yml",
+      event: "push",
+      ref: "main",
+      sha: "c".repeat(40),
+    });
+    const job = (await createJob(db, t.scope, { runId: run.id, jobKey: "j", name: "j" }))!;
+    await createAttempt(db, t.scope, { jobId: job.id, provider: "fake" });
+    const claimed = await claimNextAttempt(db, {
+      owner: "w",
+      leaseMs: 60_000,
+      now: Date.now(),
+      globalCap: 100,
+      perOrgCap: 100,
+    });
+    expect(claimed).toBeTruthy();
+    fake.hang = true;
+    const t0 = performance.now();
+    const retried = await requeueInfraFailureOnce(db, t.scope, {
+      attemptId: claimed!.attempt.id,
+      owner: "w",
+      kind: "network",
+      reason: "boom",
+      now: Date.now(),
+    }).catch(() => "threw");
+    // The store call is made before the transaction and times out (400 ms) outside the lock.
+    expect(retried).toBe(true);
+    expect(performance.now() - t0).toBeLessThan(2000);
     await Bun.sleep(450);
   });
 
