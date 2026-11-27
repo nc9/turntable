@@ -20,6 +20,7 @@ import {
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
 import type { LaneConfigClient } from "./release/channel-client";
+import type { LaneAvailability } from "./release/supervisor";
 import type { GithubFacts, GithubUserLookup } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { AuthHandler } from "./auth/github-login";
@@ -167,6 +168,8 @@ export type ServeOptions = {
   webauthn?: RelyingParty;
   /** The release lane's config channel, when configured (the instance's `release_*` ops). */
   releaseConfig?: LaneConfigClient;
+  /** The supervised release lane, when this process runs it: `request_release` fails while it is down. */
+  releaseLane?: { availability(): LaneAvailability };
   /** The artifact store's reads (the artifact download ops); absent when artifacts are off. */
   artifactBlobs?: ArtifactBlobs;
   /** The operator org (TURNTABLE_BOOTSTRAP_ORG, default `local`): its owners configure the release lane. */
@@ -205,6 +208,7 @@ export function startServer(options: ServeOptions) {
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     releaseConfig: options.releaseConfig,
+    releaseLane: options.releaseLane,
     artifactBlobs: options.artifactBlobs,
     operatorOrgSlug: options.operatorOrgSlug,
     instanceOrgCap: options.instanceOrgCap,

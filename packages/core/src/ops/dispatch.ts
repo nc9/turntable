@@ -22,6 +22,7 @@ import type { ArtifactBlobs, Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
 import type { LaneConfigClient } from "../release/channel-client";
+import type { LaneAvailability } from "../release/supervisor";
 import type { WebSessions } from "../auth/web-sessions";
 import type { UserGithub } from "../auth/user-tokens";
 import type { WebhookService } from "../webhooks/service";
@@ -88,6 +89,8 @@ export type DispatchEnv = {
   webauthn?: RelyingParty | undefined;
   /** The release lane's config channel; absent when no lane is configured on this instance. */
   releaseConfig?: LaneConfigClient | undefined;
+  /** The supervised release lane's availability, for `request_release`. */
+  releaseLane?: { availability(): LaneAvailability } | undefined;
   /** The artifact store's reads, for the download ops; absent when artifacts are off. */
   artifactBlobs?: ArtifactBlobs | undefined;
   /** Slug of the operator org (TURNTABLE_BOOTSTRAP_ORG, default `local`): its owners configure the release lane. */
@@ -696,6 +699,7 @@ export async function dispatch(
       webhooks: env.webhooks,
       webauthn: env.webauthn,
       releaseConfig: env.releaseConfig,
+      releaseLane: env.releaseLane,
       artifactBlobs: env.artifactBlobs,
       operatorOrgSlug: env.operatorOrgSlug,
       transport: env.transport,

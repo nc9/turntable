@@ -617,6 +617,12 @@ export function checkHttpsRedirect(i: DoctorInputs): DoctorCheck {
 
 export async function checkChannel(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "release";
+  if (i.releaseLane)
+    return pass(
+      "release_channel",
+      area,
+      "the release lane is this process's supervised child: its channel is made at boot and checked by release_lane_process",
+    );
   const configured = set(i.env.TURNTABLE_PUBLISH_CHANNEL_KEY_FILE);
   if (!configured || !i.channel)
     return pass(
@@ -663,6 +669,12 @@ export async function checkChannel(i: DoctorInputs): Promise<DoctorCheck> {
  */
 export async function checkConfigChannel(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "release";
+  if (i.releaseLane)
+    return pass(
+      "release_config_channel",
+      area,
+      "the release lane is this process's supervised child: its config channel is made at boot and checked by release_lane_process",
+    );
   if (!i.configChannel)
     return pass(
       "release_config_channel",
@@ -679,6 +691,25 @@ export async function checkConfigChannel(i: DoctorInputs): Promise<DoctorCheck> 
         `Check that the lane is running, the channel address and TLS files here match it, and that the config key file here holds the same key as the lane's (${r.reason}).`,
         "detail" in r ? r.detail : undefined,
       );
+}
+
+/** The supervised release lane: running and answering, or restarting. Only the running server knows. */
+export function checkReleaseLane(i: DoctorInputs): DoctorCheck {
+  const area = "release";
+  const id = "release_lane_process";
+  if (!i.releaseLane) return pass(id, area, "the release lane is not supervised by this process");
+  const s = i.releaseLane();
+  const exit = s.lastExit
+    ? ` Last exit: code ${s.lastExit.code ?? "none"}, signal ${s.lastExit.signal ?? "none"}.`
+    : "";
+  if (s.state === "ready")
+    return pass(id, area, `the release lane child is running and answers on its channel`);
+  return fail(
+    id,
+    area,
+    `the release lane child is ${s.state}: release requests are refused with release_lane_unavailable.${exit}`,
+    "Read the lane's own log lines (`[turntable release]`) for why it exited; a bad key, data dir or token is the usual cause. The lane is not restarted by this process: when it is lost the server exits non-zero and the platform restarts the container.",
+  );
 }
 
 /**
@@ -950,6 +981,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("https_redirect", "network", () => checkHttpsRedirect(i))),
     ...(await safe("release_channel", "release", () => checkChannel(i))),
     ...(await safe("release_config_channel", "release", () => checkConfigChannel(i))),
+    ...(await safe("release_lane_process", "release", () => checkReleaseLane(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
     ...(await safe("checkout_budgets", "limits", () => checkCheckoutBudgets(i))),
     ...(await safe("limit_locks", "limits", () => checkLimitLocks(i))),
