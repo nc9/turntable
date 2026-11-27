@@ -214,6 +214,9 @@ describe("a job's GitHub token, without the proxy", () => {
     expect(log).toContain("GITHUB_TOKEN for acme/web: metadata:read, issues:write");
     // Revoked when the job ended.
     expect(calls.revoked).toEqual([TOKEN]);
+    // A live token is not handed to another controller (#761): its encoded forms could not be redacted.
+    const [att] = await listAttempts(db, scope, job.id);
+    expect(att!.adoptBlock).toBe("job token");
   });
 
   test("the workflow's permissions are honoured, capped by the installation's grant", async () => {

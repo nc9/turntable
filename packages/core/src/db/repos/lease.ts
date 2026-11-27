@@ -1139,7 +1139,6 @@ export function listUndestroyedSandboxes(db: Db, limit = 2000): Promise<JobAttem
   );
 }
 
-/** Number of attempts currently running, overall or for one org. */
 /**
  * Records the log checkpoint (#761): the first `logOffset` bytes of the stored log are exactly the
  * rendering of the exec's output before `execOffset`. Fenced by the lease holder.
@@ -1299,6 +1298,7 @@ export function countRunningByAdoptability(
   });
 }
 
+/** Number of attempts currently running, overall or for one org. */
 export function countRunning(db: Db, orgId?: string): Promise<number> {
   return db.run(async (h) => {
     const [row] = await h.orm

@@ -17,9 +17,10 @@ These phases are **not adoptable**, and a restart during them cuts the attempt a
 | Creating the sandbox | The provider's create is in flight in the old process. |
 | Setting up: egress canary, checkout upload, act install, action delivery | These are short calls the old process makes into the sandbox. They are not a detached exec. |
 | A job behind the secrets proxy | The proxy's registration of the attempt (vault rules, a held token, OIDC) lives in the old process. |
+| A job holding a GitHub token in its environment (a `protected` or `release` job with no proxy) | The new process cannot rebuild the redaction of the token's encoded forms. |
 | A job holding an artifact credential | The artifact grant lives in the old process's memory. Open-egress jobs and jobs that upload through the proxy get one. |
 
-A job with a cache grant is adoptable: after the restart its cache calls fail, which `actions/cache` reports as a miss on restore and a warning on save. A job that holds a GitHub token in its environment (a `protected` or `release` job with no proxy) keeps it: the old process does not revoke a token of an attempt it hands off.
+A job with a cache grant is adoptable: after the restart its cache calls fail, which `actions/cache` reports as a miss on restore and a warning on save.
 
 A cut attempt is resolved by the next boot exactly as a drain timeout cut is: if its exec still runs and it is adoptable, it is re-attached; otherwise it ends `infra_error` (`controller_lost`) and the job is requeued once under a new attempt, with no rerun used. A `protected` or `release` job cut after a step started is not requeued (see [Hosted](/hosted#deploying-without-killing-runs)).
 
@@ -35,7 +36,7 @@ When `not_adoptable` is 0 the restart waits for nothing. Otherwise it waits for 
 
 Turn the drain on (`instance_drain`) and wait before the deploy when:
 
-- `not_adoptable` stays above 0 because of jobs behind the secrets proxy or with an artifact credential, and you do not want them cut. Wait for `running_by_adoption.not_adoptable` to be 0, not `running_attempts`.
+- `not_adoptable` stays above 0 because of jobs behind the secrets proxy or with an artifact credential or a job token, and you do not want them cut. Wait for `running_by_adoption.not_adoptable` to be 0, not `running_attempts`.
 - The deploy changes the database in a way the old and new process must not share (a migration with a manual step, `instance_db_copy`). Wait for `running_attempts` 0.
 
 Several worker processes: drain or restart each one. A handed-off attempt is taken by whichever controller reconciles first.

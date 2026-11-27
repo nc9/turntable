@@ -1149,10 +1149,18 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       // Whether another controller may re-attach to this job (#761), recorded before its exec
       // starts. A job behind the secrets proxy or holding an artifact credential depends on state
       // only this process has (the proxy's attempt registration, the in-memory grant): it is not.
-      // The cache grant is in memory too, but a job that loses it only loses its cache.
+      // The cache grant is in memory too, but a job that loses it only loses its cache. A job
+      // holding a live GitHub token (no proxy) is not either: the adopter has no token to build
+      // its redaction registry from, so the token's base64 and URL-encoded forms would be stored.
       await ctx.store.setExec({
         adoptBlock:
-          useProxy && access ? "secrets proxy" : jobArtifacts ? "artifact credential" : null,
+          useProxy && access
+            ? "secrets proxy"
+            : jobArtifacts
+              ? "artifact credential"
+              : issued
+                ? "job token"
+                : null,
       });
       try {
         return await run(
