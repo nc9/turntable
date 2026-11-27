@@ -287,6 +287,13 @@ describe("the artifact-access flag on a planned job", () => {
     expect(flag("uses: actions/download-artifact@v4")).toBeUndefined();
     expect(flag("uses: ./.github/actions/x")).toBeUndefined();
   });
+  test("a remote action outside the known-safe list keeps the grant", () => {
+    expect(flag("uses: actions/upload-pages-artifact@v3")).toBeUndefined();
+    expect(flag("uses: actions/deploy-pages@v4")).toBeUndefined();
+    expect(flag("uses: someorg/upload-wrapper@v1")).toBeUndefined();
+    expect(flag("uses: actions/setup-node@v4")).toBe(false);
+    expect(flag("uses: actions/cache/restore@v4")).toBe(false);
+  });
   test("only an explicit false rules artifacts out", () => {
     expect(plannedNoArtifactAccess(JSON.stringify({ artifactAccess: false }))).toBe(true);
     expect(plannedNoArtifactAccess(JSON.stringify({ id: "x" }))).toBe(false);

@@ -58,8 +58,8 @@ export function plannedArtifactUpload(planned: string | PlannedJob | null | unde
 }
 
 /**
- * Whether the stored plan rules out artifact use: the job has no `actions/upload-artifact` or
- * `download-artifact` step and no local action (a composite could hold one). Only an explicit
+ * Whether the stored plan rules out artifact use: every `uses:` step is a known-safe remote action (checkout, setup-*, cache) and there is no
+ * local action, reusable workflow or other remote action (a composite could call upload-artifact). Only an explicit
  * `artifactAccess: false` says so; a missing, unreadable or older plan means the job may use them,
  * so a run planned before this field keeps its artifact credential.
  */
@@ -79,7 +79,13 @@ export function plannedNoArtifactAccess(planned: string | PlannedJob | null | un
 
 /** A step that is `actions/upload-artifact` (any ref), the one action that writes artifacts. */
 const UPLOAD_ARTIFACT = /^actions\/upload-artifact(\/[^@\s]*)?@/i;
-const ARTIFACT_ACTION = /^actions\/(upload|download)-artifact(\/[^@\s]*)?@/i;
+/**
+ * Remote actions known not to touch the artifact service. Any other remote action (a Pages upload,
+ * a deploy, a third-party wrapper) may be a composite that calls upload-artifact, so it keeps the
+ * grant.
+ */
+const NO_ARTIFACT_ACTION =
+  /^(actions\/(checkout|setup-[a-z0-9-]+|cache(\/(restore|save))?)|oven-sh\/setup-bun|dtolnay\/rust-toolchain|docker\/setup-[a-z0-9-]+)(@|$)/i;
 
 export interface PlannedJob {
   /** Unique within the run: the job id, or `id[n]` for a matrix leg. */
@@ -659,15 +665,11 @@ export function planWorkflow(
         ...(stepsOf(job).some((st) => typeof st.uses === "string" && UPLOAD_ARTIFACT.test(st.uses))
           ? { artifactUpload: true }
           : {}),
-        ...(stepsOf(job).some(
-          (st) =>
-            typeof st.uses === "string" &&
-            (ARTIFACT_ACTION.test(st.uses.trim()) ||
-              st.uses.trim().startsWith("./") ||
-              st.uses.trim().startsWith("../")),
-        ) || job.uses !== undefined
-          ? {}
-          : { artifactAccess: false as const }),
+        ...(stepsOf(job).every(
+          (st) => typeof st.uses !== "string" || NO_ARTIFACT_ACTION.test(st.uses.trim()),
+        ) && job.uses === undefined
+          ? { artifactAccess: false as const }
+          : {}),
         ...(() => {
           const runsOn = runsOnLabelList(job["runs-on"], ctx);
           return runsOn.length > 0 ? { runsOn } : {};

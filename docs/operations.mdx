@@ -18,11 +18,11 @@ These phases are **not adoptable**, and a restart during them cuts the attempt a
 | Setting up: egress canary, checkout upload, act install, action delivery | These are short calls the old process makes into the sandbox. They are not a detached exec. |
 | A job behind the secrets proxy | The proxy's registration of the attempt (vault rules, a held token, OIDC) lives in the old process. |
 | A job holding a GitHub token in its environment (a `protected` or `release` job with no proxy) | The new process cannot rebuild the redaction of the token's encoded forms. |
-| A job holding an artifact credential | The artifact grant lives in the old process's memory. Only a job with an `actions/upload-artifact` or `download-artifact` step, or a local action that could hold one, gets one. |
+| A job holding an artifact credential | The artifact grant lives in the old process's memory. A job gets one unless every `uses:` step is a known-safe remote action (`actions/checkout`, `actions/setup-*`, `actions/cache`, and a few setup actions). A local action, a reusable workflow or any other remote action, such as a Pages upload or a wrapper, could call the artifact service, so those jobs keep the grant and are not adoptable. |
 
 A job with a cache grant is adoptable: after the restart its cache calls fail, which `actions/cache` reports as a miss on restore and a warning on save.
 
-A blocked attempt is never handed off by a drain, but a crash or a drain timeout does not change how it ends: if its exec still runs at the next boot it is re-attached and keeps its real result, exactly as before. A `release` or `protected` job holding a token is never killed half-published by that.
+A blocked attempt is never handed off by a drain, but a crash or a drain timeout does not change how it ends: if its exec still runs at the next boot it is re-attached and keeps its real result, exactly as before, with one exception: a job behind the secrets proxy with vault rules still ends `infra_error`, because the new process cannot rebuild the proxy's registration. A `release` or `protected` job holding a token is never killed half-published by that.
 
 A cut attempt is resolved by the next boot exactly as a drain timeout cut is: if its exec still runs, it is re-attached; otherwise it ends `infra_error` (`controller_lost`) and the job is requeued once under a new attempt, with no rerun used. A `protected` or `release` job cut after a step started is not requeued (see [Hosted](/hosted#deploying-without-killing-runs)).
 
