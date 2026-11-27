@@ -13,7 +13,15 @@ import { lstat, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scrubbedEnv } from "@turntable/provider-sdk";
-import { clean, DEFAULT_FETCH_LIMITS, EXIT_AUTH_REFUSED, type FetchLimits } from "./git-fetch";
+import {
+  type BudgetLimit,
+  clean,
+  DEFAULT_FETCH_LIMITS,
+  EXIT_AUTH_REFUSED,
+  EXIT_FETCH_LIMIT,
+  type FetchLimits,
+  FULL_HISTORY_FACTOR,
+} from "./git-fetch";
 import { scrubToken, tokenMessage } from "./scrub-token";
 
 /** The forge answered 401 or 403 (or 404 to a request that carried a token). Never retried. */
@@ -26,6 +34,136 @@ export class CheckoutAuthError extends Error {
     );
     this.name = "CheckoutAuthError";
     this.status = status;
+  }
+}
+
+/**
+ * The limits one checkout runs under: the instance's (or the project's) budgets for a shallow tree,
+ * and for a full-history delivery each of the three size budgets times `FULL_HISTORY_FACTOR`. The
+ * per-object, tree, entry, delta and time limits are the same for both. A single place, so the
+ * child, the tarball read-back and the settings page agree.
+ */
+export function limitsFor(
+  base: Partial<FetchLimits>,
+  fullHistory: boolean,
+  memoryMb: number = 0,
+): FetchLimits {
+  const l: FetchLimits = { ...DEFAULT_FETCH_LIMITS, ...base };
+  const f = fullHistory ? FULL_HISTORY_FACTOR : 1;
+  const maxPackBytes = l.maxPackBytes * f;
+  return {
+    ...l,
+    maxPackBytes,
+    maxInflatedBytes: unpackedBudget(l.maxInflatedBytes * f, maxPackBytes, memoryMb).bytes,
+    maxTarballBytes: l.maxTarballBytes * f,
+  };
+}
+
+/**
+ * The error for a budget the checkout ran over: the value in force (as `limitsFor` gives it, the
+ * multiplied and memory-clamped one) and, when the memory ceiling cut the unpacked budget, that.
+ */
+export function budgetError(
+  limit: BudgetLimit,
+  base: Partial<FetchLimits>,
+  fullHistory: boolean,
+  memoryMb: number,
+): CheckoutLimitError {
+  const l = limitsFor(base, fullHistory, memoryMb);
+  const clamped =
+    limit === "maxInflatedBytes" &&
+    unpackedBudget(
+      { ...DEFAULT_FETCH_LIMITS, ...base }.maxInflatedBytes *
+        (fullHistory ? FULL_HISTORY_FACTOR : 1),
+      l.maxPackBytes,
+      memoryMb,
+    ).clamped;
+  return new CheckoutLimitError(limit, Math.round(l[limit] / MIB), fullHistory, clamped);
+}
+
+/** Memory kept for the child's own code and buffers beyond the pack and the unpacked objects. */
+export const CHECKOUT_MEMORY_OVERHEAD_MIB = 256;
+/** The least the clamp leaves, so a tiny memory ceiling never makes the budget useless. */
+const MIN_UNPACKED_MIB = 64;
+
+/**
+ * The unpacked budget that can actually be used: inflated objects live in the child's heap next to
+ * the pack, so a budget above `memory ceiling - pack - overhead` would only turn a near-limit
+ * repository into a memory kill. With the ceiling off (0) nothing is clamped.
+ */
+export function unpackedBudget(
+  configured: number,
+  packBytes: number,
+  memoryMb: number,
+): { bytes: number; clamped: boolean; maxBytes: number } {
+  if (memoryMb <= 0) return { bytes: configured, clamped: false, maxBytes: configured };
+  const maxBytes = Math.max(
+    memoryMb * MIB - packBytes - CHECKOUT_MEMORY_OVERHEAD_MIB * MIB,
+    MIN_UNPACKED_MIB * MIB,
+  );
+  return configured > maxBytes
+    ? { bytes: maxBytes, clamped: true, maxBytes }
+    : { bytes: configured, clamped: false, maxBytes };
+}
+
+/** What names each budget to an operator: the words, the settings that raise it, the env variable. */
+export const BUDGET_NAMES: Record<
+  BudgetLimit | "memory",
+  { label: string; project?: string; instance?: string; env: string }
+> = {
+  maxPackBytes: {
+    label: "pack",
+    project: "project_checkout_max_pack_mib",
+    instance: "checkout_max_pack_mib",
+    env: "TURNTABLE_CHECKOUT_MAX_PACK_MIB",
+  },
+  maxInflatedBytes: {
+    label: "unpacked",
+    project: "project_checkout_max_unpacked_mib",
+    instance: "checkout_max_unpacked_mib",
+    env: "TURNTABLE_CHECKOUT_MAX_UNPACKED_MIB",
+  },
+  maxTarballBytes: {
+    label: "tarball",
+    project: "project_checkout_max_tarball_mib",
+    instance: "checkout_max_tarball_mib",
+    env: "TURNTABLE_CHECKOUT_MAX_TARBALL_MIB",
+  },
+  memory: { label: "memory", env: "TURNTABLE_CHECKOUT_MAX_MEMORY_MIB" },
+};
+
+/**
+ * A checkout ran over one of its budgets. Infra kind `fetch_limit`: never retried, because the same
+ * commit hits the same budget again. The message names the budget, its value in force and what
+ * raises it, and is what the job log shows.
+ */
+export class CheckoutLimitError extends Error {
+  readonly limit: BudgetLimit | "memory";
+  readonly mib: number;
+  readonly fullHistory: boolean;
+  /** The unpacked budget in force was cut down by the memory ceiling, so that is what to raise. */
+  readonly clamped: boolean;
+  constructor(
+    limit: BudgetLimit | "memory",
+    mib: number,
+    fullHistory: boolean,
+    clamped: boolean = false,
+  ) {
+    const n = BUDGET_NAMES[limit];
+    const budget = limit !== "memory";
+    const raise = clamped
+      ? `the memory ceiling sets this limit, raise ${BUDGET_NAMES.memory.env}`
+      : n.project && n.instance
+        ? `raise the setting ${n.project} for this project, or ${n.instance} (${n.env}) for every project`
+        : `raise ${n.env}`;
+    super(
+      `the checkout hit the ${n.label} limit of ${mib} MiB${fullHistory && budget ? " (full history: the budget is " + FULL_HISTORY_FACTOR + " times the shallow one)" : ""}: ${raise}`,
+    );
+    this.clamped = clamped;
+    this.name = "CheckoutLimitError";
+    this.limit = limit;
+    this.mib = mib;
+    this.fullHistory = fullHistory;
   }
 }
 
@@ -223,11 +361,14 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
   }
 }
 
+/** The child's exit status when its own resident memory passed the ceiling. */
+export const EXIT_MEMORY_STOP = 70;
+const MEMORY_KILL = "the checkout used more than its memory ceiling";
+
 async function runChild(r: ChildRequest): Promise<ChildResult> {
   const cfg = { ...DEFAULT_CHECKOUT_CONFIG, ...r.config };
-  const limits: Partial<FetchLimits> = {
-    ...DEFAULT_FETCH_LIMITS,
-    ...cfg.limits,
+  const limits: FetchLimits = {
+    ...limitsFor(cfg.limits, r.fullHistory === true, cfg.memoryMb),
     timeoutMs: cfg.timeoutMs,
   };
   // The commit is checked here, in the parent, whatever the caller did: it goes into an argument.
@@ -291,8 +432,7 @@ async function runChild(r: ChildRequest): Promise<ChildResult> {
     else if (cfg.memoryMb > 0) {
       const used = rss(child.pid);
       if (used === undefined) warnNoRssOnce(log);
-      else if (used > cfg.memoryMb * MIB)
-        kill(`the checkout used more than ${cfg.memoryMb} MiB of memory`);
+      else if (used > cfg.memoryMb * MIB) kill(MEMORY_KILL);
     }
   }, r.pollMs ?? 200);
   const onAbort = (): void => kill("the checkout was cancelled");
@@ -310,13 +450,26 @@ async function runChild(r: ChildRequest): Promise<ChildResult> {
       return "abandoned" as const;
     });
     const res = await Promise.race([finished, gone]);
-    if (killedFor) throw new Error(killedFor);
+    if (killedFor) {
+      if (killedFor === MEMORY_KILL)
+        throw new CheckoutLimitError("memory", cfg.memoryMb, r.fullHistory === true);
+      throw new Error(killedFor);
+    }
     if (res === "abandoned") throw new Error("the checkout did not stop");
     const [out, err, code] = res;
     if (code === EXIT_AUTH_REFUSED) {
       const m = /checkout_auth_failed HTTP (\d{3})/.exec(err);
       throw new CheckoutAuthError(m ? Number(m[1]) : 401);
     }
+    if (code === EXIT_FETCH_LIMIT) {
+      const m = /fetch_limit (maxPackBytes|maxInflatedBytes|maxTarballBytes)/.exec(err);
+      if (m) {
+        throw budgetError(m[1] as BudgetLimit, cfg.limits, r.fullHistory === true, cfg.memoryMb);
+      }
+    }
+    // The child stopped itself over the memory ceiling (its own check, as the poll above does).
+    if (code === EXIT_MEMORY_STOP)
+      throw new CheckoutLimitError("memory", cfg.memoryMb, r.fullHistory === true);
     if (code !== 0) {
       const line = err.trim().split("\n").filter(Boolean).at(-1) ?? `exit ${code}`;
       throw new Error(`the checkout failed: ${clean(scrubToken(line, r.token))}`);

@@ -62,6 +62,7 @@ A transient infrastructure failure is retried once. An `infra_error` carries a k
 | `image_pull_rate_limited` | reserved, nothing produces it yet (preflight) | yes, every class |
 | `checkout_auth_failed` | GitHub refused the checkout (HTTP 401 or 403, or 404 to a request with a token) | no |
 | `tree_scan` | the strict scan of the checkout's tarball refused it, with the rule in the reason and the job log | no |
+| `fetch_limit` | the checkout ran over its pack, unpacked, tarball or memory budget, with the limit, its value and the setting that raises it in the reason and the job log | no |
 | `other` | anything else | no |
 
 Each kind has a `beforeSteps` field in `INFRA_KINDS`. A kind that happens before any job step runs is retried for every trust class. A kind that can happen mid-run (`sandbox_lost`) may follow steps with side effects, such as a deploy or a publish, so it is retried only for pull request jobs. A `protected` or `release` job ends `infra_error` with the reason, with no retry. A job whose class is not yet recorded counts as not a pull request.
