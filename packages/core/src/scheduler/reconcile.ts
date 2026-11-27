@@ -83,6 +83,10 @@ export async function reconcileExpired(
       probe = `no provider named ${attempt.provider}`;
     }
 
+    // An attempt with an adopt block (the secrets proxy, an artifact credential, a job token) is
+    // never handed off by a drain (#761), but one whose exec still runs when the controller dies
+    // is re-attached exactly as before: it keeps its real result, and a release or protected job
+    // holding a token is never killed half-published.
     if (alive && opts.adopt && opts.owner && attempt.sandboxId && attempt.execId) {
       const claim = await takeExpiredLease(db, attempt.id, {
         owner: opts.owner,

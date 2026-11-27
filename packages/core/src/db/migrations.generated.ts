@@ -602,5 +602,14 @@ export const migrations: Migration[] = [
       "CREATE UNIQUE INDEX `notifications_dedupe_unique` ON `notifications` (`user_id`,`kind`,`dedupe_key`);",
       "ALTER TABLE `outbound_webhook_endpoints` ADD `format` text DEFAULT 'json' NOT NULL;"
     ]
+  },
+  {
+    "tag": "0056_attempt_adoption",
+    "when": 1795745199500,
+    "statements": [
+      "ALTER TABLE `job_attempts` ADD `adopt_block` text;",
+      "ALTER TABLE `job_attempts` ADD `exec_log_offset` integer;",
+      "ALTER TABLE `job_attempts` ADD `log_checkpoint` integer;"
+    ]
   }
 ];

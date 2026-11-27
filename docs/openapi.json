@@ -15381,6 +15381,26 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
                       "description": "Shadow attempts cut since this drain began."
+                    },
+                    "running_by_adoption": {
+                      "type": "object",
+                      "properties": {
+                        "adoptable": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Running attempts the next controller can re-attach to: act runs in a live sandbox and the attempt holds no credential only this process has (secrets proxy, artifact credential, job token). A restart hands them off."
+                        },
+                        "not_adoptable": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Running attempts a restart would cut: still claiming, creating the sandbox or uploading the checkout, or behind the secrets proxy, or holding an artifact credential or a job token. A crash still re-attaches to those whose exec runs."
+                        }
+                      },
+                      "required": ["adoptable", "not_adoptable"],
+                      "additionalProperties": false,
+                      "description": "`running_attempts` split by whether a restart can hand them off (#761). A deploy waits only for `not_adoptable` to be 0."
                     }
                   },
                   "required": [
@@ -15389,7 +15409,8 @@
                     "since",
                     "running_by_mode",
                     "shadow_mode",
-                    "shadow_cut"
+                    "shadow_cut",
+                    "running_by_adoption"
                   ],
                   "additionalProperties": false
                 }
@@ -15421,7 +15442,7 @@
       "get": {
         "operationId": "instance_drain_status",
         "summary": "Whether this instance is draining and how many attempts still run.",
-        "description": "Returns `draining`, `running_attempts` (across the instance, split in `running_by_mode` into live and shadow), `since`, `shadow_mode` and `shadow_cut` (attempts cut since the drain began). A deploy script waits for `running_attempts` to be 0 after `instance_drain`. Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "description": "Returns `draining`, `running_attempts` (across the instance, split in `running_by_mode` into live and shadow), `since`, `shadow_mode` and `shadow_cut` (attempts cut since the drain began). `running_by_adoption` splits them into `adoptable` (a restart hands them to the next boot, which re-attaches) and `not_adoptable`. A deploy script waits for `running_by_adoption.not_adoptable` to be 0 after `instance_drain` (or for `running_attempts` to be 0 to wait for every job). Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
         "parameters": [],
         "responses": {
           "200": {
@@ -15479,6 +15500,26 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
                       "description": "Shadow attempts cut since this drain began."
+                    },
+                    "running_by_adoption": {
+                      "type": "object",
+                      "properties": {
+                        "adoptable": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Running attempts the next controller can re-attach to: act runs in a live sandbox and the attempt holds no credential only this process has (secrets proxy, artifact credential, job token). A restart hands them off."
+                        },
+                        "not_adoptable": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Running attempts a restart would cut: still claiming, creating the sandbox or uploading the checkout, or behind the secrets proxy, or holding an artifact credential or a job token. A crash still re-attaches to those whose exec runs."
+                        }
+                      },
+                      "required": ["adoptable", "not_adoptable"],
+                      "additionalProperties": false,
+                      "description": "`running_attempts` split by whether a restart can hand them off (#761). A deploy waits only for `not_adoptable` to be 0."
                     }
                   },
                   "required": [
@@ -15487,7 +15528,8 @@
                     "since",
                     "running_by_mode",
                     "shadow_mode",
-                    "shadow_cut"
+                    "shadow_cut",
+                    "running_by_adoption"
                   ],
                   "additionalProperties": false
                 }

@@ -19,6 +19,7 @@ import {
   appendEvent,
   countActiveApiTokens,
   countRunning,
+  countRunningByAdoptability,
   countRunningByMode,
   createOrg,
   findRepoBindingByName,
@@ -1129,6 +1130,25 @@ const drainOutput = z.object({
     .enum(["wait", "cancel"])
     .describe("What this drain does with shadow attempts: wait for them or cut them."),
   shadow_cut: z.int().describe("Shadow attempts cut since this drain began."),
+  running_by_adoption: z
+    .object({
+      adoptable: z
+        .int()
+        .describe(
+          "Running attempts the next controller can re-attach to: act runs in a live sandbox and " +
+            "the attempt holds no credential only this process has (secrets proxy, artifact credential, job token). A restart hands them off.",
+        ),
+      not_adoptable: z
+        .int()
+        .describe(
+          "Running attempts a restart would cut: still claiming, creating the sandbox or uploading " +
+            "the checkout, or behind the secrets proxy, or holding an artifact credential or a job token. A crash still re-attaches to those whose exec runs.",
+        ),
+    })
+    .describe(
+      "`running_attempts` split by whether a restart can hand them off (#761). A deploy waits " +
+        "only for `not_adoptable` to be 0.",
+    ),
 });
 
 async function drainView(ctx: {
@@ -1146,6 +1166,10 @@ async function drainView(ctx: {
     ),
     shadow_mode: processDrain.shadowMode,
     shadow_cut: processDrain.shadowCut,
+    running_by_adoption: await countRunningByAdoptability(ctx.db).then((c) => ({
+      adoptable: c.adoptable,
+      not_adoptable: c.notAdoptable,
+    })),
   };
 }
 
@@ -1204,8 +1228,10 @@ export const instanceDrainStatusOp = defineOp({
   description:
     "Returns `draining`, `running_attempts` (across the instance, split in `running_by_mode` into " +
     "live and shadow), `since`, `shadow_mode` and `shadow_cut` (attempts cut since the drain began). " +
-    "A deploy script " +
-    "waits for `running_attempts` to be 0 after `instance_drain`. Only the instance " +
+    "`running_by_adoption` splits them into `adoptable` (a restart hands them to the next boot, " +
+    "which re-attaches) and `not_adoptable`. A deploy script " +
+    "waits for `running_by_adoption.not_adoptable` to be 0 after `instance_drain` (or for " +
+    "`running_attempts` to be 0 to wait for every job). Only the instance " +
     "administrator can call it. Read-only. Not an MCP tool.",
   input: z.object({}),
   output: drainOutput,

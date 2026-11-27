@@ -615,7 +615,12 @@ async function startBackground(
           }))
         ).value as number;
         log(`draining: waiting up to ${seconds}s for ${scheduler.activeCount} running attempt(s)`);
-        const { remaining } = await scheduler.drainAndWait(seconds * 1000, "shutdown");
+        // Attempts whose act already runs in a live sandbox are handed to the next boot at once
+        // (#761), which re-attaches to them: the wait covers only the phases that cannot be.
+        const { remaining, handedOff } = await scheduler.drainAndWait(seconds * 1000, "shutdown", {
+          handoff: true,
+        });
+        if (handedOff) log(`handed off ${handedOff} running attempt(s) to the next boot`);
         if (remaining > 0) log(`drain timeout: ${remaining} attempt(s) left for the next boot`);
       }
       await secretsProxy?.stop();

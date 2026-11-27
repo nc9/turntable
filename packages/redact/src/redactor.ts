@@ -348,6 +348,15 @@ export class Redactor {
     return this.#drain("idle");
   }
 
+  /**
+   * True while anything is held back (a partial line, an open PEM block, an over-long token run):
+   * output pushed so far is then not all emitted. A caller checkpointing a log (#761) does so
+   * only when this is false, so a later reader can start a fresh redactor at that point.
+   */
+  get holding(): boolean {
+    return this.#buf !== "" || this.#swallowing || this.#tokenRun !== undefined;
+  }
+
   #window(): number {
     return Math.max(MAX_PATTERN_LENGTH, this.#registry?.maxLength ?? 0);
   }

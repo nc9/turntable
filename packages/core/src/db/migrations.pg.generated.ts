@@ -345,5 +345,14 @@ export const migrations: Migration[] = [
       "CREATE INDEX \"notifications_user_idx\" ON \"notifications\" USING btree (\"user_id\",\"id\");",
       "ALTER TABLE \"outbound_webhook_endpoints\" ADD CONSTRAINT \"outbound_webhook_endpoints_format_check\" CHECK (format IN ('json', 'slack'));"
     ]
+  },
+  {
+    "tag": "0027_attempt_adoption",
+    "when": 1795745200169,
+    "statements": [
+      "ALTER TABLE \"job_attempts\" ADD COLUMN \"adopt_block\" text;",
+      "ALTER TABLE \"job_attempts\" ADD COLUMN \"exec_log_offset\" bigint;",
+      "ALTER TABLE \"job_attempts\" ADD COLUMN \"log_checkpoint\" bigint;"
+    ]
   }
 ];

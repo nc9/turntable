@@ -101,4 +101,31 @@ jobs:
     const p = planWorkflow(bad, push, { readFile });
     expect(() => splitJob(bad, p.jobs[0]!, {}, { event: "push" })).toThrow(/output name/);
   });
+  test("a workflow_dispatch split keeps the declared inputs so act builds inputs.* (#780)", () => {
+    const src = `on:
+  workflow_dispatch:
+    inputs:
+      app: { type: string, default: web }
+      dry: { type: boolean, default: false }
+  push:
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo \${{ inputs.app }} \${{ github.event.inputs.app }}
+`;
+    const ev = { name: "workflow_dispatch", ref: "refs/heads/main" } as const;
+    const p = planWorkflow(src, ev, { readFile });
+    const out = parse(splitJob(src, p.jobs[0]!, {}, { event: "workflow_dispatch" })) as {
+      on: { workflow_dispatch: { inputs: Record<string, { default: unknown }> } };
+    };
+    expect(Object.keys(out.on.workflow_dispatch.inputs)).toEqual(["app", "dry"]);
+    expect(out.on.workflow_dispatch.inputs.app!.default).toBe("web");
+    // Other events keep the bare form, and a dispatch with no declared inputs stays bare.
+    const bare = `on: workflow_dispatch\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: []\n`;
+    const p2 = planWorkflow(bare, ev, { readFile });
+    expect(parse(splitJob(bare, p2.jobs[0]!, {}, { event: "workflow_dispatch" })).on).toBe(
+      "workflow_dispatch",
+    );
+  });
 });

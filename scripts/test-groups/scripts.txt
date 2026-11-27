@@ -23,3 +23,4 @@ scripts/cd-gate.test.ts
 scripts/cd-api-surface.test.ts
 scripts/mcp-tools.test.ts
 scripts/build-version.test.ts
+scripts/ci-classify.test.ts

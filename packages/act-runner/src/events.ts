@@ -63,6 +63,8 @@ export interface ActParser {
   push(chunk: string): ActEvent[];
   /** Flush a final unterminated line. */
   end(): ActEvent[];
+  /** True while a partial line is held back: every byte fed so far is not yet an event. */
+  readonly pending: boolean;
 }
 
 export function createActParser(): ActParser {
@@ -146,6 +148,9 @@ export function createActParser(): ActParser {
       const rest = buf;
       buf = "";
       return rest ? handle(rest) : [];
+    },
+    get pending() {
+      return buf !== "";
     },
   };
 }

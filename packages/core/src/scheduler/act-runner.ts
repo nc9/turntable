@@ -17,6 +17,7 @@ import {
   PlanError,
   type PlannedJob,
   planJob,
+  plannedNoArtifactAccess,
   rebuildArgv,
   splitJob,
   workflowFullHistoryJobs,
@@ -437,6 +438,15 @@ function workerStore(ctx: AttemptContext): RunStore {
     setSandboxDestroyed: (_id, at) => ctx.store.setExec({ sandboxDestroyedAt: at }),
     setExec: (_id, execId) => ctx.store.setExec({ execId }),
     resetOutput: () => ctx.store.reset(),
+    ...(ctx.store.truncate
+      ? { truncateOutput: (_id: string, logOffset: number) => ctx.store.truncate!(logOffset) }
+      : {}),
+    ...(ctx.store.setLogCheckpoint
+      ? {
+          setLogCheckpoint: (_id: string, execOffset: number, logOffset: number) =>
+            ctx.store.setLogCheckpoint!(execOffset, logOffset),
+        }
+      : {}),
     appendLog: (_id, offset, bytes) => ctx.store.appendLog(offset, bytes),
     addCut: (_id, cut) => ctx.store.addCut(cut),
     recordStep: (_id, step) => {
@@ -571,6 +581,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         // an egress canary that cannot verify isolation refuses it instead of letting it run.
         ...(githubToken !== undefined || oidc ? { secretBearing: true } : {}),
         signal: ctx.signal,
+        ...(ctx.detach ? { detach: ctx.detach } : {}),
         ...(ctx.notices ? { notices: ctx.notices } : {}),
         ...(ctx.resume || !repoTarball ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball }),
         // `none` unless this run's plan (from the project's config) or the runner says `open`.
@@ -585,8 +596,21 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       { runId: ctx.run.id, jobId: ctx.job.id, attemptId: ctx.attempt.id },
       plan,
       // A dead worker's exec: replay it for the real result instead of starting over. The plan
-      // says which events are this job's and which outputs to read.
-      ctx.resume,
+      // says which events are this job's and which outputs to read. The checkpoint, when the
+      // attempt has one, keeps the stored log and renders only what follows it (#761).
+      ctx.resume
+        ? {
+            ...ctx.resume,
+            ...(ctx.attempt.execLogOffset !== null && ctx.attempt.logCheckpoint !== null
+              ? {
+                  checkpoint: {
+                    execOffset: ctx.attempt.execLogOffset,
+                    logOffset: ctx.attempt.logCheckpoint,
+                  },
+                }
+              : {}),
+          }
+        : undefined,
     ).finally(() => sink?.flush());
     return {
       state: res.state,
@@ -1112,8 +1136,10 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
             })
           : undefined;
       // Likewise the artifact credential (ACTIONS_RUNTIME_TOKEN), for upload and download-artifact.
+      // Only a job that can use artifacts gets one (a plan with no artifact step and no local
+      // action says it cannot), so an ordinary job stays adoptable (#761).
       const jobArtifacts =
-        o.artifacts && jobKlass
+        o.artifacts && jobKlass && !plannedNoArtifactAccess(ctx.job.planned)
           ? o.artifacts({
               runId: dbRun.id,
               attemptId: ctx.attempt.id,
@@ -1124,6 +1150,22 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               proxyRoute: artifactsViaProxy,
             })
           : undefined;
+      // Whether another controller may re-attach to this job (#761), recorded before its exec
+      // starts. A job behind the secrets proxy or holding an artifact credential depends on state
+      // only this process has (the proxy's attempt registration, the in-memory grant): it is not.
+      // The cache grant is in memory too, but a job that loses it only loses its cache. A job
+      // holding a live GitHub token (no proxy) is not either: the adopter has no token to build
+      // its redaction registry from, so the token's base64 and URL-encoded forms would be stored.
+      await ctx.store.setExec({
+        adoptBlock:
+          useProxy && access
+            ? "secrets proxy"
+            : jobArtifacts
+              ? "artifact credential"
+              : issued
+                ? "job token"
+                : null,
+      });
       try {
         return await run(
           jobCtx,
@@ -1148,7 +1190,8 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         jobCache?.release();
         jobArtifacts?.release();
         ctx.signal.removeEventListener("abort", revoke);
-        await issued?.revoke();
+        // Handed off (#761): the job runs on under the next controller and keeps its token.
+        if (!ctx.detach?.aborted) await issued?.revoke();
       }
     } finally {
       checkout.dispose?.();

@@ -14,3 +14,5 @@ packages/core/tests/scheduling-yield-claimable.test.ts
 packages/core/tests/sandbox-limits-live.test.ts
 packages/core/tests/network-degraded.test.ts
 packages/core/tests/network-probe-bounds.test.ts
+packages/core/tests/attempt-adoption.test.ts
+packages/core/tests/attempt-adopt-block.test.ts
