@@ -228,6 +228,10 @@ export function foldShardStates(states: readonly string[]): string {
 
 export interface WorkflowPlan {
   name?: string;
+  /** The workflow's `run-name`, evaluated with the `github` and `inputs` contexts; absent when none or invalid. */
+  runName?: string;
+  /** Why a declared `run-name` was not used (the default title applies). */
+  runNameWarning?: string;
   event: WorkflowEvent;
   trigger: TriggerResult;
   /** Workflow-level env, literal strings only (expressions are evaluated by act per job). */
@@ -490,6 +494,8 @@ export function planWorkflow(
   };
   const wfCtx: ExprContext = { contexts: base, status: { needs: [], cancelled: false } };
 
+  const runNameResult = evaluateRunName(doc["run-name"], github, opts.inputs ?? {});
+
   const warnings: PlanWarning[] = [];
   const env: Record<string, string> = {};
   if (isObj(doc.env)) {
@@ -709,6 +715,8 @@ export function planWorkflow(
   if (opts.failOnLint && warnings.length > 0) throw lintError(warnings);
   return {
     ...(typeof doc.name === "string" ? { name: doc.name } : {}),
+    ...(runNameResult.runName !== undefined ? { runName: runNameResult.runName } : {}),
+    ...(runNameResult.warning ? { runNameWarning: runNameResult.warning } : {}),
     event,
     trigger,
     env,
@@ -717,6 +725,43 @@ export function planWorkflow(
     warnings,
     splitNotices,
   };
+}
+
+/** The longest display title kept for a run. */
+export const RUN_NAME_MAX = 200;
+
+/**
+ * A workflow's `run-name` (GitHub's rules: only the `github` and `inputs` contexts). An expression
+ * that reads anything else, or fails to evaluate, falls back to the default title with a warning.
+ */
+function evaluateRunName(
+  raw: unknown,
+  github: Record<string, Value>,
+  inputs: Record<string, Value>,
+): { runName?: string; warning?: string } {
+  if (raw === undefined) return {};
+  if (typeof raw !== "string")
+    return { warning: "run-name is not a string; using the default title" };
+  try {
+    for (const m of raw.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
+      const bad = [...referencedContexts((m[1] ?? "").trim())].filter(
+        (c) => c !== "github" && c !== "inputs",
+      );
+      if (bad.length > 0)
+        return {
+          warning: `run-name may only use the github and inputs contexts (found ${bad.join(", ")}); using the default title`,
+        };
+    }
+    const text = interpolate(raw, {
+      contexts: { github, inputs },
+      status: { needs: [], cancelled: false },
+    });
+    const title = text.replaceAll(/[\r\n]+/g, " ").slice(0, RUN_NAME_MAX);
+    return title.trim() === "" ? {} : { runName: title };
+  } catch (e) {
+    if (!(e instanceof ExprError)) throw e;
+    return { warning: `run-name could not be evaluated (${e.message}); using the default title` };
+  }
 }
 
 /** The steps of a job that are objects, in order. */

@@ -233,6 +233,47 @@ describe("who may dispatch", () => {
   });
 });
 
+describe("run-name", () => {
+  const named = (runName: string): string =>
+    WORKFLOW.replace("jobs:", `run-name: ${runName}\njobs:`);
+
+  test("a dispatch with inputs gets the exact evaluated title, shown by get_run and list_runs", async () => {
+    const w = await world();
+    w.gh.state.files.set(
+      "*",
+      named(
+        "Release ${{ inputs.version }} (${{ github.actor }}) retries=${{ inputs.retries }} dry=${{ inputs.dry_run }}",
+      ),
+    );
+    const tok = await w.token(w.a.scope, "release_operator");
+    const out = await ok(
+      call(w, tok, { inputs: { version: "1.2.3", retries: "5", dry_run: "true" } }),
+    );
+    const run = (await getRun(db, w.a.scope, out.run_id))!;
+    expect(run.runName).toBe(`Release 1.2.3 (${run.actor}) retries=5 dry=true`);
+    for (const op of ["get_run", "list_runs"]) {
+      const got = await dispatch(w.env, { kind: "bearer", token: tok }, op, {
+        project: "app",
+        ...(op === "get_run" ? { run_id: out.run_id } : {}),
+      });
+      expect(JSON.stringify(got)).toContain(
+        `"run_name":"Release 1.2.3 (${run.actor}) retries=5 dry=true"`,
+      );
+    }
+  });
+
+  test("an invalid expression falls back to no title; without run-name the column is null", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    w.gh.state.files.set("*", named("Deploy ${{ secrets.X }}"));
+    const bad = await ok(call(w, tok, { inputs: { version: "1" } }));
+    expect((await getRun(db, w.a.scope, bad.run_id))!.runName).toBeNull();
+    w.gh.state.files.set("*", WORKFLOW);
+    const plain = await ok(call(w, tok, { inputs: { version: "1" } }));
+    expect((await getRun(db, w.a.scope, plain.run_id))!.runName).toBeNull();
+  });
+});
+
 describe("the run", () => {
   test("is for the sha the ref resolved to, with github.event.inputs and inputs set", async () => {
     const w = await world();

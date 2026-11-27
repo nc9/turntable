@@ -11,6 +11,7 @@ export type WireRun = {
   ref: string;
   sha: string | null;
   workflow_name: string | null;
+  run_name?: string | null;
   commit_message: string | null;
   actor: string | null;
   head_branch: string | null;

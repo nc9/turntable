@@ -101,7 +101,9 @@ function RunRowItem({
       <StateIcon state={run.status} className="mt-0.5 size-[18px]" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="truncate text-sm font-medium text-foreground">{run.commitMessage}</span>
+          <span className="truncate text-sm font-medium text-foreground">
+            {run.runName || run.commitMessage}
+          </span>
           {pending ? <span className="shrink-0 text-xs text-faint">Starting</span> : null}
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-dim">

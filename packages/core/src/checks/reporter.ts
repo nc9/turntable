@@ -38,6 +38,7 @@ import {
   checkScopeOf,
   classifyInfra,
   infraRetryLine,
+  plain,
   refusalSentence,
   conclusionFor,
   NO_ATTEMPT_SKIP,
@@ -418,7 +419,13 @@ export class CheckReporter {
       ...(runUrl ? { details_url: runUrl } : {}),
       output: {
         title: titleFor(mode, NO_ATTEMPT_SKIP),
-        summary: summaryFor({ mode, result: NO_ATTEMPT_SKIP, runUrl, skipReason: reason }),
+        summary: summaryFor({
+          mode,
+          result: NO_ATTEMPT_SKIP,
+          runUrl,
+          skipReason: reason,
+          runName: run.runName,
+        }),
       },
     });
     if (id === undefined) return { nothing: "superseded" };
@@ -459,7 +466,7 @@ export class CheckReporter {
           status: "in_progress",
           output: {
             title: RUNNING_TITLE(mode),
-            summary: summaryRunning(mode, runUrl, retryOf),
+            summary: summaryRunning(mode, runUrl, retryOf, claim.run.runName),
           },
         };
         await this.#retry("update check run", () =>
@@ -490,7 +497,7 @@ export class CheckReporter {
           ...(runUrl ? { details_url: runUrl } : {}),
           output: {
             title: RUNNING_TITLE(mode),
-            summary: summaryRunning(mode, runUrl, retryOf),
+            summary: summaryRunning(mode, runUrl, retryOf, claim.run.runName),
           },
         },
       );
@@ -544,6 +551,7 @@ export class CheckReporter {
           mode,
           result,
           runUrl,
+          runName: claim.run.runName,
           failingStep,
           excerpt,
           infraClass: result === "infra_error" ? classifyInfra(outcome.reason) : undefined,
@@ -694,12 +702,14 @@ function summaryRunning(
   mode: Exclude<ChecksMode, "off">,
   runUrl: string | undefined,
   retryOf?: string,
+  runName?: string | null,
 ): string {
   const lines = [
     mode === "shadow"
       ? "Turntable is running this job as a shadow check: the result will be neutral."
       : "Turntable is running this job.",
   ];
+  if (runName) lines.push(`**Run:** ${plain(runName, 200)}`);
   const retry = infraRetryLine(retryOf);
   if (retry) lines.push(retry);
   if (runUrl) lines.push(`[Open the run in Turntable](${runUrl})`);

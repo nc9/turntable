@@ -321,3 +321,43 @@ describe("the artifact-upload flag on a planned job", () => {
     expect(flags("run: echo hi")).toEqual([undefined, undefined]);
   });
 });
+
+describe("run-name", () => {
+  const wf = (rn: string): string =>
+    `name: R\nrun-name: ${rn}\non: workflow_dispatch\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n`;
+  const ev = { name: "workflow_dispatch", ref: "refs/heads/main" } as const;
+  const opts = {
+    readFile,
+    github: { actor: "alice" },
+    inputs: { app: "admin", dry: true, n: 3 },
+  };
+
+  test("evaluates github and inputs, typed values as strings", () => {
+    const p = planWorkflow(
+      wf("Deploy ${{ inputs.app }} by ${{ github.actor }} dry=${{ inputs.dry }} n=${{ inputs.n }}"),
+      ev,
+      opts,
+    );
+    expect(p.runName).toBe("Deploy admin by alice dry=true n=3");
+    expect(p.runNameWarning).toBeUndefined();
+  });
+
+  test("another context or a bad expression falls back with a warning", () => {
+    for (const rn of [
+      "X ${{ secrets.A }}",
+      "X ${{ env.A }}",
+      "X ${{ success() }}",
+      "X ${{ 1 + }}",
+    ]) {
+      const p = planWorkflow(wf(JSON.stringify(rn)), ev, opts);
+      expect(p.runName).toBeUndefined();
+      expect(p.runNameWarning).toContain("default title");
+    }
+  });
+
+  test("no run-name: nothing is set", () => {
+    const p = planWorkflow(wf("x").replace("run-name: x\n", ""), ev, opts);
+    expect(p.runName).toBeUndefined();
+    expect(p.runNameWarning).toBeUndefined();
+  });
+});

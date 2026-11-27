@@ -68,6 +68,8 @@ export type RunInput = {
   ref: string;
   sha?: string;
   workflowName?: string | undefined;
+  /** The evaluated `run-name`, the run's display title. */
+  runName?: string | undefined;
   commitMessage?: string | undefined;
   actor?: string | undefined;
   headBranch?: string | undefined;
@@ -369,6 +371,7 @@ export function createRun(db: Db, scope: Scope, input: RunInput): Promise<Run> {
       ref: input.ref,
       sha: input.sha ?? null,
       workflowName: cap(input.workflowName, 200),
+      runName: cap(input.runName, 200),
       commitMessage: cap(input.commitMessage, 2000),
       actor: cap(input.actor, 100),
       headBranch: cap(input.headBranch, 255),

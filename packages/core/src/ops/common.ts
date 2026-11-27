@@ -62,6 +62,10 @@ export const runSummarySchema = z.object({
   ref: z.string().describe("Branch or tag ref as the forge reported it."),
   sha: z.string().nullable(),
   workflow_name: z.string().nullable().describe("Workflow display name, from the forge."),
+  run_name: z
+    .string()
+    .nullable()
+    .describe("The workflow's run-name evaluated for this run; null when it has none."),
   commit_message: z.string().nullable().describe("Head commit message (capped), from the forge."),
   actor: z
     .string()
@@ -94,6 +98,7 @@ export function toRunSummary(row: Run & { projectSlug: string }): RunSummary {
     ref: row.ref,
     sha: row.sha,
     workflow_name: row.workflowName,
+    run_name: row.runName ?? null,
     commit_message: row.commitMessage,
     actor: row.actor,
     head_branch: row.headBranch,

@@ -186,6 +186,10 @@
                             "description": "Workflow display name, from the forge.",
                             "type": ["string", "null"]
                           },
+                          "run_name": {
+                            "description": "The workflow's run-name evaluated for this run; null when it has none.",
+                            "type": ["string", "null"]
+                          },
                           "commit_message": {
                             "description": "Head commit message (capped), from the forge.",
                             "type": ["string", "null"]
@@ -265,6 +269,7 @@
                           "ref",
                           "sha",
                           "workflow_name",
+                          "run_name",
                           "commit_message",
                           "actor",
                           "head_branch",
@@ -402,6 +407,10 @@
                     },
                     "workflow_name": {
                       "description": "Workflow display name, from the forge.",
+                      "type": ["string", "null"]
+                    },
+                    "run_name": {
+                      "description": "The workflow's run-name evaluated for this run; null when it has none.",
                       "type": ["string", "null"]
                     },
                     "commit_message": {
@@ -828,6 +837,7 @@
                     "ref",
                     "sha",
                     "workflow_name",
+                    "run_name",
                     "commit_message",
                     "actor",
                     "head_branch",

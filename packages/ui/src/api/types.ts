@@ -53,6 +53,8 @@ export type Run = {
   projectId: string;
   workflowPath: string;
   workflowName: string;
+  /** The workflow's `run-name`, evaluated when the run was planned; shown as the title when set. */
+  runName?: string | null;
   event: string;
   ref: string;
   sha: string | null;

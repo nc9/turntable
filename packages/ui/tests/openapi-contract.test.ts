@@ -95,6 +95,7 @@ test("list_runs: path, params and run fields", () => {
       ref: true,
       sha: true,
       workflow_name: true,
+      run_name: true,
       commit_message: true,
       actor: true,
       head_branch: true,

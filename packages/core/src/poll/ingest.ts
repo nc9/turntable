@@ -1259,6 +1259,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         ref: c.ref,
         sha: c.sha,
         workflowName: workflowName ?? wp.name ?? undefined,
+        runName: wp.runName,
         commitMessage: c.message,
         actor: c.actor ?? undefined,
         headBranch: c.headBranch,
