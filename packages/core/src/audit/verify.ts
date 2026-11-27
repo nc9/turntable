@@ -64,7 +64,14 @@ export interface ChainWalk {
 }
 
 /** Walks an org's chain: consecutive positions, links and recomputed hashes. */
-export async function walkChain(db: Db, orgId: string): Promise<ChainWalk> {
+export function walkChain(db: Db, orgId: string): Promise<ChainWalk> {
+  return walkChainPages((after, limit) => chainedAudit(db, orgId, after, limit));
+}
+
+/** The same walk over any source of pages, e.g. a database that is not the open one (#716). */
+export async function walkChainPages(
+  chainedAudit: (afterSeq: number, limit: number) => Promise<AuditRow[]>,
+): Promise<ChainWalk> {
   const problems: string[] = [];
   const hashes = new Map<number, string>();
   let prev = GENESIS_HASH;
@@ -72,7 +79,7 @@ export async function walkChain(db: Db, orgId: string): Promise<ChainWalk> {
   let entries = 0;
   let broken = false;
   for (let after = 0; ;) {
-    const page = await chainedAudit(db, orgId, after, PAGE);
+    const page = await chainedAudit(after, PAGE);
     if (page.length === 0) break;
     for (const r of page) {
       entries += 1;

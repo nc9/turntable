@@ -43,6 +43,14 @@ The repos are written against one contract (see `src/db/index.ts`). What SQLite 
 
 The audit chain is the hottest read-then-write: every write operation appends to its org's chain. Left to SERIALIZABLE alone, writers to one org would collide and retry. So `db.transaction(fn, { lock: key })` queues root transactions of one process that name the same key (the dispatcher and `appendAudit` use `audit:<org id>`) before they take a connection: they run one after another, a wait instead of a retry, and a long queue never holds pool connections. Other orgs are unaffected. SQLite ignores the key; its transactions are already exclusive. Across processes (several replicas on one database) SERIALIZABLE and the retry still decide, and each round commits one. A database advisory lock was considered for that case and not used: under SERIALIZABLE the transaction's snapshot is taken at its first statement, before a waiting lock is granted, so the lock would hand back a stale view of the chain and the retry would happen anyway.
 
+## Moving from SQLite
+
+`instance_db_copy` copies a SQLite instance into an empty Postgres database and verifies it. The runbook, with the rollback, is [SQLite to Postgres](/deploy/sqlite-to-postgres).
+
+## Pool and timeouts
+
+`TURNTABLE_PG_POOL_MAX` bounds the connection pool (default 10), `TURNTABLE_PG_STATEMENT_TIMEOUT_MS` sets a statement timeout on every connection (off by default), and `TURNTABLE_PG_REQUIRE_TLS=1` refuses a URL that does not carry `sslmode=require` or stronger.
+
 ## Testing
 
 `TURNTABLE_TEST_DB=pglite bun test <files>` runs a test file on Postgres compiled to WASM, in process. It is memory-heavy, so give it a handful of files at a time. `TURNTABLE_TEST_DB=postgres://...` uses a real server; every `openDatabase(':memory:')` in the tests becomes a freshly emptied database there. `bun run pg:test` runs the core and ops suites that way, and CI runs it against a Postgres service. Tests that are about SQLite itself, or that start a second process with its own database, are listed in `scripts/run-tests-pg.ts` with the reason.
@@ -50,5 +58,4 @@ The audit chain is the hottest read-then-write: every write operation appends to
 ## Not yet
 
 - Row-level security. Tenant isolation is in the repos; RLS would add a second wall at the database.
-- Moving data between SQLite and Postgres. A new Postgres database starts empty.
 - The release lane's own attestation file stays SQLite: it is deliberately outside the main database.
