@@ -174,6 +174,21 @@ describe("reporter", () => {
     expect(calls.filter((x) => x.op === "create")).toHaveLength(1);
   });
 
+  test("the run's run-name is in the check title and summary, and the check name is unchanged", async () => {
+    await setProjectChecksMode(db, world.scope, "live");
+    const c = await claim();
+    c.run.runName = "Deploy admin\n`prod`";
+    const { api, runs } = fakeApi();
+    const rep = reporterFor(api, minter().auth);
+    rep.started(c);
+    rep.finished(c, { state: "success", reason: "" });
+    await rep.idle();
+    const run = [...runs.values()][0]!;
+    expect(run.name).toBe("turntable / build");
+    expect(run.output!.title).toBe("Turntable: success (Deploy admin prod)");
+    expect(run.output!.summary).toContain("**Run:** Deploy admin prod");
+  });
+
   test("live maps success, failure, cancelled, skipped and infra_error", async () => {
     await setProjectChecksMode(db, world.scope, "live");
     const cases = [

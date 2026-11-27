@@ -205,7 +205,7 @@ export function CommandPalette({
                 {recent.map((r) => (
                   <CommandItem
                     key={r.id}
-                    value={`run ${r.commitMessage} ${branchFromRef(r.ref)} ${shortSha(r.sha)} ${r.workflowName}`}
+                    value={`run ${r.runName || r.commitMessage} ${branchFromRef(r.ref)} ${shortSha(r.sha)} ${r.workflowName}`}
                     onSelect={go(
                       () =>
                         void navigate({
@@ -215,7 +215,7 @@ export function CommandPalette({
                     )}
                   >
                     <StateIcon state={r.status} className="!size-4" />
-                    <span className="min-w-0 flex-1 truncate">{r.commitMessage}</span>
+                    <span className="min-w-0 flex-1 truncate">{r.runName || r.commitMessage}</span>
                     <span className="hidden items-center gap-1 text-xs text-faint sm:flex">
                       <GitBranch className="!size-3" />
                       {branchFromRef(r.ref)}

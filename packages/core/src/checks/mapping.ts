@@ -142,17 +142,28 @@ export function skipReasonFor(i: SkipInput): string {
   return "the job was skipped before it started";
 }
 
+/** The run's display title (run-name) as a title suffix: one line, no backticks, capped. */
+function withRunName(title: string, runName?: string | null): string {
+  const name = runName ? plain(runName, 100) : "";
+  return name ? `${title} (${name})` : title;
+}
+
 export function titleFor(
   mode: Exclude<ChecksMode, "off">,
   result: AttemptResult | NoAttemptSkip,
   refused = false,
+  runName?: string | null,
 ): string {
-  if (refused) return `${mode === "shadow" ? "Shadow" : "Turntable"}: cannot run this job`;
-  return `${mode === "shadow" ? "Shadow" : "Turntable"}: ${typeof result === "object" ? "skipped" : WORD[result]}`;
+  const prefix = mode === "shadow" ? "Shadow" : "Turntable";
+  if (refused) return withRunName(`${prefix}: cannot run this job`, runName);
+  return withRunName(
+    `${prefix}: ${typeof result === "object" ? "skipped" : WORD[result]}`,
+    runName,
+  );
 }
 
-export const RUNNING_TITLE = (mode: Exclude<ChecksMode, "off">): string =>
-  `${mode === "shadow" ? "Shadow" : "Turntable"}: running`;
+export const RUNNING_TITLE = (mode: Exclude<ChecksMode, "off">, runName?: string | null): string =>
+  withRunName(`${mode === "shadow" ? "Shadow" : "Turntable"}: running`, runName);
 
 /** A code fence longer than any fence in the text, so the text cannot close it. */
 export function fenced(text: string): string {

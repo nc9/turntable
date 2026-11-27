@@ -418,7 +418,7 @@ export class CheckReporter {
       completed_at: at,
       ...(runUrl ? { details_url: runUrl } : {}),
       output: {
-        title: titleFor(mode, NO_ATTEMPT_SKIP),
+        title: titleFor(mode, NO_ATTEMPT_SKIP, false, run.runName),
         summary: summaryFor({
           mode,
           result: NO_ATTEMPT_SKIP,
@@ -465,7 +465,7 @@ export class CheckReporter {
         const body: CheckRunBody = {
           status: "in_progress",
           output: {
-            title: RUNNING_TITLE(mode),
+            title: RUNNING_TITLE(mode, claim.run.runName),
             summary: summaryRunning(mode, runUrl, retryOf, claim.run.runName),
           },
         };
@@ -496,7 +496,7 @@ export class CheckReporter {
           external_id: group?.externalId ?? attempt.id,
           ...(runUrl ? { details_url: runUrl } : {}),
           output: {
-            title: RUNNING_TITLE(mode),
+            title: RUNNING_TITLE(mode, claim.run.runName),
             summary: summaryRunning(mode, runUrl, retryOf, claim.run.runName),
           },
         },
@@ -546,6 +546,7 @@ export class CheckReporter {
           mode,
           result,
           !group && result === "failure" && refusalSentence(outcome.reason) !== undefined,
+          claim.run.runName,
         ),
         summary: summaryFor({
           mode,

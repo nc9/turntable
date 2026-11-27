@@ -3,6 +3,9 @@
 // approval, and what the audit log holds. The forge is the fake GitHub of github-stub.ts.
 import { beforeEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   addMember,
   bindRepo,
@@ -51,6 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo build \${{ inputs.version }}
+      - run: echo \${{ inputs.retries }} \${{ github.event.inputs.retries }}
   announce:
     if: \${{ inputs.dry_run == false }}
     runs-on: ubuntu-latest
@@ -313,6 +317,32 @@ describe("the run", () => {
     expect(verdict.decision).toBe("skip");
     const build = jobs.find((j) => j.jobKey === "build")!;
     expect(workflowReadiness(build, [], run).decision).toBe("ready");
+  });
+
+  test("a step's inputs.* and github.event.inputs.* resolve from the event file act is given", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    const out = await ok(call(w, tok, { inputs: { version: "admin", retries: "5" } }));
+    const run = (await getRun(db, w.a.scope, out.run_id))!;
+    // The scheduler's payload, written as the event file (`--eventpath`) the way run-job does.
+    const dir = await mkdtemp(join(tmpdir(), "tt-event-"));
+    try {
+      const file = join(dir, "event.json");
+      await writeFile(file, JSON.stringify(buildActEvent(run)));
+      // A fake act: for workflow_dispatch, act fills both `inputs.*` and `github.event.inputs.*`
+      // from the event file's `inputs` object, and nothing else.
+      const event = JSON.parse(await readFile(file, "utf8")) as { inputs?: Record<string, string> };
+      const render = (cmd: string): string =>
+        cmd.replace(
+          /\$\{\{\s*(?:github\.event\.)?inputs\.(\w+)\s*\}\}/g,
+          (_m, k: string) => event.inputs?.[k] ?? "",
+        );
+      // The build job's steps, as the workflow file the plan was made from has them.
+      const steps = [...WORKFLOW.matchAll(/- run: (echo .*(?:build|inputs).*)/g)].map((m) => m[1]!);
+      expect(steps.map(render)).toEqual(["echo build admin", "echo 5 5"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("one sha, resolved once: a branch that moves mid-dispatch changes nothing the run carries", async () => {

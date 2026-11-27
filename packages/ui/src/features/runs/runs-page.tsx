@@ -131,7 +131,7 @@ function RunRowItem({
   );
   if (pending)
     return (
-      <div className={cls} aria-label={`${meta.label}: ${run.commitMessage}`}>
+      <div className={cls} aria-label={`${meta.label}: ${run.runName || run.commitMessage}`}>
         {rowBody}
       </div>
     );
