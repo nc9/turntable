@@ -1,0 +1,71 @@
+---
+title: "CI cost and the diff classifier"
+description: "Baseline timings of the bootstrap CI and the report-only diff classifier (#776)"
+---
+
+Issue #776 moves the pipeline to the merge queue and scopes it to the stack's diff. This page holds the baseline and describes the classifier. Phase 1 changes no job: the classifier only reports.
+
+## Baseline
+
+Source: the last 50 runs of `ci.yml` (2026-11-26 21:05 to 2026-11-27 04:05 UTC), from `gh api repos/turntable-ci/turntable/actions/workflows/ci.yml/runs` and `.../runs/<id>/jobs`. Job minutes are `completed_at - started_at` summed over jobs, so they exclude queue time.
+
+| Event | Runs | Job minutes per run | Wall time median | Wall time p95 |
+| --- | --- | --- | --- | --- |
+| pull_request | 30 | 26.8 | 13.0 | 24.9 |
+| merge_group | 11 | 29.9 | 13.2 | 21.0 |
+| push (main) | 9 | 26.9 | 13.3 | 25.1 |
+| all | 50 | 27.5 | | |
+
+Per-job minutes (every run, in minutes):
+
+| Job | Runs | Median | p95 |
+| --- | --- | --- | --- |
+| postgres | 48 | 12.8 | 24.6 |
+| check | 48 | 8.6 | 10.6 |
+| act-runner-e2e | 48 | 2.6 | 3.2 |
+| docker | 48 | 1.1 | 1.5 |
+| provider-docker | 48 | 0.9 | 1.0 |
+| runner-image | 48 | 0.6 | 0.7 |
+| docs | 48 | 0.5 | 0.6 |
+| release-golden | 48 | 0.2 | 0.3 |
+| changes, dep-age, ci-ok | 48 to 49 | 0.1 | 0.2 |
+| postgres-pglite | 49 | 0.0 | 0.0 (skipped on GitHub) |
+
+Totals and waste:
+
+- 1375 job minutes in 50 runs.
+- Minutes per merged PR: about 153 (1375 over the 9 merge groups that succeeded in the window; a stacked merge group can carry several PRs, so this is an upper bound).
+- Waste: 7 cancelled runs and 4 failed runs, 242 job minutes (18%). No run had a second attempt, so reruns are 0 in this window; a fix is a new push, which shows up as a new cancelled or failed run.
+- 2 of 11 merge groups failed.
+
+Slowest test files, from the group markers in the `check` and `postgres` logs of merge-group run 45927423532. Time is the gap to the next file's start in the same suite, so it is approximate (suites run in parallel):
+
+| File | Seconds |
+| --- | --- |
+| packages/core/tests/db-copy-pg.test.ts | 47.1 |
+| packages/core/tests/release-approve-cli.test.ts | 46.3 |
+| packages/core/tests/run-local.test.ts | 41.2 |
+| packages/core/tests/poll-before.test.ts | 36.5 |
+| packages/core/tests/artifact-egress-none.test.ts | 34.0 |
+| packages/core/tests/my-activity-feed.test.ts | 31.2 |
+| packages/core/tests/signing.test.ts | 29.5 |
+| packages/core/tests/anchor-cutover-row-guard.test.ts | 27.5 |
+| packages/core/tests/release-lane-supervisor.test.ts | 25.6 |
+| packages/core/tests/sandbox-usage.test.ts | 23.5 |
+
+The `postgres` job (median 12.8, p95 24.6 minutes) and `check` (8.6) are 78% of job time.
+
+## The classifier
+
+`bun scripts/ci-classify.ts --base <sha> --head <sha> [--json]` maps the diff to the ci.yml jobs and prints the affected workspaces and, for each job, whether it would run and why.
+
+- Workspaces come from the bun workspace graph (`packages/*/package.json`: dependencies, devDependencies, peerDependencies), with reverse dependents included.
+- Global inputs run everything: `bun.lock`, the root `package.json`, `tsconfig.base.json`, `bunfig.toml`, formatter and editor config, the `Dockerfile` (toolchain pins), `.github/**` and `scripts/**`.
+- A docs-only diff (`docs/**`, `*.md`, `*.mdx`) runs the docs job only, plus `check` for a generated page and `runner-image` for `docs/compatibility.mdx`.
+- It fails open: an empty diff, a git error, a bad argument, an unknown top-level path or a file in an unknown package directory runs every job.
+
+`scripts/ci-classify.test.ts` holds the table of example diffs (a ui-only change skips postgres and act-runner e2e; a db change runs postgres).
+
+## Report-only rollout
+
+The merge_group run prints the classification beside the full pipeline and changes no job. Compare it with real failures for a week: a job that failed on a stack the classifier would have skipped blocks the switch. The workflow step is staged in `.longshore/staged-workflows/ci-classify-report.yml` until the workflow owner applies it.
