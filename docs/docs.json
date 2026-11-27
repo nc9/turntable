@@ -42,8 +42,10 @@
           "hosted",
           "tenant-isolation",
           "postgres",
+          "log-store",
           "instance-admin",
           "deploy/railway",
+          "deploy/sqlite-to-postgres",
           "deploy/cd"
         ]
       },
@@ -56,7 +58,8 @@
           "design/daytona-proxy",
           "design/publish-targets",
           "design/microvm-provider",
-          "design/postgres-rls"
+          "design/postgres-rls",
+          "design/release-lane-hosted"
         ]
       }
     ]

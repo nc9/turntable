@@ -192,7 +192,8 @@ export const setQuotas = defineOp({
         input: { target_org: org.slug, ...patch },
       },
     );
-    return quotaView(ctx, org.id);
+    // In the op's transaction: the cached log figure, never an HTTP call to the store under the lock.
+    return quotaView(ctx, org.id, { noWait: true });
   },
 });
 

@@ -51,6 +51,12 @@ export type SettingSpec<T> = {
   /** For a boolean trust setting: the strict value. */
   strictValue?: boolean;
   /**
+   * For a number: the key of the instance setting that is the most it may be set to. A set above
+   * it is refused (a limit-type override can never exceed what the operator allows), and the
+   * value in use is clamped to it, so a stored value from before a ceiling was lowered fails closed.
+   */
+  ceiling?: string;
+  /**
    * Whether `set_setting` may change it over MCP. False for anything that raises a limit or
    * widens what a run may do: a value in an agent's context is not a human decision (#188).
    */
@@ -215,6 +221,21 @@ export function createSettingsRegistry(settings: readonly SettingDef[]): Setting
     get: (key) => byKey.get(key),
     byScope: (scope) => settings.filter((d) => d.scope === scope),
   };
+}
+
+/**
+ * The same settings with every `refuse` check removed: values still parse and validate, but a
+ * value that is only wrong against the server's own state (a runner label naming a size class the
+ * operator defines) is not judged. For a process that never applies those settings, such as the
+ * release lane.
+ */
+export function withoutRefusals(registry: SettingsRegistry): SettingsRegistry {
+  return createSettingsRegistry(
+    registry.settings.map((d) => {
+      const { refuse: _refuse, ...rest } = d;
+      return rest;
+    }),
+  );
 }
 
 /** A short human description of a setting's type, from its schema, for the generated docs. */

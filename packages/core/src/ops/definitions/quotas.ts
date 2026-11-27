@@ -40,9 +40,10 @@ export const quotaViewSchema = z.object({
 export async function quotaView(
   ctx: { db: Parameters<typeof getOrgQuotas>[0]; now: () => number },
   orgId: string,
+  opts: { noWait?: boolean } = {},
 ) {
   const q = await getOrgQuotas(ctx.db, orgId);
-  const u = await quotaUsage(ctx.db, orgId, ctx.now(), q);
+  const u = await quotaUsage(ctx.db, orgId, ctx.now(), q, opts);
   return {
     limits: {
       max_concurrent: q.maxConcurrent,

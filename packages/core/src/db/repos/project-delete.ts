@@ -10,6 +10,8 @@ import { getTableConfig as sqliteConfig, SQLiteTable } from "drizzle-orm/sqlite-
 import type { Db } from "..";
 import { DIALECT } from "../dialect";
 import * as s from "../schema";
+import { externalLogStore } from "../../logstore/registry";
+import { forgetOrgBytes } from "./quotas";
 import type { Scope } from "./scope";
 
 type Fk = { cols: string[]; parent: string; parentCols: string[] };
@@ -123,6 +125,7 @@ export function countProjectRows(
  * it, settings, bindings. One transaction. Returns false when the org has no such project.
  */
 export function deleteProjectCascade(db: Db, scope: Scope, projectId: string): Promise<boolean> {
+  const ext = externalLogStore();
   return db.transaction(async (tx) => {
     const deps = new Set(projectDependents());
     const exists = await tx.orm
@@ -151,6 +154,17 @@ export function deleteProjectCascade(db: Db, scope: Scope, projectId: string): P
         .where(condition(name, scope.orgId, projectId, deps));
     }
     await tx.orm.delete(s.projects).where(condition("projects", scope.orgId, projectId, deps));
+    // An external store's logs go after the outermost commit and are not awaited: no HTTP under the
+    // write lock, even when an op's own transaction wraps this call. The project is already gone,
+    // so an unreachable store does not undo it: the retention TTL removes the rest.
+    if (ext) {
+      tx.afterCommit(() => {
+        void ext
+          .deleteProject(scope.orgId, projectId)
+          .catch(() => {})
+          .then(() => forgetOrgBytes(scope.orgId));
+      });
+    }
     return true;
   });
 }

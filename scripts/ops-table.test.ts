@@ -66,6 +66,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: cross-tenant poll health is the operator's view, never an agent's",
   instance_network_status:
     "instance administrator ops are REST only: probe timings are the operator's view; agents read network_status",
+  log_store_migrate:
+    "instance administrator ops are REST only: copying logs between stores is the operator's job, never an agent's",
   instance_audit_verify:
     "instance administrator ops are REST only: audit integrity is the operator's check, never an agent's",
   release_set_project_signing:
@@ -138,6 +140,8 @@ const MCP_OFF: Record<string, string> = {
     "granting membership binds a person's identity: never an agent's act (an agent token is refused too)",
   db_backup:
     "instance administrator ops are REST only: it writes a copy of the whole database, never an agent's act",
+  instance_db_copy:
+    "instance administrator ops are REST only: it moves the whole database to another server, never an agent's act",
   rotate_instance_token:
     "instance administrator ops are REST only: instance tokens are never MCP credentials, and minting one must not land in an agent's context",
   bootstrap_approver:

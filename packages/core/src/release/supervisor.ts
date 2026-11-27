@@ -1,0 +1,454 @@
+// The release lane as a supervised child of the main process (option D of
+// docs/design/release-lane-hosted.mdx): two processes in one container.
+//
+//  - `prepareSupervisedLane` runs ONCE, first: it removes every release variable from the parent's
+//    environment and builds the child's environment from an explicit allowlist. The parent's
+//    `process.env` has none of them from then on.
+//  - `LaneSupervisor` starts the child (`serve --roles release`, which never serves the web app)
+//    once, reports its state, and stops it with the parent. There is no respawn: a lane that is
+//    gone ends the server, so the platform restarts the container.
+//  - The parent reaches the child only over a unix socket in a 0700 directory, under channel keys
+//    it made for this boot: they never touch disk. The parent holds no signer and no master key.
+//
+// What this does not do: the child runs as the parent's user. See the design doc for what that
+// leaves (same-user code can read /proc/<pid>/environ), and docs/release-lane.mdx.
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { controlPost } from "@turntable/net";
+import {
+  RELEASE_CHANNEL_CONFIG_KEY_ENV,
+  RELEASE_CHANNEL_KEY_ENV,
+  releaseConfigFromEnv,
+  takeReleaseEnv,
+} from "../roles";
+import { approvalPolicySetting } from "../settings/definitions";
+import { channelMac } from "./channel";
+import { createChannelClient, createLaneConfigClient } from "./channel-client";
+import type { ChannelClient, LaneConfigClient } from "./channel-client";
+
+/** Set to `1` on the main process to run the release lane as its supervised child. Off by default. */
+export const LANE_SUPERVISED_ENV = "TURNTABLE_LANE_SUPERVISED";
+/** Set by the supervisor in the child's environment: the child exits when its parent does. */
+export const LANE_CHILD_ENV = "TURNTABLE_LANE_CHILD";
+
+/**
+ * The variables the child gets that are not release-lane variables: a search path, the time zone
+ * and the two switches that decide how it drops root. Nothing of the main process's keys, tokens,
+ * database URL or provider settings is here, and nothing else is passed.
+ */
+export const CHILD_PASSTHROUGH_ENV = [
+  "PATH",
+  "TZ",
+  "TURNTABLE_DROP_PRIVILEGES",
+  "TURNTABLE_ALLOW_ROOT",
+] as const;
+
+/**
+ * The settings inputs the lane's signing check needs to apply the operator's approval policy, not
+ * a weaker default: the environment names of that one setting and the path of turntable.toml. No
+ * other setting, and no value of one, is handed over.
+ */
+export const CHILD_SETTINGS_ENV: readonly string[] = [...approvalPolicySetting.env];
+
+/** Variables the supervisor sets itself: the operator must not. */
+const DERIVED = [
+  "TURNTABLE_RELEASE_CHANNEL_SOCKET",
+  "TURNTABLE_RELEASE_CHANNEL_KEY",
+  "TURNTABLE_RELEASE_CHANNEL_KEY_FILE",
+  "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY",
+  "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE",
+  "TURNTABLE_RELEASE_CHANNEL_TCP",
+] as const;
+
+/** The main process's own view of the channel: set by the supervisor, never by the operator. */
+const MAIN_CHANNEL_VARS = [
+  "TURNTABLE_PUBLISH_CHANNEL_KEY_FILE",
+  "TURNTABLE_PUBLISH_CHANNEL_URL",
+  "TURNTABLE_PUBLISH_CHANNEL_SOCKET",
+  "TURNTABLE_PUBLISH_CONFIG_KEY_FILE",
+] as const;
+
+export function laneSupervised(env: Record<string, string | undefined>): boolean {
+  const v = env[LANE_SUPERVISED_ENV]?.trim().toLowerCase();
+  return v === "1" || v === "true";
+}
+
+export interface PreparedLane {
+  /** The child's complete environment. Only the supervisor reads it. */
+  readonly childEnv: Record<string, string>;
+  /** The unix socket the child's channel listens on, in a 0700 directory. */
+  readonly socket: string;
+  /** The parent's clients of the channel: they hold this boot's keys and nothing of the lane's. */
+  readonly channel: ChannelClient;
+  readonly config: LaneConfigClient;
+  /** The key the health probe uses (the worker's request key). */
+  readonly probeKey: string;
+  /** Removes the socket directory. */
+  cleanup(): void;
+}
+
+/** Removes socket directories a crashed earlier boot left behind. Best effort; never throws. */
+export function removeStaleLaneDirs(runDir: string): void {
+  try {
+    for (const name of readdirSync(runDir)) {
+      if (!name.startsWith("tt-lane-")) continue;
+      const dir = join(runDir, name);
+      try {
+        const pid = Number(readFileSync(join(dir, "owner.pid"), "utf8").trim());
+        if (!Number.isInteger(pid) || pid <= 0) continue; // not ours to judge
+        try {
+          process.kill(pid, 0);
+          continue; // its owner is alive
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === "EPERM") continue;
+        }
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // unreadable or already gone
+      }
+    }
+  } catch {
+    // the run directory may not exist or may not be listable
+  }
+}
+
+/**
+ * Takes every release variable out of `env` (the parent's process.env) and builds the child's
+ * environment. Throws, before anything is spawned, when the lane's configuration is incomplete or
+ * the operator set a variable the supervisor owns. `postgres`: the main database is Postgres, so
+ * the child needs its own URL (TURNTABLE_RELEASE_DATABASE_URL, ideally a role limited to what the
+ * lane reads) and never receives the main one.
+ */
+export function prepareSupervisedLane(o: {
+  env: Record<string, string | undefined>;
+  postgres?: boolean;
+  /** Directory for the socket directory; the system temporary directory by default. */
+  runDir?: string;
+  /** The turntable.toml the parent was given (`--config` or TURNTABLE_CONFIG); the child reads it too. */
+  config?: string | undefined;
+}): PreparedLane {
+  const mainSet = MAIN_CHANNEL_VARS.filter((k) => o.env[k]?.trim());
+  const passthrough: Record<string, string> = {};
+  for (const k of CHILD_PASSTHROUGH_ENV) {
+    const v = o.env[k];
+    if (v !== undefined) passthrough[k] = v;
+  }
+  for (const k of CHILD_SETTINGS_ENV) {
+    const v = o.env[k];
+    if (v !== undefined && v.trim()) passthrough[k] = v;
+  }
+  const config = o.config?.trim() || o.env.TURNTABLE_CONFIG?.trim();
+  if (config) passthrough.TURNTABLE_CONFIG = config;
+  // First: the release variables leave this process's environment, whatever happens next.
+  const taken = takeReleaseEnv(o.env);
+  if (mainSet.length > 0) {
+    throw new Error(
+      `${LANE_SUPERVISED_ENV} is set, so the channel to the lane is made at boot: unset ${mainSet.join(", ")}`,
+    );
+  }
+  const derived = DERIVED.filter((k) => taken[k] !== undefined);
+  if (derived.length > 0) {
+    throw new Error(
+      `${LANE_SUPERVISED_ENV} is set, so the supervisor makes the channel: unset ${derived.join(", ")}`,
+    );
+  }
+  const requestKey = randomBytes(32).toString("hex");
+  const configKey = randomBytes(32).toString("hex");
+  const runDir = o.runDir ?? tmpdir();
+  removeStaleLaneDirs(runDir);
+  const dir = mkdtempSync(join(runDir, "tt-lane-")); // mode 0700
+  try {
+    writeFileSync(join(dir, "owner.pid"), String(process.pid), { mode: 0o600 });
+  } catch {
+    // best effort: without it a later boot just cannot tell this directory is live
+  }
+  const socket = join(dir, "channel.sock");
+  const childEnv: Record<string, string> = {
+    ...passthrough,
+    ...taken,
+    [LANE_CHILD_ENV]: "1",
+    // The release proxy is what the channel serves. Loopback only, any free port, unless asked otherwise.
+    TURNTABLE_RELEASE_PROXY_PORT: taken.TURNTABLE_RELEASE_PROXY_PORT?.trim() || "0",
+    TURNTABLE_RELEASE_CHANNEL_SOCKET: socket,
+    [RELEASE_CHANNEL_KEY_ENV]: requestKey,
+    [RELEASE_CHANNEL_CONFIG_KEY_ENV]: configKey,
+  };
+  const dbUrl = taken.TURNTABLE_RELEASE_DATABASE_URL?.trim();
+  if (dbUrl) childEnv.TURNTABLE_DATABASE_URL = dbUrl;
+  try {
+    if (o.postgres && !dbUrl) {
+      throw new Error(
+        "the main database is Postgres: the lane needs its own connection, TURNTABLE_RELEASE_DATABASE_URL (the main URL is never passed to it)",
+      );
+    }
+    // The same parse the child will do, on a copy: a bad setting stops the boot here.
+    releaseConfigFromEnv({ ...childEnv });
+  } catch (e) {
+    rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
+  const target = { unix: socket };
+  return {
+    childEnv,
+    socket,
+    probeKey: requestKey,
+    channel: createChannelClient({ target, key: requestKey }),
+    config: createLaneConfigClient({ target, key: configKey }),
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+export type LaneState = "starting" | "ready" | "unresponsive" | "exited" | "stopped";
+
+export interface LaneStatus {
+  state: LaneState;
+  /** The child's process id while it runs (not a secret). */
+  pid?: number | undefined;
+  lastExit?: { code: number | null; signal: string | null; at: number } | undefined;
+  /** When the current state began. */
+  since: number;
+}
+
+export type LaneAvailability =
+  { ok: true } | { ok: false; code: "release_lane_unavailable"; state: LaneState; message: string };
+
+export interface LaneProcess {
+  pid: number | undefined;
+  exited: Promise<{ code: number | null; signal: string | null }>;
+  kill(signal: "SIGTERM" | "SIGKILL"): void;
+}
+export type LaneSpawner = (argv: string[], env: Record<string, string>) => LaneProcess;
+
+/** This binary, run again: the compiled binary, or `bun <script>` in development. */
+export function selfCommand(): string[] {
+  // A compiled binary's entry is the virtual /$bunfs/root/<name>: passing it would make the child
+  // read it as a command. The binary alone is the whole program.
+  const compiled = Bun.main.startsWith("/$bunfs/") || /^[A-Za-z]:[\\/]~BUN/.test(Bun.main);
+  return compiled ? [process.execPath] : [process.execPath, Bun.main];
+}
+
+/** Spawns with an explicit environment: Bun.spawn's `env` replaces, never extends, the parent's. */
+export const spawnLane: LaneSpawner = (argv, env) => {
+  // Its own process group: a group signal (Ctrl-C in a terminal) reaches the server alone, which
+  // drains its jobs and then stops the child, instead of killing the lane under running jobs.
+  const p = Bun.spawn(argv, {
+    env: env,
+    stdin: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
+    detached: true,
+  });
+  return {
+    pid: p.pid,
+    exited: p.exited.then((code) => ({ code, signal: (p.signalCode as string | null) ?? null })),
+    kill: (s) => void p.kill(s),
+  };
+};
+
+export interface SupervisorOptions {
+  prepared: Pick<PreparedLane, "childEnv" | "socket" | "probeKey" | "cleanup">;
+  /** The child's command line after the binary: `serve --roles release --data-dir <dir>`. */
+  args: string[];
+  command?: string[];
+  spawn?: LaneSpawner;
+  /** True once the child's channel answers. Default: a signed health request over the socket. */
+  probe?: () => Promise<boolean>;
+  /**
+   * Called once when the lane is gone without being asked to stop: it exited, could not be
+   * started, or stopped answering and was killed. There is no respawn: the caller stops the
+   * server's other roles and exits non-zero, so the platform restarts the container.
+   */
+  onLaneLost?: (why: string) => void;
+  log?: (m: string) => void;
+  now?: () => number;
+  readyPollMs?: number;
+  /** How long the child has to answer its first probe; later than that it is lost. Default 60 s. */
+  startupTimeoutMs?: number;
+  /** How often a ready child is probed again, and how many misses in a row end it. */
+  healthPollMs?: number;
+  healthMisses?: number;
+  stopGraceMs?: number;
+}
+
+/**
+ * Runs the lane child once and watches it. It never starts it again: a lane that is gone ends the
+ * server (`onLaneLost`), so this process never keeps the lane's variables, or root, to respawn it.
+ */
+export class LaneSupervisor {
+  private state: LaneState = "starting";
+  private since: number;
+  private lastExit: LaneStatus["lastExit"];
+  private stopping = false;
+  private lost = false;
+  private proc: LaneProcess | undefined;
+  private loop: Promise<void> | undefined;
+  private wakeReady: (() => void) | undefined;
+  private readonly spawnFn: LaneSpawner;
+  private readonly now: () => number;
+  private readonly log: (m: string) => void;
+  private readonly o: SupervisorOptions;
+
+  constructor(o: SupervisorOptions) {
+    this.o = o;
+    this.spawnFn = o.spawn ?? spawnLane;
+    this.now = o.now ?? Date.now;
+    this.log = o.log ?? ((m) => console.log(`[turntable] ${m}`));
+    this.since = this.now();
+  }
+
+  status(): LaneStatus {
+    return { state: this.state, pid: this.proc?.pid, lastExit: this.lastExit, since: this.since };
+  }
+
+  /** Whether a release request can be taken now. A named error when it cannot. */
+  availability(): LaneAvailability {
+    if (this.state === "ready") return { ok: true };
+    return {
+      ok: false,
+      code: "release_lane_unavailable",
+      state: this.state,
+      message:
+        this.state === "starting"
+          ? "the release lane is starting; try again shortly"
+          : this.state === "unresponsive"
+            ? "the release lane stopped answering and is being stopped; the server restarts with it"
+            : this.state === "exited"
+              ? "the release lane has exited; the server is stopping so the platform restarts it"
+              : "the release lane is stopped",
+    };
+  }
+
+  start(): void {
+    if (this.loop) return;
+    // A parent that dies without stopping the child must not leave a signer running.
+    process.once("exit", () => this.proc?.kill("SIGKILL"));
+    this.loop = this.run();
+  }
+
+  private set(state: LaneState): void {
+    this.state = state;
+    this.since = this.now();
+  }
+
+  private lose(why: string): void {
+    if (this.stopping || this.lost) return;
+    this.lost = true;
+    this.log(`release lane lost: ${why}; stopping the server so the platform restarts it`);
+    this.o.onLaneLost?.(why);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, ms);
+      this.wakeReady = () => {
+        clearTimeout(t);
+        resolve();
+      };
+    });
+  }
+
+  private async probe(): Promise<boolean> {
+    if (this.o.probe) return this.o.probe();
+    const ts = this.now();
+    try {
+      const r = await controlPost(
+        { unix: this.o.prepared.socket },
+        "/v1/health",
+        { ts, mac: channelMac(this.o.prepared.probeKey, "health", [], ts) },
+        { timeoutMs: 2000 },
+      );
+      return r.status === 200;
+    } catch {
+      return false;
+    }
+  }
+
+  private async run(): Promise<void> {
+    const command = this.o.command ?? selfCommand();
+    let proc: LaneProcess;
+    try {
+      proc = this.spawnFn([...command, ...this.o.args], { ...this.o.prepared.childEnv });
+    } catch (e) {
+      this.set("exited");
+      this.lose(`could not be started: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    } finally {
+      // The child has its own copy. This process keeps none of the lane's variables.
+      for (const k of Object.keys(this.o.prepared.childEnv)) {
+        delete (this.o.prepared.childEnv as Record<string, string>)[k];
+      }
+    }
+    this.proc = proc;
+    let alive = true;
+    let readyAt: number | undefined;
+    const startedAt = this.now();
+    const startupMs = this.o.startupTimeoutMs ?? 60_000;
+    const exit = proc.exited.finally(() => (alive = false));
+    this.log(`release lane started (pid ${proc.pid ?? "?"})`);
+    void (async () => {
+      // Until the first answer: the readiness poll. After it: a slower health poll, so a child
+      // that is alive but no longer answering stops being "ready" and is killed.
+      let misses = 0;
+      const maxMisses = this.o.healthMisses ?? 3;
+      while (alive && !this.stopping) {
+        const ok = await this.probe();
+        if (!alive || this.stopping) return;
+        if (ok) {
+          misses = 0;
+          if (readyAt === undefined) readyAt = this.now();
+          if (this.state !== "ready") this.set("ready");
+        } else if (readyAt !== undefined) {
+          misses++;
+          // It was ready and no longer answers: its own state, not "starting".
+          if (this.state === "ready") this.set("unresponsive");
+          if (misses >= maxMisses) {
+            this.log("release lane stopped answering; killing it");
+            proc.kill("SIGKILL");
+            return;
+          }
+        }
+        if (readyAt === undefined && this.now() - startedAt >= startupMs) {
+          // Alive but never healthy: the same path as a lane that exited.
+          this.set("exited");
+          this.lose(
+            `did not answer its first health check within ${Math.round(startupMs / 1000)}s`,
+          );
+          proc.kill("SIGKILL");
+          return;
+        }
+        await this.sleep(
+          readyAt === undefined ? (this.o.readyPollMs ?? 200) : (this.o.healthPollMs ?? 5000),
+        );
+      }
+    })();
+    const code = await exit.catch(() => ({ code: null, signal: null }));
+    this.proc = undefined;
+    if (this.stopping) {
+      this.set("stopped");
+      return;
+    }
+    this.lastExit = { ...code, at: this.now() };
+    this.set("exited");
+    this.lose(`exited (code ${code.code ?? "none"}, signal ${code.signal ?? "none"})`);
+  }
+
+  /** Stops the child with the parent: SIGTERM, then SIGKILL after the grace period. */
+  async stop(): Promise<void> {
+    this.stopping = true;
+    this.wakeReady?.();
+    const proc = this.proc;
+    if (proc) {
+      proc.kill("SIGTERM");
+      const done = await Promise.race([
+        proc.exited.then(() => true),
+        new Promise<boolean>((r) => setTimeout(() => r(false), this.o.stopGraceMs ?? 10_000)),
+      ]);
+      if (!done) proc.kill("SIGKILL");
+    }
+    await this.loop;
+    this.set("stopped");
+    this.o.prepared.cleanup();
+  }
+}

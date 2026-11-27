@@ -23,7 +23,13 @@ async function boot(
     [process.execPath, MAIN, "serve", "--port", "0", "--data-dir", "data", ...args],
     {
       cwd: dir,
-      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? dir, ...env },
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? dir,
+        // The server refuses to run as root; a root sandbox or container opts in for the test.
+        ...(process.getuid?.() === 0 ? { TURNTABLE_ALLOW_ROOT: "1" } : {}),
+        ...env,
+      },
       stdout: "pipe",
       stderr: "pipe",
     },

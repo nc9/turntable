@@ -15,6 +15,13 @@ import { open, secretAad } from "../secrets/crypto";
 import { RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV } from "../roles";
 import { anchorKeyMessage } from "../secrets/master-key";
 import { SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../github/app-auth";
+import {
+  checkoutConfigFromEnv,
+  DEFAULT_CHECKOUT_CONFIG,
+  limitsFor,
+  unpackedBudget,
+} from "../run/checkout-child";
+import { FULL_HISTORY_FACTOR } from "../run/git-fetch";
 import { type DoctorCheck, type DoctorInputs, report, type DoctorReport } from "./types";
 
 /** `openError` value for a data directory with no database file yet. */
@@ -611,6 +618,12 @@ export function checkHttpsRedirect(i: DoctorInputs): DoctorCheck {
 
 export async function checkChannel(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "release";
+  if (i.releaseLane)
+    return pass(
+      "release_channel",
+      area,
+      "the release lane is this process's supervised child: its channel is made at boot and checked by release_lane_process",
+    );
   const configured = set(i.env.TURNTABLE_PUBLISH_CHANNEL_KEY_FILE);
   if (!configured || !i.channel)
     return pass(
@@ -657,6 +670,12 @@ export async function checkChannel(i: DoctorInputs): Promise<DoctorCheck> {
  */
 export async function checkConfigChannel(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "release";
+  if (i.releaseLane)
+    return pass(
+      "release_config_channel",
+      area,
+      "the release lane is this process's supervised child: its config channel is made at boot and checked by release_lane_process",
+    );
   if (!i.configChannel)
     return pass(
       "release_config_channel",
@@ -673,6 +692,69 @@ export async function checkConfigChannel(i: DoctorInputs): Promise<DoctorCheck> 
         `Check that the lane is running, the channel address and TLS files here match it, and that the config key file here holds the same key as the lane's (${r.reason}).`,
         "detail" in r ? r.detail : undefined,
       );
+}
+
+/** The supervised release lane: running and answering, or restarting. Only the running server knows. */
+export function checkReleaseLane(i: DoctorInputs): DoctorCheck {
+  const area = "release";
+  const id = "release_lane_process";
+  if (!i.releaseLane) return pass(id, area, "the release lane is not supervised by this process");
+  const s = i.releaseLane();
+  const exit = s.lastExit
+    ? ` Last exit: code ${s.lastExit.code ?? "none"}, signal ${s.lastExit.signal ?? "none"}.`
+    : "";
+  if (s.state === "ready")
+    return pass(id, area, `the release lane child is running and answers on its channel`);
+  return fail(
+    id,
+    area,
+    `the release lane child is ${s.state}: release requests are refused with release_lane_unavailable.${exit}`,
+    "Read the lane's own log lines (`[turntable release]`) for why it exited; a bad key, data dir or token is the usual cause. The lane is not restarted by this process: when it is lost the server exits non-zero and the platform restarts the container.",
+  );
+}
+
+/**
+ * The checkout unpacked budget (shallow and full history) is clamped to the child's memory ceiling
+ * minus the pack budget and a fixed overhead. Doctor reads the environment (the instance values
+ * that `TURNTABLE_CHECKOUT_*` set, when it sets the unpacked budget); a per-project override is clamped the same way at run time.
+ */
+export function checkCheckoutBudgets(i: DoctorInputs): DoctorCheck {
+  const id = "checkout_budgets";
+  const area = "limits";
+  let cfg;
+  try {
+    cfg = checkoutConfigFromEnv(i.env);
+  } catch {
+    return pass(id, area, "checkout budgets are not checked: an environment value is invalid");
+  }
+  // Only a budget the operator set is reported: the full-history default (4 x 512 MiB) is above
+  // the default ceiling on purpose and is clamped quietly (see docs/configuration.mdx).
+  if (cfg.limits.maxInflatedBytes === undefined)
+    return pass(
+      id,
+      area,
+      "checkout unpacked budgets are the defaults, clamped to the memory ceiling",
+    );
+  const mem = cfg.memoryMb ?? DEFAULT_CHECKOUT_CONFIG.memoryMb;
+  const clamped: string[] = [];
+  for (const full of [false, true]) {
+    const asked = limitsFor(cfg.limits, full);
+    const got = limitsFor(cfg.limits, full, mem);
+    if (got.maxInflatedBytes < asked.maxInflatedBytes) {
+      const m = unpackedBudget(asked.maxInflatedBytes, asked.maxPackBytes, mem);
+      clamped.push(
+        `${full ? "full-history" : "shallow"} unpacked ${Math.round(asked.maxInflatedBytes / 1048576)} MiB is clamped to ${Math.round(m.maxBytes / 1048576)} MiB by the ${mem} MiB memory ceiling`,
+      );
+    }
+  }
+  if (clamped.length === 0)
+    return pass(id, area, "checkout unpacked budgets fit the checkout memory ceiling");
+  return warn(
+    id,
+    area,
+    `checkout unpacked budget is above what the memory ceiling allows (${clamped.join("; ")})`,
+    `Raise TURNTABLE_CHECKOUT_MAX_MEMORY_MIB (the ceiling, minus the pack budget and 256 MiB, is the most that can be unpacked; full history is ${FULL_HISTORY_FACTOR} times the shallow budgets) or lower the unpacked budget.`,
+  );
 }
 
 export async function checkQuotas(i: DoctorInputs): Promise<DoctorCheck> {
@@ -926,7 +1008,9 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("https_redirect", "network", () => checkHttpsRedirect(i))),
     ...(await safe("release_channel", "release", () => checkChannel(i))),
     ...(await safe("release_config_channel", "release", () => checkConfigChannel(i))),
+    ...(await safe("release_lane_process", "release", () => checkReleaseLane(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
+    ...(await safe("checkout_budgets", "limits", () => checkCheckoutBudgets(i))),
     ...(await safe("limit_locks", "limits", () => checkLimitLocks(i))),
     ...(await safe("incomplete_logs", "logs", () => checkIncompleteLogs(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),

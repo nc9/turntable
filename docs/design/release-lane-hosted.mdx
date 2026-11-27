@@ -1,0 +1,144 @@
+---
+title: "Design: the release lane on a hosted deployment"
+description: Four ways to run the release lane for a single-tenant hosted deployment, what each costs, what a compromise of the web or worker process reaches, and how to move from one to the next.
+---
+
+This is a design comparison. Only option A exists today. D was chosen and is being built ([#678](https://github.com/turntable-ci/turntable/issues/678)); B and C are not planned. It extends [the hosted deployment guide](/hosted#running-the-release-lane-on-one-hosted-service), which says what is true now and lists the blockers. The decision is recorded at the end.
+
+## The problem
+
+A hosted single-tenant deployment is one service on a platform with no shell, running the distroless image with one volume. The [release lane](/release-lane) signs and publishes, so it holds what no other part of Turntable may hold: the release master key, the signing backend configuration, cloud (KMS) credentials, a forge credential that can write releases, and the publish tokens.
+
+The rule this design must keep is the project's core rule: a job holds untrusted code or usable credentials, never both. For the lane it becomes: the processes that handle untrusted input (the web server, the webhook receiver, the worker that runs and ingests jobs) never hold a signing key and have no signer to call.
+
+Today that is enforced by process separation. `packages/core/src/roles.ts` makes `release` a role that runs alone, and `resolveRoles` refuses `web,worker,release` at boot. The lane then:
+
+- reads release requests from the main database, but never trusts them for what to sign: it asks the forge which commit the tag points at and recomputes artifact digests from the bytes (`release/lane.ts`);
+- reads artifact bytes read-only from a directory laid out `<run id>/<name>` (`release/artifacts.ts`) and unpacks them with its own hardened reader (`release/unpack.ts`);
+- keeps its attestations and sealed state in its own data directory, which the main process cannot reach;
+- takes a config channel from the main process (a unix socket, or TCP with mutual TLS) under a key the worker does not hold.
+
+The question is how to run that on one hosted deployment without losing the property that matters: **a compromise of web or worker code cannot sign or publish a release.**
+
+## Threat model
+
+The attacker has code execution in the web or worker process. That is realistic: the worker handles repository content and job output, and the web process parses webhooks and API input. What they can do next decides each option. Four questions per option:
+
+1. Can they read the release key or the lane's tokens?
+2. Can they call the signer?
+3. Can they change what the lane signs (artifact bytes, request rows)?
+4. Can they make the lane publish something it should not?
+
+The lane's own checks (forge re-check, digest comparison against its private attestations, the signing service's policy) answer 3 and 4 in every option where the lane is a separate process. They do not help when the attacker is inside the lane's process.
+
+## Option A: not available on single-service hosted (today)
+
+The lane cannot run next to the web app on one service. A service started with `TURNTABLE_ROLES=release` serves nothing a person can reach, so nobody can call `request_release`. Releases for a project hosted this way use **the project's own CI** (for example its GitHub Actions workflow, with its own signing and publishing setup). The release lane page, the release request tools and signed provenance from Turntable are not available to that project.
+
+- **Security delta:** none. Nothing new holds a key.
+- **Compromise of web or worker:** reaches the main database, the main master key and the secrets the instance stores. There is no signer.
+- **Work:** 0. Already true and documented.
+- **Ops cost:** none for Turntable; the project keeps a second release path elsewhere.
+- **Railway:** one service, one volume.
+- **Path to C:** none needed; A is the state before any option.
+
+## Option B: same process
+
+Allow `web,worker,release` in one process. The channel becomes an in-process call, and the lane reads the artifact store directly.
+
+- **Security delta:** removes the invariant. The signing key, the release master key and the publish tokens sit in the same address space as code that parses untrusted input and runs job-adjacent logic. `process.env` cleanup, `Buffer` zeroing and "the lane never looks at main's rows" are all conventions inside one trust domain. A single memory-disclosure or code-execution bug in web or worker reaches the key.
+- **Compromise of web or worker:** the signing key, the release master key, the publish tokens. Everything.
+- **Work:** small. Relax the role check, call the lane in process, read the store with `dirArtifacts`. Boot re-wrap already supports one process holding both key pairs.
+- **Ops cost:** lowest. One service, one set of variables.
+- **Railway:** one service, one volume, the usual env.
+- **Path to C:** straightforward in code (the lane already has a channel), but nothing in B's data layout prepares the separation; the lane's state would have to be split out of a shared directory.
+
+B is the cheapest and gives up the property the design exists to keep. It is listed for completeness.
+
+## Option C: two services and shared object storage
+
+A separate release service with its own volume, keys and env. The main service and the lane share the database (Postgres) and an object store for artifacts, and talk over a narrow authenticated API.
+
+- **Security delta:** none against the invariant; this is the strongest shape. Separate hosts, separate environment, separate volume. The main service never has the lane's variables, so there is nothing to scrape.
+- **Compromise of web or worker:** the main database and main master key. It can write request rows and artifact bytes, which the lane re-verifies. It cannot read the lane's key, call the signer or reach the lane's attestations.
+- **Work:** large.
+  - A remote artifact backend, for the store's writes and the lane's reader, with the same name and size checks as the directory store.
+  - The lane reading its queue from a shared Postgres (`TURNTABLE_DATABASE_URL` on both services).
+  - A channel that works without certificate files: an API over private networking authenticated by a bearer or signed request whose key is a variable, with replay protection. Today the channel needs files (`_TLS_CERT_FILE`, `_TLS_KEY_FILE`, `_TLS_CA_FILE`) that a shell-less host cannot create.
+  - Lane health, version-skew checks between the two services, and a way for the main service to show lane status.
+- **Ops cost:** highest. Two services to deploy and keep in version step, a database, an object store with its own credentials and retention, and two sets of variables. Backups of the lane's volume are separate.
+- **Railway:** two services, a Postgres service, an object store (a volume attaches to one service, so this means an S3-compatible bucket and its credentials), private networking between the services, a volume on the lane only, and env on each side. Volumes attach to one service, which is why shared files do not work here.
+- **Path to C:** this is C.
+
+## Option D: two processes in one container
+
+`serve` starts the release role as a child of the same binary. Distroless has no shell, so the parent spawns itself with `--roles release` (the binary path is its own). The channel is a unix socket inside the container; artifacts are the shared directory on the same volume (`<data dir>/artifacts`, read-only through the existing path checks).
+
+Key handling:
+
+1. The parent reads the `TURNTABLE_RELEASE_*` (and pre-rename `LONGSHORE_RELEASE_*`) variables first, passes **only those** to the child, and **deletes them from its own `process.env`** before it loads anything else. Main already has `takeReleaseKeys`, which removes the key variables after the boot re-wrap, and warns that other `TURNTABLE_RELEASE_*` are ignored.
+2. The child keeps its own data directory (`TURNTABLE_RELEASE_DATA_DIR`), signing key files and attestations, and its own forge credentials.
+3. The parent reaches the lane only over the socket. The parent is `serve --roles all`, so web and worker share one process and hold both the worker's publish channel key and the config channel key. Unlike C, a worker compromise in D therefore has config access to the lane (`pin_repo`, `target_set`, `secret_set`; see `CONFIG_ACTIONS` in `release/channel.ts`). The lane's own checks (forge re-check, digests against its private attestations, the signer's policy) still decide what is signed.
+4. The lane still re-checks tags at the forge, still recomputes digests from the bytes, and never trusts main's rows for what it signs. Main never signs.
+
+- **Security delta:** keeps a process boundary: separate memory, the key lives only in the child after boot, and main has no signer. Versus B it removes the in-process path to the key. Versus C it gives up host separation.
+- **Weakness, stated honestly.**
+  - Web and worker are one process in the parent, so the separation of the config key from the worker's key that `roles.ts` gives across processes does not exist. A compromise reaches the lane's config channel.
+  - The parent saw the variables at boot. A compromise of the parent before it deleted them would see them. The window is short and happens before any request is served.
+  - Same container and same volume. Without further steps the child runs as the same uid. Same-uid code can read `/proc/<pid>/environ` and may attach with ptrace if the platform allows it. In that case a compromised parent reaches the child's key, and D is only better than B against bugs that do not give code execution as that user.
+  - A compromised parent can tamper with the shared artifact directory. The lane catches this where it compares digests against its private attestations; it cannot prevent a denial of service.
+  - The key stays in the platform's variable store, so the platform operator's access does not change.
+  - A container restart restarts both processes. The lane has no independent availability or deploy.
+  - **Supervision costs availability, not security.** To respawn the child, the parent would have to keep the release variables and root (`CAP_SETUID`), which defeats both the key and the user-drop claims. After the privilege drop, `setuid(0)` fails (`privileges.ts`). So the parent does not restart the child: if the lane exits, the parent stops the other roles and exits non-zero, and the platform restarts the whole container, which re-runs the boot steps. A crash loop in the lane is therefore a restart loop of the service, and the platform's restart policy sets the backoff.
+- **Mitigations that make the boundary real** (included in the size below): start the child under a different unprivileged user than the parent (the image already starts as root and drops, so the parent starts the child under the lane's uid first and then drops itself, and never holds the keys or root afterwards), give that user ownership of the lane's directory and key (see the volume layout below), set the child non-dumpable, and ask the platform to forbid ptrace between the two users (the default for different users without `CAP_SYS_PTRACE`).
+- **Compromise of the lane:** because the lane has write access to the main database, a compromised lane can write main's rows (release requests, audit rows). This matters less because the lane is the trusted side, and main still never signs. A write path through main instead of direct access would be a design change and is not part of D.
+- **Compromise of web or worker:** the main database and master key. With separate users and no ptrace capability, not the lane's key. With the same user, it can reach the key.
+- **Work:** medium. Spawn the child in `serve` (the parent exits when the child exits, and the child stops with the parent), pass the filtered env, per-boot channel keys that never touch disk, the socket path, the shared artifact dir, a user drop for the child, and a test that the parent's `process.env` has no release variable after boot. Also in D: the volume layout below, which needs a single resolver for the database path (`<data-dir>/turntable.db` is hardcoded in the CLIs and the server today), a boot move of the `.db`, `-wal` and `-shm` files on existing volumes, updated backup and restore docs, and an artifact store that creates per-run directories and blobs with group access and migrates existing ones. The size stays medium only if those are counted as part of D.
+- **Ops cost:** low. One service, one image, the same variables as today. One more process to see in logs.
+- **Railway:** one service, one volume, the usual env. No private networking and no object store.
+- **Path to C:** good, by design. The lane already talks to main over a channel and reads artifacts by `<run id>/<name>`. Moving to C swaps the transport (unix socket to authenticated private-network API) and the artifact backend (directory to object store), and splits the volume. The lane's state and key already live apart from main's. Build the artifact reader against an interface from the start so C adds a backend rather than changing callers.
+
+### Volume layout for D
+
+The data directory is created 0700 and owned by the drop uid (`enforceRootPolicy` and `chownData` in `privileges.ts`), so a child under another uid cannot read it, and a lane directory nested inside it could be renamed or replaced by the parent's uid. D needs this layout instead:
+
+- A volume root owned by root, mode 0755, that no lane or main uid owns, so neither can rename the other's directory.
+- Sibling directories under it: the main data directory (owned by the main uid, 0710 with the shared group so the lane can reach the shared paths below; `master.key`, the audit state and `backups/` keep their own 0600 and 0700 modes), the lane directory (owned by the lane uid, 0700, holding the keys and attestations), and a socket directory (created by root, shared group, 2750 so main can connect and the lane can create the socket in it, or a `/run` tmpfs with the same modes).
+- Read-write access for the lane to the main database. The lane writes to it: it claims and finishes release requests (`claimNextReleaseRequest`, `finishReleaseRequest` in `db/repos/release.ts`), writes audit rows, and rewraps release keys and uses publish credentials through the vault. SQLite in WAL mode also creates `-wal` and `-shm` files beside the database, so the lane uid needs write access to the directory that holds `turntable.db`, not only the file. Put the database in its own directory (for example `db/`) owned by the main uid with a shared group and mode 2770 (setgid, because SQLite gives `-wal` and `-shm` the creator's egid and a different group would lock the other uid out), with the files group-writable. An ACL for the lane uid is an alternative, but only on this directory, never on main's data directory: write access there would let the lane rename or unlink `master.key` and the audit state. Moving the database here is a path change and a data move on existing volumes (see Work).
+- Read-only access for the lane to `artifacts/`. `ArtifactStore` creates each `<run id>/` directory 0700 and each blob 0600 today, so a group mode on `artifacts/` alone gives the lane nothing, and a default ACL does not help because those create modes set the ACL mask to `---`. D needs the store to create per-run directories 0750 (setgid, shared group) and blobs 0640, and a boot migration of existing run directories. The lane reads artifacts only through the path checks.
+- The channel socket lives in the socket directory, not in the lane directory: the lane listens on `TURNTABLE_RELEASE_CHANNEL_SOCKET` and main connects through `TURNTABLE_PUBLISH_CHANNEL_SOCKET`, and the parent sets both. Connecting needs search permission on every directory in the path and write permission on the socket (mode 0660), so the default `<lane data dir>/channel.sock` would give main EACCES. Main never gets any other access to the lane directory.
+- The main data directory therefore is not 0700 on the whole tree: only the database directory, `artifacts/` and the search bit on the data directory are shared. The master key and everything else stay private to the main uid.
+- The boot step creates and chowns these directories as root before the drop, and refuses to start if the layout is wrong.
+
+## Comparison
+
+| | A. Today | B. One process | C. Two services + object storage | D. Two processes, one container |
+| --- | --- | --- | --- | --- |
+| Release lane available | No | Yes | Yes | Yes |
+| Process boundary | n/a | None | Separate hosts | Separate processes |
+| Where the key lives | Nowhere in Turntable | Web process memory | Lane service only | Child process only (after boot) |
+| Web or worker compromise reaches the key | n/a | Yes | No | No with separate users and no ptrace; yes with the same user |
+| Web or worker compromise can tamper with artifacts | n/a | Yes | Yes (lane re-verifies) | Yes (lane re-verifies) |
+| Parent sees lane env at boot | n/a | Yes | No | Yes, briefly |
+| Web or worker compromise reaches the lane's config channel | n/a | Yes | No | Yes (web and worker share the parent) |
+| Independent restart and deploy | n/a | No | Yes | No |
+| Size of work | 0 | Small | Large | Medium |
+| Ops cost | None | Lowest | Highest | Low |
+| Railway needs | 1 service, 1 volume | 1 service, 1 volume | 2 services, Postgres, object store, private networking, volume on the lane | 1 service, 1 volume |
+| Path to C | n/a | Hard to keep separation | n/a | Direct |
+
+## Prerequisites for any option
+
+Whichever option is chosen, these hold before the lane serves a hosted project:
+
+- **No lane credential for a project that is not live** ([#645](https://github.com/turntable-ci/turntable/issues/645)): `request_release` and release-class jobs in a project whose `checks_mode` is not `live` are refused before any lane secret (npm token, signing key, publish token) is decrypted or injected.
+- **Shadow jobs hold read-only GitHub tokens** ([#641](https://github.com/turntable-ci/turntable/issues/641)).
+- **Check posts are serialised in the database, not per process** ([#650](https://github.com/turntable-ci/turntable/issues/650)): options C and D run more than one process against one database, and the check create gate's in-process lock does not cover that.
+
+## Recommendation
+
+The reviewer leans D for the beta period and C before 0.1.0. D keeps the separate-process rule with one service and no new infrastructure, and its weakness (the shared uid and volume) shrinks to a smaller problem once the child runs as its own user. C is the target because it is the only option where web or worker code execution does not share a host with the key. B should not be chosen: it is cheap and removes the rule. A stays the answer until D or C exists, and for projects that prefer their own CI.
+
+If D ships, the docs should say plainly that it is weaker than C, and the release lane page should state which option an instance runs.
+
+Decision: **D, two processes in one container** (maintainer, 2026-11-26: "D: child process"). The server spawns the release lane as a child process, whose exit stops the server, and that alone holds the release keys. Implementation: [#678](https://github.com/turntable-ci/turntable/issues/678).

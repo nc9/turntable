@@ -112,6 +112,11 @@ export interface DoctorInputs {
    * config channel client settings. Release approval challenges need that channel.
    */
   configChannel?: (() => Promise<ChannelProbe>) | undefined;
+  /**
+   * The state of the release lane this process supervises (`TURNTABLE_LANE_SUPERVISED`). Present
+   * only in the running server, and only when it runs the lane as its child.
+   */
+  releaseLane?: (() => import("../release/supervisor").LaneStatus) | undefined;
   /** What the running server has seen of forwarded headers; absent from the command line. */
   observed: ForwardedSnapshot | undefined;
   /**

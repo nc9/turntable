@@ -111,6 +111,42 @@ export type PgTarget = { url: string; schema?: string } | { pglite: true; isolat
 /** One shared in-process PGlite per process (tests): reset between databases, see `reset`. */
 let sharedPglite: { client: { close(): Promise<void> }; orm: PgOrm } | undefined;
 
+/** A whole number from `min` to `max` in the environment, else `fallback`; anything else stops the boot. */
+function envInt(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(`${name} must be a whole number from ${min} to ${max}`);
+  }
+  return n;
+}
+
+/**
+ * Pool settings for a managed single node (#716): a bounded pool (TURNTABLE_PG_POOL_MAX, default
+ * 10), an optional per-statement timeout (TURNTABLE_PG_STATEMENT_TIMEOUT_MS, off by default, sent
+ * as a startup parameter so it holds on every connection) and, with TURNTABLE_PG_REQUIRE_TLS=1,
+ * a refusal of a URL that does not demand TLS (`sslmode=require` or stronger).
+ */
+export function poolSettings(url: string): {
+  max: number;
+  connection?: Record<string, string | number>;
+} {
+  if (process.env.TURNTABLE_PG_REQUIRE_TLS?.trim() === "1") {
+    const mode = /[?&]sslmode=([a-z-]+)/i.exec(url)?.[1]?.toLowerCase();
+    if (!mode || !["require", "verify-ca", "verify-full"].includes(mode)) {
+      throw new Error(
+        "TURNTABLE_PG_REQUIRE_TLS=1 needs sslmode=require (or verify-ca, verify-full) in the database URL",
+      );
+    }
+  }
+  const statement = envInt("TURNTABLE_PG_STATEMENT_TIMEOUT_MS", 0, 0, 3_600_000);
+  return {
+    max: envInt("TURNTABLE_PG_POOL_MAX", 10, 1, 200),
+    ...(statement > 0 ? { connection: { statement_timeout: statement } } : {}),
+  };
+}
+
 function connect(target: PgTarget, readOnly = false): { orm: PgOrm; close: () => Promise<void> } {
   if ("url" in target) {
     // Startup parameters: the server applies them to every connection of the pool before any query.
@@ -118,20 +154,25 @@ function connect(target: PgTarget, readOnly = false): { orm: PgOrm; close: () =>
       ...(target.schema ? { search_path: target.schema } : {}),
       ...(readOnly ? { default_transaction_read_only: "on" } : {}),
     };
+    // the TLS requirement and pool settings apply to every handle on a real URL, a read-only one too
+    const pool = target.schema
+      ? // a test database is small and short-lived: few connections, closed when idle
+        { max: 4, idleTimeout: 1 }
+      : poolSettings(target.url);
     const orm =
       target.schema || readOnly
         ? drizzleBunSql({
             connection: {
               url: target.url,
-              ...(target.schema
-                ? // a test database is small and short-lived: few connections, closed when idle
-                  { max: 4, idleTimeout: 1 }
-                : {}),
-              connection: params,
+              ...pool,
+              connection: { ...("connection" in pool ? pool.connection : {}), ...params },
             },
             schema: pgSchema,
           })
-        : drizzleBunSql(target.url, { schema: pgSchema });
+        : drizzleBunSql({
+            connection: { url: target.url, ...poolSettings(target.url) },
+            schema: pgSchema,
+          });
     return {
       orm: orm as unknown as PgOrm,
       close: async () => void (await orm.$client.close()),

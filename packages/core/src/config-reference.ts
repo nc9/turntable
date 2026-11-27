@@ -350,6 +350,26 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
   },
   // ---- Release lane ----
   {
+    name: "TURNTABLE_LANE_SUPERVISED",
+    area: "Release lane",
+    default: "off",
+    description:
+      "Set to `1` to run the release lane as this server's supervised child process (`serve --roles release`, started once and never respawned: if it is lost the server exits non-zero and the platform restarts the container): one container, two processes. Every `TURNTABLE_RELEASE_*` variable is removed from the server's own environment and goes to the child alone; the channel between them is a unix socket in a 0700 directory under keys made at boot. Not with `TURNTABLE_PUBLISH_CHANNEL_*` or the lane's `TURNTABLE_RELEASE_CHANNEL_*` (the supervisor makes the channel). On Postgres the child also needs `TURNTABLE_RELEASE_DATABASE_URL`. See the release lane page.",
+  },
+  {
+    name: "TURNTABLE_LANE_STARTUP_TIMEOUT_SECONDS",
+    area: "Release lane",
+    default: "60",
+    description:
+      "With `TURNTABLE_LANE_SUPERVISED`: how many seconds the lane child has to answer its first health check. A child that is alive but never healthy in that time counts as lost, like one that exited: the server exits non-zero.",
+  },
+  {
+    name: "TURNTABLE_RELEASE_DATABASE_URL",
+    area: "Release lane",
+    description:
+      "The supervised lane's own Postgres URL (a role limited to what the lane reads and writes); the main URL is never passed to the child. Required with `TURNTABLE_LANE_SUPERVISED` on Postgres.",
+  },
+  {
     name: "TURNTABLE_RELEASE_MASTER_KEY_FILE",
     area: "Release lane",
     description:
@@ -568,7 +588,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     name: "TURNTABLE_BUILD_TIME",
     area: "Build",
     description:
-      "Build time, a compile-time define set by `scripts/build.ts` and reported by `/healthz` as `built_at`. It is `SOURCE_DATE_EPOCH` when set, else the committer date of HEAD, else `unknown`; never the wall clock, so builds stay reproducible. Never set by hand.",
+      "Build time, a compile-time define set by `scripts/build.ts` and reported by `/healthz` as `built_at`. It is `SOURCE_DATE_EPOCH` when set, else a `BUILD_TIME` file at the repo root (the commit's committer date, ISO 8601 or epoch seconds; a malformed file is ignored), else the committer date of HEAD, else `unknown`; never the wall clock, so builds stay reproducible. Never set by hand.",
   },
   {
     name: "TURNTABLE_UI_VERSION",
@@ -650,6 +670,34 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     default: "SQLite in the data dir",
     description:
       "Postgres connection URL. Every subcommand that opens the database uses it. See [Postgres](/postgres).",
+  },
+  {
+    name: "TURNTABLE_PG_POOL_MAX",
+    area: "Server",
+    default: "10",
+    description:
+      "Most connections the Postgres pool opens (1 to 200). Size it under the managed instance's connection limit, shared with every other client. Ignored on SQLite. See [Postgres](/postgres#pool-and-timeouts).",
+  },
+  {
+    name: "TURNTABLE_PG_STATEMENT_TIMEOUT_MS",
+    area: "Server",
+    default: "off",
+    description:
+      "Postgres `statement_timeout` in milliseconds (1 to 3600000) for every pooled connection, so one slow statement cannot hold a connection forever. Unset or 0 leaves it off. Ignored on SQLite.",
+  },
+  {
+    name: "TURNTABLE_PG_REQUIRE_TLS",
+    area: "Server",
+    default: "off",
+    description:
+      "Set to `1` to refuse a `TURNTABLE_DATABASE_URL` that lacks `sslmode=require` (or `verify-ca`, `verify-full`). Ignored on SQLite.",
+  },
+  {
+    name: "TURNTABLE_COPY_TARGET_URL",
+    area: "Server",
+    default: "",
+    description:
+      "Postgres URL that `instance_db_copy` copies the SQLite database into (any `TURNTABLE_*_URL` name except `TURNTABLE_DATABASE_URL` works; the op names the variable). Set it only for the move, on a server still running SQLite. See [SQLite to Postgres](/deploy/sqlite-to-postgres).",
   },
   {
     name: "TURNTABLE_UI_DIR",
@@ -973,6 +1021,60 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Release lane",
     description: "On the lane: the private key of that certificate.",
   },
+  {
+    name: "TURNTABLE_LOG_STORE",
+    area: "Server",
+    default: "db",
+    description:
+      "Where job logs are stored: `db` (the main database, one binary) or `clickhouse` (a ClickHouse service, over HTTP). `clickhouse` needs `TURNTABLE_CLICKHOUSE_URL`; its host may be private or plain http without an allow-list entry. See [Log store](/log-store).",
+  },
+  {
+    name: "TURNTABLE_CLICKHOUSE_URL",
+    area: "Server",
+    default: "unset",
+    description:
+      "Base URL of the ClickHouse HTTP interface, for example `http://clickhouse.railway.internal:8123`. No credentials in the URL. Used when `TURNTABLE_LOG_STORE=clickhouse`.",
+  },
+  {
+    name: "TURNTABLE_CLICKHOUSE_USER",
+    area: "Server",
+    default: "ClickHouse default user",
+    description: "ClickHouse user, sent as a header.",
+  },
+  {
+    name: "TURNTABLE_CLICKHOUSE_PASSWORD",
+    area: "Server",
+    default: "none",
+    description: "ClickHouse password, sent as a header. Never logged.",
+  },
+  {
+    name: "TURNTABLE_CLICKHOUSE_DATABASE",
+    area: "Server",
+    default: "ClickHouse default database",
+    description:
+      "Database that holds the `log_chunks` table. The server creates the table at boot when it is missing.",
+  },
+  {
+    name: "TURNTABLE_LOG_RETENTION_DAYS",
+    area: "Server",
+    default: "90",
+    description:
+      "Days the ClickHouse log store keeps a chunk before its TTL removes it (1 to 36500). Applied at boot.",
+  },
+  {
+    name: "TURNTABLE_LOG_QUEUE_MIB",
+    area: "Server",
+    default: "64",
+    description:
+      "Memory the ClickHouse write queue may hold while the store is slow or down (1 to 4096 MiB). A chunk that does not fit is dropped and the attempt's log is marked incomplete.",
+  },
+  {
+    name: "TURNTABLE_LOG_MIGRATE_DAYS",
+    area: "Server",
+    default: "14",
+    description:
+      "How many days back the `log_store_migrate` operation copies from the database into the log store (1 to 3650).",
+  },
 ];
 
 /**
@@ -985,6 +1087,11 @@ export const NOT_CONFIGURATION: readonly string[] = [
   "TURNTABLE_STEP_IO", // set by the step shim for the processes it starts
   "TURNTABLE_RELEASE", // the prefix of the release lane variables
   "TURNTABLE_CHECKOUT", // the prefix of the checkout variables
+  "TURNTABLE_LANE_CHILD", // set by the supervisor on the release lane child it starts, never by an operator
+  "TURNTABLE_RELEASE_CHANNEL_KEY", // the inline form of the documented _KEY_FILE variable; the supervisor sets it for its child
+  "TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY", // the inline form of the documented _CONFIG_KEY_FILE variable
+  "TURNTABLE_RELEASE_CHANNEL", // the prefix of the release channel variables
+  "TURNTABLE_PUBLISH_CHANNEL", // the prefix of the publish channel variables
   "TURNTABLE_CI", // an example project var name in the `policy set --var` help text
   "TURNTABLE_TEST_DB", // the test harness: run the suites against Postgres
   "TURNTABLE_TEST_PGLITE_ISOLATED", // the test harness

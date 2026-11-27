@@ -1,0 +1,47 @@
+---
+title: SQLite to Postgres
+description: Move a running instance from its SQLite file to Postgres, with a rollback that needs nothing but the old file.
+---
+
+This is the cutover for an instance that has run on SQLite and must move to Postgres (hosted does). The copy is an instance-admin op, `instance_db_copy`, because it runs inside the server, which holds both the SQLite file and the Postgres URL, and a hosted instance has no shell. The copy only ever reads the SQLite file, so the rollback is to start on that file again.
+
+## Before you start
+
+- A Postgres database, empty, near the server's region, with TLS. The database user needs to create tables in its schema.
+- The server runs a build whose migrations are applied to the SQLite file (it is the build you will start on Postgres).
+- Set the target URL in a variable on the running server, named `TURNTABLE_COPY_TARGET_URL` (or another `TURNTABLE_*_URL`). Do **not** use `TURNTABLE_DATABASE_URL`: setting it switches the server to Postgres at its next start, and the op refuses it. The URL never appears in an input, an output or the audit.
+- An instance-administrator token (`tti_`).
+
+## Steps
+
+1. **Back up the volume.** Run `db_backup`, and take a snapshot of the volume. Keep both until the move is verified.
+2. **Drain, then quiet the writers.** Call `instance_drain` with `on: true`, then poll `instance_drain_status` until `running_attempts` is 0. New work queues and no attempt runs, but the server is not silent: webhook and poll ingest, the audit checkpointer and the anchor export can still write, and the op does not pause them. The copy reads one snapshot and re-reads the source at the end, so a write to any copied table during the copy **fails the run** (the target is emptied) and you retry. Make that unlikely: pause webhook delivery at the sender, pause the poll, and run the copy right after the org anchor exports so the next checkpoint and export are not due. Anything written to SQLite after a successful copy is not on Postgres, so keep the window between the copy and the restart short.
+3. **Dry run, then the real copy.**
+
+   ```sh
+   curl -sS -X POST "$URL/api/v1/instance/db-copy" -H "Authorization: Bearer $TTI_TOKEN" \
+     -H 'content-type: application/json' \
+     -d '{"target_url_env":"TURNTABLE_COPY_TARGET_URL","dry_run":true,"exclude_tables":[]}'
+   ```
+
+   The dry run applies the migrations to the target, checks it is empty and reports per-table row counts. A target that holds any row in a copied table is refused before it is migrated: empty it first, since a run cannot tell stale rows from current ones. Fix what it refuses, then send the same call with `"dry_run": false`. `exclude_tables` lists tables to leave behind, for example `["log_chunks","log_cuts","log_notices"]` once job logs live in the log store; a table whose foreign key points at an excluded one is refused.
+
+   The real run copies in foreign-key order and in batches, and yields between batches so the server keeps answering. It then resets the identity sequences (the next event id is above every copied one), checks per-table counts and a checksum over primary keys, and walks every org's audit chain on the target: links, hashes, checkpoint positions, and a head equal to the source's. The call writes its own audit entry (`outcome: started`) before it copies, so the copy carries it; the entry the dispatcher writes when the call returns stays on SQLite only. If anything fails, the target is emptied again and the call says which check failed. A source held in memory is refused: the copy needs the SQLite file. The copy time grows with the row count and the network round trips to Postgres, so measure it: the dry run reports the row counts that set the size, and a real run on a copy of the volume (restored from the step 1 snapshot, on a scratch instance) gives the number to plan the window around. Budget minutes, not seconds, for a ~2.5 GB instance, and do not plan the window until you have that measurement.
+4. **Switch.** Set `TURNTABLE_DATABASE_URL` to the Postgres URL (with `sslmode=require`) and the pool settings below, remove `TURNTABLE_COPY_TARGET_URL`, and restart. The drain ends with the restart.
+5. **Verify.** `turntable doctor` (or `GET /instance/doctor`) is green; a webhook or poll ingests a new push; run a workflow you know and compare it with its last run on SQLite (a parity run); then call `instance_audit_verify` with the anchors each org exported **before the copy started**. An anchor exported afterwards can cover an entry written to SQLite after the copy, which Postgres does not have, and reports a rollback. The copy proves the chain links and hashes; the anchors prove it against the signed record outside the database.
+
+## Rollback
+
+Unset `TURNTABLE_DATABASE_URL` and restart. The server opens the SQLite file on the volume, which the copy never modified. Anything written on Postgres after the cutover is not on the file: roll back before real traffic, or accept losing it. To try again, empty the Postgres database first (a target that holds rows is refused).
+
+## Pool and timeouts
+
+For a managed single node:
+
+| Variable | Default | Use |
+| --- | --- | --- |
+| `TURNTABLE_PG_POOL_MAX` | 10 | Bound the pool under the instance's connection limit. |
+| `TURNTABLE_PG_STATEMENT_TIMEOUT_MS` | off | A statement timeout on every pooled connection. Pick a value above your slowest migration step if migrations run at boot. |
+| `TURNTABLE_PG_REQUIRE_TLS` | off | `1` refuses a URL without `sslmode=require`, `verify-ca` or `verify-full`. Use `sslmode=verify-full` when the provider's CA is available. |
+
+See [Postgres](/postgres) for the rest.

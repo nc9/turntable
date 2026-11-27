@@ -53,7 +53,7 @@ async function startServer(env: Record<string, string>, args: string[] = []) {
   const proc = Bun.spawn(
     ["bun", "run", MAIN, "serve", "--data-dir", join(tmp, `d-${Math.random()}`), ...args],
     {
-      env: { PATH: process.env.PATH ?? "", HOME: tmp, ...env },
+      env: { PATH: process.env.PATH ?? "", HOME: tmp, TURNTABLE_ALLOW_ROOT: "1", ...env },
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -110,6 +110,7 @@ describe("serve", () => {
 
   test("token generate prints the token and its hash; the bootstrap hash opens the API", async () => {
     const gen = Bun.spawn(["bun", "run", MAIN, "token", "generate"], {
+      env: { PATH: process.env.PATH ?? "", HOME: tmp, TURNTABLE_ALLOW_ROOT: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });

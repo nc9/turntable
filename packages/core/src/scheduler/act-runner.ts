@@ -41,16 +41,19 @@ import {
   CheckoutAuthError,
   type CheckoutConfig,
   DEFAULT_CHECKOUT_CONFIG,
+  limitsFor,
   readChildTarball,
   runCheckoutChild,
   Semaphore,
   sweepOldCheckouts,
 } from "../run/checkout-child";
-import { clean, DEFAULT_FETCH_LIMITS } from "../run/git-fetch";
+import { clean, type FetchLimits } from "../run/git-fetch";
 import { deliverSubmodules } from "../run/submodule-fetch";
 import { scrubToken } from "../run/scrub-token";
 import { tarballReader } from "../run/tarball-reader";
 import { treeScanOutcome } from "./tree-scan-outcome";
+import { fetchLimitOutcome } from "./fetch-limit-outcome";
+import { effectiveCheckoutLimits } from "../run/checkout-limits";
 import { resolvePlanActions } from "../pins";
 import { normalizeForgeToken, type ForgeToken } from "../pins/forge-token";
 import {
@@ -102,6 +105,12 @@ export interface RepoSource {
     opts?: {
       signal?: AbortSignal | undefined;
       fullHistory?: boolean | undefined;
+      /**
+       * The size budgets for this checkout's shallow tree (pack, unpacked, tarball), from the
+       * project's settings; a full-history delivery multiplies them (see `limitsFor`). Absent:
+       * the source's own configuration.
+       */
+      limits?: Partial<FetchLimits> | undefined;
       /** Also deliver each submodule at its pinned commit (a job's `submodules:` input). */
       submodules?: "true" | "recursive" | undefined;
       /**
@@ -179,7 +188,6 @@ export function gitRepoSource(
   const url = o.cloneUrl ?? ((owner, repo) => `https://github.com/${owner}/${repo}.git`);
   const cfg = { ...DEFAULT_CHECKOUT_CONFIG, ...o.config };
   const turns = new Semaphore(cfg.concurrency);
-  const lim = { ...DEFAULT_FETCH_LIMITS, ...cfg.limits };
   // What an earlier process left in the temporary directory is cleared once, at start.
   if (!sweptOnce) {
     sweptOnce = true;
@@ -202,6 +210,9 @@ export function gitRepoSource(
       const clone = url(owner, repo);
       assertNoCredentials(clone);
       assertCloneHost(clone, o.allowHosts);
+      // This checkout's budgets: the project's when the caller resolved them, else the source's.
+      const base = { ...cfg.limits, ...opts?.limits };
+      const lim = limitsFor(base, opts?.fullHistory === true, cfg.memoryMb);
       const release = await turns.acquire(opts?.signal);
       let token: string | undefined;
       const dir = mkdtempSync(join(tmpdir(), "tt-src-"));
@@ -244,7 +255,7 @@ export function gitRepoSource(
           // over the tree and the modules together.
           ...(submodules ? { stage: "tree" as const, manifest } : {}),
           allowHosts: o.allowHosts ?? [],
-          config: cfg,
+          config: { ...cfg, limits: base },
           signal: opts?.signal,
           ...(o.command ? { command: o.command } : {}),
         });
@@ -262,7 +273,8 @@ export function gitRepoSource(
               : {}),
             cloneUrl: o.cloneUrl,
             allowHosts: o.allowHosts ?? [],
-            config: cfg,
+            config: { ...cfg, limits: base },
+            ...(opts?.fullHistory ? { fullHistory: true } : {}),
             startedAt,
             signal: opts?.signal,
             command: o.command,
@@ -271,13 +283,15 @@ export function gitRepoSource(
           if (left <= 1000) throw new Error("the checkout took too long");
           res = await runCheckoutChild({
             stage: "pack",
+            // The tarball cap is the full-history one when the tree was.
+            ...(opts?.fullHistory ? { fullHistory: true } : {}),
             owner,
             repo,
             sha,
             dir,
             out,
             allowHosts: o.allowHosts ?? [],
-            config: { ...cfg, timeoutMs: left },
+            config: { ...cfg, limits: base, timeoutMs: left },
             signal: opts?.signal,
             ...(o.command ? { command: o.command } : {}),
           });
@@ -667,19 +681,29 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     }
 
     let checkout: Checkout;
+    // The project's checkout budgets (#677), read once for both fetches of this job.
+    const checkoutLimits =
+      repo && !dbRun.local
+        ? await effectiveCheckoutLimits(
+            o.settings ?? ambientSettings(),
+            o.db,
+            ctx.scope.orgId,
+            ctx.scope.projectId,
+          )
+        : undefined;
     try {
       checkout = await o.source.checkout(
         dbRun,
         repo
           ? { owner: repo.owner, repo: repo.repo, installationId: repo.installationId }
           : undefined,
-        { signal: ctx.signal },
+        { signal: ctx.signal, ...(checkoutLimits ? { limits: checkoutLimits } : {}) },
       );
     } catch (e) {
       // A refused credential is not transient: its own kind, so it is never retried.
       if (e instanceof CheckoutAuthError)
         return { state: "infra_error", infraKind: "checkout_auth_failed", reason: e.message };
-      const scan = treeScanOutcome(e);
+      const scan = treeScanOutcome(e) ?? fetchLimitOutcome(e);
       if (scan) {
         await ctx.store.appendLog(0, new TextEncoder().encode(scan.logLine));
         o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${scan.logLine}`);
@@ -719,6 +743,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               { owner: repo.owner, repo: repo.repo, installationId: repo.installationId },
               {
                 signal: ctx.signal,
+                ...(checkoutLimits ? { limits: checkoutLimits } : {}),
                 ...(wantsFull ? { fullHistory: true } : {}),
                 ...(wantsSubmodules
                   ? {
@@ -731,7 +756,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           } catch (e) {
             if (e instanceof CheckoutAuthError)
               return { state: "infra_error", infraKind: "checkout_auth_failed", reason: e.message };
-            const scan = treeScanOutcome(e);
+            const scan = treeScanOutcome(e) ?? fetchLimitOutcome(e);
             if (scan) {
               await ctx.store.appendLog(0, new TextEncoder().encode(scan.logLine));
               o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${scan.logLine}`);
