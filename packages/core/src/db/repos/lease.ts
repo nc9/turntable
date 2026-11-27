@@ -1007,10 +1007,13 @@ export async function requeueInfraFailureOnce(
     now: number;
   },
 ): Promise<boolean> {
-  // The end of the log is read before the transaction opens: with an external store that is an HTTP
-  // call, which must not run (or hang) while the write lock is held. Appending inside is a queue push.
-  // When the store is down the marker line is skipped; the retry itself must not be lost.
-  const tail = await logSize(db, scope, input.attemptId).catch(() => null);
+  // With an external store the end of the log is an HTTP call, which must not run (or hang) while
+  // the write lock is held, so it is read before the transaction opens; appending inside is a queue
+  // push. When the store is down the marker line is skipped; the retry itself must not be lost.
+  // With the database store the size is measured inside the transaction, so it is the size at the
+  // moment the attempt is failed (a chunk written in between cannot be overwritten by the marker).
+  const external = externalLogStore() !== undefined;
+  const early = external ? await logSize(db, scope, input.attemptId).catch(() => null) : null;
   return db.transaction(async (tx) => {
     const [cur] = await tx.orm
       .select()
@@ -1037,6 +1040,7 @@ export async function requeueInfraFailureOnce(
       .where(eq(s.jobAttempts.id, cur.id));
     // One line at the end of the failed attempt's job log: it was retried once, and why.
     const why = sanitizeInfraError(input.reason).slice(0, 200);
+    const tail = external ? early : await logSize(tx, scope, cur.id);
     if (tail !== null) {
       await appendLog(
         tx,
@@ -1243,13 +1247,34 @@ export async function resetAttemptOutput(
   scope: Scope,
   attemptId: string,
   owner: string,
+  retry: {
+    tries?: number;
+    backoffMs?: number;
+    maxBackoffMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<boolean> {
   const ext = externalLogStore();
   // An external store is cleared first and outside the transaction (no HTTP while the write lock is
-  // held). If it is down this throws before anything is wiped, so the reset stays all or nothing
-  // and the caller retries. Only the lease holder may clear it.
+  // held). Only the lease holder may clear it. A store that is down is retried with backoff (about
+  // a minute by default, while the caller keeps heartbeating its lease), so a short outage does not
+  // end an adopted job. If it stays down this throws before anything is wiped, so the reset stays
+  // all or nothing and the resume path settles the attempt as an infra error.
   if (ext && (await db.run((h) => holdsLease(h, scope, attemptId, owner)))) {
-    await ext.deleteAttempt(logKey(scope, attemptId));
+    const tries = retry.tries ?? 8;
+    const sleep = retry.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    for (let n = 1; ; n++) {
+      try {
+        await ext.deleteAttempt(logKey(scope, attemptId));
+        break;
+      } catch (err) {
+        if (n >= tries || retry.signal?.aborted) throw err;
+        await sleep(
+          Math.min((retry.backoffMs ?? 500) * 2 ** (n - 1), retry.maxBackoffMs ?? 15_000),
+        );
+      }
+    }
   }
   return db.transaction(async (tx) => {
     if (!(await holdsLease(tx, scope, attemptId, owner))) return false;

@@ -21,6 +21,8 @@ export type FakeClickHouse = {
   requests: { url: URL; headers: Record<string, string>; body: string }[];
   /** While set, requests fail with this error. */
   down: Error | undefined;
+  /** Runs once, after the next stored-rows select has read its rows and before it answers. */
+  afterSelect: (() => void | Promise<void>) | undefined;
   /** While true, requests never answer (until the caller's deadline). */
   hang: boolean;
   inserts: number;
@@ -36,6 +38,7 @@ export function fakeClickHouse(): FakeClickHouse {
     requests: [],
     down: undefined,
     hang: false,
+    afterSelect: undefined,
     inserts: 0,
     ttlDays: undefined,
     fetch: async (input, init) => {
@@ -100,7 +103,16 @@ export function fakeClickHouse(): FakeClickHouse {
         return ok();
       }
       if (sql.includes("FROM system.tables")) {
-        return lines(f.ttlDays === undefined ? [] : [{ q: `TTL x + INTERVAL ${f.ttlDays} DAY` }]);
+        return lines(
+          f.ttlDays === undefined
+            ? []
+            : [
+                {
+                  // ClickHouse stores the TTL normalised: INTERVAL N DAY becomes toIntervalDay(N).
+                  q: `CREATE TABLE default.log_chunks (...) ENGINE = MergeTree PARTITION BY toYYYYMM(received_at) ORDER BY (org_id, project_id, attempt_id, offset) TTL toDateTime(received_at, 'UTC') + toIntervalDay(${f.ttlDays}) SETTINGS index_granularity = 8192`,
+                },
+              ],
+        );
       }
       if (
         sql.startsWith("ALTER TABLE") &&
@@ -120,14 +132,17 @@ export function fakeClickHouse(): FakeClickHouse {
           if (!first.has(`${r.project}/${r.attempt}/${r.offset}`))
             first.set(`${r.project}/${r.attempt}/${r.offset}`, r);
         const n = [...first.values()].reduce((a, r) => a + r.bytes.length, 0);
-        return lines([{ n: String(n) }]);
+        return lines([{ total: String(n) }]);
       }
       if (sql.includes("uniqExact(offset)")) {
         const d = dedupe(rowsOf());
+        const list = /offset IN \(([\d,]*)\)/.exec(sql)?.[1]?.split(",").map(Number);
+        const stored = new Set(d.map((r) => r.offset));
         return lines([
           {
             c: String(d.length),
             s: String(d.reduce((m, r) => Math.max(m, r.offset + r.bytes.length), 0)),
+            ...(list ? { k: list.filter((o) => stored.has(o)).map(String) } : {}),
           },
         ]);
       }
@@ -174,6 +189,16 @@ export function fakeClickHouse(): FakeClickHouse {
       }
       return new Response(`unknown statement: ${sql.slice(0, 100)}`, { status: 400 });
     },
+  };
+  const inner = f.fetch;
+  f.fetch = async (input, init) => {
+    const res = await inner(input, init);
+    const cb = f.afterSelect;
+    if (cb && String(init?.body ?? "").startsWith("SELECT")) {
+      f.afterSelect = undefined;
+      await cb();
+    }
+    return res;
   };
   return f;
 }

@@ -29,6 +29,8 @@ export type ClickHouseOptions = {
   retentionDays?: number | undefined;
   /** Most bytes held in memory while the store is slow or down. Default 64 MiB. */
   maxQueueBytes?: number | undefined;
+  /** Most queued bytes one org may hold, so a noisy org cannot crowd out the others. Default a quarter of maxQueueBytes. */
+  maxQueueBytesPerOrg?: number | undefined;
   /** Largest batch sent in one insert. Default 4 MiB. */
   maxBatchBytes?: number | undefined;
   /** Wait before sending a small batch. Default 200 ms. */
@@ -73,6 +75,19 @@ export function createTableSql(table: string, retentionDays: number): string {
   );
 }
 
+/**
+ * The retention in days of a stored `create_table_query`. ClickHouse rewrites `INTERVAL 90 DAY` as
+ * `toIntervalDay(90)` when it stores the table, so both forms are read. Undefined when there is no
+ * TTL or it is not a whole number of days (then the caller applies its own).
+ */
+export function ttlDaysOf(createQuery: string | undefined): number | undefined {
+  const ttl = /\bTTL\b([^]*?)(?:\bSETTINGS\b|$)/.exec(createQuery ?? "")?.[1];
+  if (ttl === undefined) return undefined;
+  const m = /toIntervalDay\(\s*(\d+)\s*\)|INTERVAL\s+(\d+)\s+DAY\b/i.exec(ttl);
+  const n = m?.[1] ?? m?.[2];
+  return n === undefined ? undefined : Number(n);
+}
+
 export class ClickHouseLogStore implements LogStore {
   readonly kind = "clickhouse";
   readonly #base: string;
@@ -80,6 +95,7 @@ export class ClickHouseLogStore implements LogStore {
   readonly #table: string;
   readonly #retention: number;
   readonly #maxQueue: number;
+  readonly #maxOrgQueue: number;
   readonly #maxBatch: number;
   readonly #interval: number;
   readonly #timeout: number;
@@ -87,6 +103,8 @@ export class ClickHouseLogStore implements LogStore {
   readonly #now: () => number;
   #queue: Entry[] = [];
   #queueBytes = 0;
+  /** Queued and in-flight bytes by org, for the per-org cap. */
+  #orgBytes = new Map<string, number>();
   /** Queued and in-flight chunks by attempt then offset, so reads can include them. */
   #index = new Map<string, Map<number, Entry>>();
   #inflight: Entry[] = [];
@@ -116,6 +134,7 @@ export class ClickHouseLogStore implements LogStore {
       throw new ClickHouseError("retentionDays must be a whole number from 1 to 36500");
     }
     this.#maxQueue = o.maxQueueBytes ?? 64 * 1024 * 1024;
+    this.#maxOrgQueue = o.maxQueueBytesPerOrg ?? Math.floor(this.#maxQueue / 4);
     this.#maxBatch = o.maxBatchBytes ?? 4 * 1024 * 1024;
     this.#interval = o.flushIntervalMs ?? 200;
     this.#timeout = o.requestTimeoutMs ?? 10_000;
@@ -136,7 +155,7 @@ export class ClickHouseLogStore implements LogStore {
       "SELECT create_table_query AS q FROM system.tables WHERE database = currentDatabase() AND name = {t:String}",
       { t: this.#table },
     );
-    if (!row?.q?.includes(`INTERVAL ${this.#retention} DAY`)) {
+    if (ttlDaysOf(row?.q) !== this.#retention) {
       await this.#post(
         `ALTER TABLE ${this.#table} MODIFY TTL toDateTime(received_at, 'UTC') + INTERVAL ${this.#retention} DAY`,
       );
@@ -158,7 +177,11 @@ export class ClickHouseLogStore implements LogStore {
   append(key: LogKey, offset: number, bytes: Uint8Array): Promise<void> {
     const idx = this.#index.get(attemptKey(key));
     if (idx?.has(offset)) return Promise.resolve();
-    if (this.#queueBytes + bytes.length > this.#maxQueue) {
+    const orgHeld = this.#orgBytes.get(key.orgId) ?? 0;
+    if (
+      this.#queueBytes + bytes.length > this.#maxQueue ||
+      orgHeld + bytes.length > this.#maxOrgQueue
+    ) {
       this.dropped += 1;
       try {
         this.#o.onDrop?.(key, offset, bytes.length);
@@ -171,12 +194,22 @@ export class ClickHouseLogStore implements LogStore {
     const entry: Entry = { key, offset, bytes: Uint8Array.from(bytes), ms: this.#now() };
     this.#queue.push(entry);
     this.#queueBytes += bytes.length;
+    this.#orgBytes.set(key.orgId, orgHeld + bytes.length);
     const ak = attemptKey(key);
     let m = this.#index.get(ak);
     if (!m) this.#index.set(ak, (m = new Map()));
     m.set(offset, entry);
     this.#schedule(this.#queueBytes >= this.#maxBatch ? 0 : this.#interval);
     return Promise.resolve();
+  }
+
+  #release(entries: readonly Entry[]): void {
+    for (const e of entries) {
+      this.#queueBytes -= e.bytes.length;
+      const left = (this.#orgBytes.get(e.key.orgId) ?? 0) - e.bytes.length;
+      if (left > 0) this.#orgBytes.set(e.key.orgId, left);
+      else this.#orgBytes.delete(e.key.orgId);
+    }
   }
 
   #schedule(delay: number): void {
@@ -222,7 +255,7 @@ export class ClickHouseLogStore implements LogStore {
                 if (m.size === 0) this.#index.delete(ak);
               }
             }
-            this.#queueBytes -= batch.reduce((n, e) => n + (e.dead ? e.bytes.length : 0), 0);
+            this.#release(batch.filter((e) => e.dead));
             this.#queue.unshift(...live);
             this.#inflight = [];
             this.#failures += 1;
@@ -239,7 +272,7 @@ export class ClickHouseLogStore implements LogStore {
           this.#failures = 0;
           this.#lastError = undefined;
           this.#retryAt = 0;
-          this.#queueBytes -= bytes;
+          this.#release(batch);
           for (const e of batch) {
             const ak = attemptKey(e.key);
             const m = this.#index.get(ak);
@@ -383,13 +416,19 @@ export class ClickHouseLogStore implements LogStore {
     return rows.map((r) => ({ offset: Number(r.offset), bytes: Buffer.from(r.b ?? "", "base64") }));
   }
 
+  // Every read takes its snapshot of the pending chunks BEFORE it selects the stored rows. A batch
+  // that lands while the select runs is then either in the snapshot, in the stored rows, or both
+  // (merged by offset); taking the snapshot after would lose a chunk that was queued when the select
+  // began and gone from the queue by the time the snapshot was taken.
   async read(key: LogKey, fromOffset = 0): Promise<LogChunk[]> {
+    const pending = this.#pendingOf(key);
     const stored = await this.#chunks(key, " AND offset >= {from:UInt64}", { from: fromOffset });
-    return this.#merge(stored, this.#pendingOf(key), (c) => c.offset >= fromOffset);
+    return this.#merge(stored, pending, (c) => c.offset >= fromOffset);
   }
 
   async range(key: LogKey, from: number, to: number): Promise<Buffer> {
     if (to <= from) return Buffer.alloc(0);
+    const pending = this.#pendingOf(key);
     const stored = await this.#chunks(
       key,
       " AND offset < {to:UInt64} AND offset + length(bytes) > {from:UInt64}",
@@ -397,7 +436,7 @@ export class ClickHouseLogStore implements LogStore {
     );
     const merged = this.#merge(
       stored,
-      this.#pendingOf(key),
+      pending,
       (c) => c.offset < to && c.offset + c.bytes.length > from,
     );
     return assembleRange(merged, from, to);
@@ -410,31 +449,27 @@ export class ClickHouseLogStore implements LogStore {
   }
 
   async stat(key: LogKey): Promise<{ chunks: number; size: number }> {
+    // Snapshot first (see read). One statement returns the stored count and size together with
+    // which of the snapshot's offsets are stored, so the three answers describe the same moment.
+    const pending = this.#pendingOf(key);
+    const offsets = pending.map((e) => String(Math.trunc(e.offset)));
+    const known =
+      offsets.length > 0 ? `, groupUniqArrayIf(offset, offset IN (${offsets.join(",")})) AS k` : "";
     const w = this.#where(key);
     const [row] = await this.#select(
-      `SELECT uniqExact(offset) AS c, max(offset + length(bytes)) AS s FROM ${this.#table} WHERE ${w.sql}`,
+      `SELECT uniqExact(offset) AS c, max(offset + length(bytes)) AS s${known} FROM ${this.#table} WHERE ${w.sql}`,
       w.params,
     );
     let chunks = Number(row?.c ?? 0);
     let size = Number(row?.s ?? 0);
-    const have = new Set((await this.#knownOffsets(key)) ?? []);
-    for (const e of this.#pendingOf(key)) {
+    const have = new Set(
+      ((row?.k as unknown as (string | number)[] | undefined) ?? []).map(Number),
+    );
+    for (const e of pending) {
       size = Math.max(size, e.offset + e.bytes.length);
       if (!have.has(e.offset)) chunks += 1;
     }
     return { chunks, size };
-  }
-
-  /** Offsets of this attempt that are both queued and already stored (an insert that raced a read). */
-  async #knownOffsets(key: LogKey): Promise<number[] | undefined> {
-    const pend = this.#pendingOf(key).map((e) => e.offset);
-    if (pend.length === 0) return [];
-    const w = this.#where(key);
-    const rows = await this.#select(
-      `SELECT DISTINCT offset FROM ${this.#table} WHERE ${w.sql} AND offset IN (${pend.map((n) => String(Math.trunc(n))).join(",")})`,
-      w.params,
-    );
-    return rows.map((r) => Number(r.offset));
   }
 
   async grep(key: LogKey, q: LogGrepQuery): Promise<LogGrepResult> {
@@ -463,7 +498,7 @@ export class ClickHouseLogStore implements LogStore {
       const gone = new Set(m.values());
       this.#queue = this.#queue.filter((e) => {
         const drop = gone.has(e);
-        if (drop) this.#queueBytes -= e.bytes.length;
+        if (drop) this.#release([e]);
         return !drop;
       });
       for (const e of [...m.values()]) {
@@ -484,7 +519,7 @@ export class ClickHouseLogStore implements LogStore {
     const dropAll = (e: Entry): boolean => e.key.orgId === orgId && e.key.projectId === projectId;
     const gone = this.#queue.filter(dropAll);
     this.#queue = this.#queue.filter((e) => !dropAll(e));
-    for (const e of gone) this.#queueBytes -= e.bytes.length;
+    this.#release(gone);
     for (const e of this.#inflight) if (dropAll(e)) e.dead = true;
     for (const [ak, m] of [...this.#index]) {
       for (const e of [...m.values()]) {
@@ -510,10 +545,10 @@ export class ClickHouseLogStore implements LogStore {
   async orgBytes(orgId: string): Promise<number> {
     // One row per chunk: a chunk inserted twice by a retried batch is counted once.
     const [row] = await this.#select(
-      "SELECT sum(n) AS n FROM (SELECT any(length(bytes)) AS n FROM " +
+      "SELECT sum(n) AS total FROM (SELECT any(length(bytes)) AS n FROM " +
         `${this.#table} WHERE org_id = {o:String} GROUP BY project_id, attempt_id, offset)`,
       { o: orgId },
     );
-    return Number(row?.n ?? 0);
+    return Number(row?.total ?? 0);
   }
 }

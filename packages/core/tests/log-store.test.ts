@@ -23,7 +23,7 @@ import {
   resetAttemptOutput,
   requeueInfraFailureOnce,
 } from "../src/db";
-import { ClickHouseLogStore, createTableSql } from "../src/logstore/clickhouse-store";
+import { ClickHouseLogStore, createTableSql, ttlDaysOf } from "../src/logstore/clickhouse-store";
 import { DbLogStore } from "../src/logstore/db-store";
 import { migrateLogs } from "../src/logstore/migrate";
 import { createDropReporter, LOG_STORE_CUT_REASON } from "../src/logstore/outage";
@@ -379,6 +379,7 @@ describe("store outage", () => {
       url: "http://ch.test",
       fetch: fake.fetch,
       maxQueueBytes: 4096,
+      maxQueueBytesPerOrg: 4096,
       flushIntervalMs: 1,
       backoffMs: 5,
       onDrop: (k, o, n) => reporter.report(k, o, n),
@@ -693,5 +694,104 @@ describe("review fixes (#719)", () => {
     expect(alters()).toBe(0);
     await mk(60).ensureSchema();
     expect(alters()).toBe(1);
+  });
+
+  test("a batch that lands mid-select is never lost from read, range or stat", async () => {
+    const fake = fakeClickHouse();
+    const store = new ClickHouseLogStore({
+      url: "http://ch.test",
+      fetch: fake.fetch,
+      flushIntervalMs: 60_000,
+    });
+    const key: LogKey = { orgId: "o", projectId: "p", attemptId: "a" };
+    // The flush runs after the select has read its rows and before it answers: the chunk is not in
+    // the stored rows and is already out of the queue by the time the select returns.
+    const raced = async (): Promise<void> => {
+      fake.afterSelect = () => store.flush();
+    };
+    await store.append(key, 0, enc("hello\n"));
+    await raced();
+    expect(Buffer.concat((await store.read(key, 0)).map((c) => c.bytes)).toString()).toBe(
+      "hello\n",
+    );
+    expect(fake.rows.length).toBe(1);
+
+    await store.append(key, 6, enc("world\n"));
+    await raced();
+    expect((await store.range(key, 6, 12)).toString()).toBe("world\n");
+
+    await store.append(key, 12, enc("again\n"));
+    await raced();
+    expect(await store.stat(key)).toEqual({ chunks: 3, size: 18 });
+  });
+
+  test("the TTL check reads ClickHouse's stored form (toIntervalDay)", () => {
+    expect(
+      ttlDaysOf("... TTL toDateTime(received_at, 'UTC') + toIntervalDay(90) SETTINGS a = 1"),
+    ).toBe(90);
+    expect(ttlDaysOf("... TTL toDateTime(received_at, 'UTC') + INTERVAL 30 DAY")).toBe(30);
+    expect(ttlDaysOf("CREATE TABLE t (a Int8) ENGINE = MergeTree ORDER BY a")).toBeUndefined();
+    expect(ttlDaysOf("... TTL x + toIntervalMonth(3)")).toBeUndefined();
+  });
+
+  test("one org's volume does not drop another org's chunks", async () => {
+    const fake = fakeClickHouse();
+    fake.down = new Error("down");
+    const dropped: string[] = [];
+    const store = new ClickHouseLogStore({
+      url: "http://ch.test",
+      fetch: fake.fetch,
+      flushIntervalMs: 1,
+      maxQueueBytes: 1000,
+      maxQueueBytesPerOrg: 400,
+      onDrop: (k) => dropped.push(k.orgId),
+    });
+    const loud: LogKey = { orgId: "loud", projectId: "p", attemptId: "a" };
+    const quiet: LogKey = { orgId: "quiet", projectId: "p", attemptId: "b" };
+    for (let i = 0; i < 20; i++) await store.append(loud, i * 100, new Uint8Array(100));
+    await store.append(quiet, 0, new Uint8Array(100));
+    expect(dropped.every((o) => o === "loud")).toBe(true);
+    expect(dropped.length).toBe(16);
+    expect(store.queued.bytes).toBe(500);
+    fake.down = undefined;
+    await store.flush();
+    expect(fake.rows.filter((r) => r.org === "quiet").length).toBe(1);
+  });
+
+  test("resetAttemptOutput retries a store that is briefly down, and throws when it stays down", async () => {
+    const db = openDatabase(":memory:");
+    const t = await seedTenant(db, "org-reset");
+    const { fake, store } = hungWorld();
+    setLogStore(store);
+    const run = await createRun(db, t.scope, {
+      workflowPath: "w.yml",
+      event: "push",
+      ref: "main",
+      sha: "d".repeat(40),
+    });
+    const job = (await createJob(db, t.scope, { runId: run.id, jobKey: "j", name: "j" }))!;
+    await createAttempt(db, t.scope, { jobId: job.id, provider: "fake" });
+    const claimed = await claimNextAttempt(db, {
+      owner: "w",
+      leaseMs: 60_000,
+      now: Date.now(),
+      globalCap: 100,
+      perOrgCap: 100,
+    });
+    const id = claimed!.attempt.id;
+    const waits: number[] = [];
+    let calls = 0;
+    const sleep = async (ms: number): Promise<void> => {
+      waits.push(ms);
+      if (++calls === 2) fake.down = undefined;
+    };
+    fake.down = new Error("down");
+    expect(await resetAttemptOutput(db, t.scope, id, "w", { sleep, backoffMs: 10 })).toBe(true);
+    expect(waits).toEqual([10, 20]);
+
+    fake.down = new Error("down");
+    await expect(
+      resetAttemptOutput(db, t.scope, id, "w", { sleep: async () => {}, tries: 3 }),
+    ).rejects.toThrow(/ClickHouse request failed/);
   });
 });
