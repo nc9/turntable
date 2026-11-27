@@ -22,6 +22,7 @@ import { sanitizeInfraError } from "../../infra-error-text";
 import { announceCancelled } from "../abort-bus";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
+import { externalLogStore, logStoreFor } from "../../logstore/registry";
 import {
   appendLog,
   createAttempt,
@@ -31,7 +32,7 @@ import {
   type Job,
   type JobAttempt,
   listJobs,
-  readLog,
+  logSize,
   type Run,
   setRunStatus,
   transitionJob,
@@ -61,7 +62,7 @@ import {
   type Readiness,
   resolveDependents,
 } from "./readiness";
-import { type Scope, scoped } from "./scope";
+import { logKey, type Scope, scoped } from "./scope";
 
 export type Claim = {
   attempt: JobAttempt;
@@ -120,7 +121,7 @@ async function cachedUsage(
   // A limit set since the entry was cached needs the measured figure, not the skipped one.
   const measured = limits.maxLogBytes === null || hit?.usage.logBytes != null;
   if (ttl > 0 && hit && measured && Math.abs(now - hit.at) < ttl) return hit.usage;
-  const usage = await quotaUsage(db, orgId, now, limits);
+  const usage = await quotaUsage(db, orgId, now, limits, { noWait: true });
   m.set(orgId, { at: now, usage });
   return usage;
 }
@@ -994,7 +995,7 @@ export function requeueLostAttemptOnce(
  * Fenced like `finishAttempt` (the attempt must still run under `owner`). Returns true when it
  * requeued; false (changing nothing) when the budget is spent or the lease is gone.
  */
-export function requeueInfraFailureOnce(
+export async function requeueInfraFailureOnce(
   db: Db,
   scope: Scope,
   input: {
@@ -1006,6 +1007,13 @@ export function requeueInfraFailureOnce(
     now: number;
   },
 ): Promise<boolean> {
+  // With an external store the end of the log is an HTTP call, which must not run (or hang) while
+  // the write lock is held, so it is read before the transaction opens; appending inside is a queue
+  // push. When the store is down the marker line is skipped; the retry itself must not be lost.
+  // With the database store the size is measured inside the transaction, so it is the size at the
+  // moment the attempt is failed (a chunk written in between cannot be overwritten by the marker).
+  const external = externalLogStore() !== undefined;
+  const early = external ? await logSize(db, scope, input.attemptId).catch(() => null) : null;
   return db.transaction(async (tx) => {
     const [cur] = await tx.orm
       .select()
@@ -1031,20 +1039,19 @@ export function requeueInfraFailureOnce(
       .set({ leaseOwner: null, leaseExpiresAt: null })
       .where(eq(s.jobAttempts.id, cur.id));
     // One line at the end of the failed attempt's job log: it was retried once, and why.
-    const tail = (await readLog(tx, scope, cur.id)).reduce(
-      (end, c) => Math.max(end, c.offset + c.bytes.length),
-      0,
-    );
     const why = sanitizeInfraError(input.reason).slice(0, 200);
-    await appendLog(
-      tx,
-      scope,
-      cur.id,
-      tail,
-      new TextEncoder().encode(
-        `infra error (${input.kind}), retrying once on a fresh sandbox: ${why}\n`,
-      ),
-    );
+    const tail = external ? early : await logSize(tx, scope, cur.id);
+    if (tail !== null) {
+      await appendLog(
+        tx,
+        scope,
+        cur.id,
+        tail,
+        new TextEncoder().encode(
+          `infra error (${input.kind}), retrying once on a fresh sandbox: ${why}\n`,
+        ),
+      );
+    }
     await transitionJob(tx, scope, cur.jobId, "infra_error", {
       reason: `infra_retry:${input.kind}`,
     });
@@ -1235,23 +1242,43 @@ export function ifLeaseHeld<T>(
  * log and write it afresh (chunk boundaries differ between runs, so appending would garble it).
  * Fenced by the lease. Returns false when `owner` does not hold it.
  */
-export function resetAttemptOutput(
+export async function resetAttemptOutput(
   db: Db,
   scope: Scope,
   attemptId: string,
   owner: string,
+  retry: {
+    tries?: number;
+    backoffMs?: number;
+    maxBackoffMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<boolean> {
+  const ext = externalLogStore();
+  // An external store is cleared first and outside the transaction (no HTTP while the write lock is
+  // held). Only the lease holder may clear it. A store that is down is retried with backoff (about
+  // a minute by default, while the caller keeps heartbeating its lease), so a short outage does not
+  // end an adopted job. If it stays down this throws before anything is wiped, so the reset stays
+  // all or nothing and the resume path settles the attempt as an infra error.
+  if (ext && (await db.run((h) => holdsLease(h, scope, attemptId, owner)))) {
+    const tries = retry.tries ?? 8;
+    const sleep = retry.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    for (let n = 1; ; n++) {
+      try {
+        await ext.deleteAttempt(logKey(scope, attemptId));
+        break;
+      } catch (err) {
+        if (n >= tries || retry.signal?.aborted) throw err;
+        await sleep(
+          Math.min((retry.backoffMs ?? 500) * 2 ** (n - 1), retry.maxBackoffMs ?? 15_000),
+        );
+      }
+    }
+  }
   return db.transaction(async (tx) => {
     if (!(await holdsLease(tx, scope, attemptId, owner))) return false;
-    await tx.orm
-      .delete(s.logChunks)
-      .where(
-        scoped(
-          scope,
-          { orgId: s.logChunks.orgId, projectId: s.logChunks.projectId },
-          eq(s.logChunks.attemptId, attemptId),
-        ),
-      );
+    if (!ext) await logStoreFor(tx).deleteAttempt(logKey(scope, attemptId));
     await tx.orm
       .delete(s.attemptSteps)
       .where(

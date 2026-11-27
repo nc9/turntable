@@ -10,6 +10,7 @@ const ALLOWED_OUTSIDE_TRANSACTION = [
   "instance_db_copy", // minutes of batched work that yields between batches, on its own connections to the target; it only reads the SQLite file, and the dispatcher's exclusive write transaction would stop every other request for the whole copy; the audit row follows in its own short transaction
   "instance_replace_app_private_key", // calls GET /app on GitHub to verify the new key before the swap, which must not hold the write lock; the seal and the swap are one db.transaction after the verification, and the audit row follows in its own short transaction
   "instance_rotate_webhook_secret", // PATCHes the new secret to GitHub (/app/hook/config), which must not hold the write lock; the seal commits first and a GitHub refusal restores the old secret and expiry, and the audit row follows in its own short transaction
+  "log_store_migrate", // copies logs to the external store over HTTP for minutes; must not hold the write lock
   "onboard_repos", // asks GitHub for the installation's repos first; all writes are one inner transaction (all or nothing)
   "release_cosign_key_remove", // same: a lane channel round trip
   "release_cosign_key_set", // same: a lane channel round trip; the lane's own file changes, not this database

@@ -1021,6 +1021,60 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Release lane",
     description: "On the lane: the private key of that certificate.",
   },
+  {
+    name: "TURNTABLE_LOG_STORE",
+    area: "Server",
+    default: "db",
+    description:
+      "Where job logs are stored: `db` (the main database, one binary) or `clickhouse` (a ClickHouse service, over HTTP). `clickhouse` needs `TURNTABLE_CLICKHOUSE_URL`; its host may be private or plain http without an allow-list entry. See [Log store](/log-store).",
+  },
+  {
+    name: "TURNTABLE_CLICKHOUSE_URL",
+    area: "Server",
+    default: "unset",
+    description:
+      "Base URL of the ClickHouse HTTP interface, for example `http://clickhouse.railway.internal:8123`. No credentials in the URL. Used when `TURNTABLE_LOG_STORE=clickhouse`.",
+  },
+  {
+    name: "TURNTABLE_CLICKHOUSE_USER",
+    area: "Server",
+    default: "ClickHouse default user",
+    description: "ClickHouse user, sent as a header.",
+  },
+  {
+    name: "TURNTABLE_CLICKHOUSE_PASSWORD",
+    area: "Server",
+    default: "none",
+    description: "ClickHouse password, sent as a header. Never logged.",
+  },
+  {
+    name: "TURNTABLE_CLICKHOUSE_DATABASE",
+    area: "Server",
+    default: "ClickHouse default database",
+    description:
+      "Database that holds the `log_chunks` table. The server creates the table at boot when it is missing.",
+  },
+  {
+    name: "TURNTABLE_LOG_RETENTION_DAYS",
+    area: "Server",
+    default: "90",
+    description:
+      "Days the ClickHouse log store keeps a chunk before its TTL removes it (1 to 36500). Applied at boot.",
+  },
+  {
+    name: "TURNTABLE_LOG_QUEUE_MIB",
+    area: "Server",
+    default: "64",
+    description:
+      "Memory the ClickHouse write queue may hold while the store is slow or down (1 to 4096 MiB). A chunk that does not fit is dropped and the attempt's log is marked incomplete.",
+  },
+  {
+    name: "TURNTABLE_LOG_MIGRATE_DAYS",
+    area: "Server",
+    default: "14",
+    description:
+      "How many days back the `log_store_migrate` operation copies from the database into the log store (1 to 3650).",
+  },
 ];
 
 /**

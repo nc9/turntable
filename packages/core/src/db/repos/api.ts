@@ -7,6 +7,8 @@ import * as s from "../schema";
 import type { AgentRole, JobState, TokenKind } from "../schema";
 import { type ProjectSetup, projectSetup } from "../../ops/project-setup";
 import { ulid } from "../ulid";
+import { logStoreFor } from "../../logstore/registry";
+import { readableLogKey } from "./index";
 import { type Scope, scoped } from "./scope";
 
 export type ApiToken = typeof s.apiTokens.$inferSelect;
@@ -441,21 +443,9 @@ export function jobsForRuns(db: Db, scope: Scope, runIds: readonly string[]): Pr
 
 /** Total bytes of an attempt's log (0 when none or out of scope). */
 export function logSize(db: Db, scope: Scope, attemptId: string): Promise<number> {
-  return db.run(async (h) => {
-    const [row] = await h.orm
-      .select({
-        size: sql<number | null>`max(${s.logChunks.offset} + length(${s.logChunks.bytes}))`,
-      })
-      .from(s.logChunks)
-      .where(
-        scoped(
-          scope,
-          { orgId: s.logChunks.orgId, projectId: s.logChunks.projectId },
-          eq(s.logChunks.attemptId, attemptId),
-        ),
-      );
-    return Number(row?.size ?? 0);
-  });
+  return db
+    .run((h) => readableLogKey(h, scope, attemptId))
+    .then(async (key) => (key ? (await logStoreFor(db).stat(key)).size : 0));
 }
 
 /**
@@ -469,29 +459,10 @@ export function readLogRange(
   from: number,
   to: number,
 ): Promise<Buffer> {
-  return db.run(async (h) => {
-    if (to <= from) return Buffer.alloc(0);
-    const chunks = await h.orm
-      .select({ offset: s.logChunks.offset, bytes: s.logChunks.bytes })
-      .from(s.logChunks)
-      .where(
-        scoped(
-          scope,
-          { orgId: s.logChunks.orgId, projectId: s.logChunks.projectId },
-          eq(s.logChunks.attemptId, attemptId),
-          lt(s.logChunks.offset, to),
-          sql`${s.logChunks.offset} + length(${s.logChunks.bytes}) > ${from}`,
-        ),
-      )
-      .orderBy(asc(s.logChunks.offset));
-    const parts: Buffer[] = [];
-    for (const c of chunks) {
-      const start = Math.max(from, c.offset) - c.offset;
-      const end = Math.min(to, c.offset + c.bytes.length) - c.offset;
-      if (end > start) parts.push(c.bytes.subarray(start, end));
-    }
-    return Buffer.concat(parts);
-  });
+  if (to <= from) return Promise.resolve(Buffer.alloc(0));
+  return db
+    .run((h) => readableLogKey(h, scope, attemptId))
+    .then((key) => (key ? logStoreFor(db).range(key, from, to) : Buffer.alloc(0)));
 }
 
 // ---- projects ----

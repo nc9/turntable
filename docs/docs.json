@@ -42,6 +42,7 @@
           "hosted",
           "tenant-isolation",
           "postgres",
+          "log-store",
           "instance-admin",
           "deploy/railway",
           "deploy/sqlite-to-postgres",
