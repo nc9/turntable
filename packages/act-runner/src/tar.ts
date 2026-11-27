@@ -751,7 +751,11 @@ export async function scanTarGz(
     if (link.length > MAX_NAME_BYTES) bad("a link target is longer than 4096 bytes");
     nameBytes_ += Buffer.byteLength(key) + link.length;
     if (nameBytes_ > MAX_TOTAL_NAME_BYTES) bad("the names in the archive add up to too much");
-    const wantData = type === "file" && size <= o.captureUpTo && captured + size <= o.captureTotal;
+    // Nothing under `.git` is ever read for planning, so its files never take capture budget (a
+    // full-history checkout would otherwise use it all before `.github/` is reached).
+    const inGit = segs.includes(".git");
+    const wantData =
+      type === "file" && !inGit && size <= o.captureUpTo && captured + size <= o.captureTotal;
     if (wantData) captured += size;
     cur = {
       kind: "entry",
