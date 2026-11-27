@@ -611,5 +611,12 @@ export const migrations: Migration[] = [
       "ALTER TABLE `job_attempts` ADD `exec_log_offset` integer;",
       "ALTER TABLE `job_attempts` ADD `log_checkpoint` integer;"
     ]
+  },
+  {
+    "tag": "0057_run_name",
+    "when": 1795815820817,
+    "statements": [
+      "ALTER TABLE `runs` ADD `run_name` text;"
+    ]
   }
 ];

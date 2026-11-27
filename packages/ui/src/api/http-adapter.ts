@@ -194,6 +194,7 @@ export function mapRun(w: WireRun, org: string): Run {
     projectId: w.project,
     workflowPath: w.workflow_path,
     workflowName: name,
+    runName: w.run_name ?? null,
     event: w.event,
     ref: w.ref,
     sha: w.sha,

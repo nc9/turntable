@@ -308,6 +308,8 @@ export const runs = pgTable(
     sha: text("sha"),
     /** Metadata the forge (or `turntable run`) supplies. All forge text: untrusted when shown. */
     workflowName: text("workflow_name"),
+    /** The workflow's `run-name`, evaluated at plan time; null when it has none (the default title applies). */
+    runName: text("run_name"),
     commitMessage: text("commit_message"),
     /** Forge login of whoever triggered it. */
     actor: text("actor"),

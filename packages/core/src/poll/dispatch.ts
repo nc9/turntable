@@ -350,6 +350,7 @@ export async function dispatchWorkflow(
       ref: target.ref,
       sha: target.sha,
       workflowName: workflowName ?? wp.name ?? undefined,
+      runName: wp.runName,
       actor: req.actor,
       headBranch: target.ref.replace(/^refs\/(heads|tags)\//, ""),
       plan: JSON.stringify({

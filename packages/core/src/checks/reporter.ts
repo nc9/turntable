@@ -39,6 +39,7 @@ import {
   checkScopeOf,
   classifyInfra,
   infraRetryLine,
+  plain,
   refusalSentence,
   conclusionFor,
   NO_ATTEMPT_SKIP,
@@ -427,8 +428,14 @@ export class CheckReporter {
       completed_at: at,
       ...(runUrl ? { details_url: runUrl } : {}),
       output: {
-        title: titleFor(mode, NO_ATTEMPT_SKIP),
-        summary: summaryFor({ mode, result: NO_ATTEMPT_SKIP, runUrl, skipReason: reason }),
+        title: titleFor(mode, NO_ATTEMPT_SKIP, false, run.runName),
+        summary: summaryFor({
+          mode,
+          result: NO_ATTEMPT_SKIP,
+          runUrl,
+          skipReason: reason,
+          runName: run.runName,
+        }),
       },
     });
     if (id === undefined) return { nothing: "superseded" };
@@ -468,8 +475,8 @@ export class CheckReporter {
         const body: CheckRunBody = {
           status: "in_progress",
           output: {
-            title: RUNNING_TITLE(mode),
-            summary: summaryRunning(mode, runUrl, retryOf),
+            title: RUNNING_TITLE(mode, claim.run.runName),
+            summary: summaryRunning(mode, runUrl, retryOf, claim.run.runName),
           },
         };
         await this.#retry("update check run", () =>
@@ -499,8 +506,8 @@ export class CheckReporter {
           external_id: group?.externalId ?? attempt.id,
           ...(runUrl ? { details_url: runUrl } : {}),
           output: {
-            title: RUNNING_TITLE(mode),
-            summary: summaryRunning(mode, runUrl, retryOf),
+            title: RUNNING_TITLE(mode, claim.run.runName),
+            summary: summaryRunning(mode, runUrl, retryOf, claim.run.runName),
           },
         },
       );
@@ -549,11 +556,13 @@ export class CheckReporter {
           mode,
           result,
           !group && result === "failure" && refusalSentence(outcome.reason) !== undefined,
+          claim.run.runName,
         ),
         summary: summaryFor({
           mode,
           result,
           runUrl,
+          runName: claim.run.runName,
           failingStep,
           excerpt,
           infraClass: result === "infra_error" ? classifyInfra(outcome.reason) : undefined,
@@ -704,12 +713,14 @@ function summaryRunning(
   mode: Exclude<ChecksMode, "off">,
   runUrl: string | undefined,
   retryOf?: string,
+  runName?: string | null,
 ): string {
   const lines = [
     mode === "shadow"
       ? "Turntable is running this job as a shadow check: the result will be neutral."
       : "Turntable is running this job.",
   ];
+  if (runName) lines.push(`**Run:** ${plain(runName, 200)}`);
   const retry = infraRetryLine(retryOf);
   if (retry) lines.push(retry);
   if (runUrl) lines.push(`[Open the run in Turntable](${runUrl})`);

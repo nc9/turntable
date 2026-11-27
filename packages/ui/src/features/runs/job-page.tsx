@@ -81,7 +81,7 @@ export function JobPage() {
           params={{ org: orgSlug, project: projectSlug, runId }}
           className="max-w-56 truncate rounded hover:text-foreground"
         >
-          {run.commitMessage}
+          {run.runName || run.commitMessage}
         </Link>
         <ChevronRight className="size-3.5 text-faint" aria-hidden="true" />
         <span className="text-foreground">{job.name}</span>

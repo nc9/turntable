@@ -193,7 +193,9 @@ export function OrgPage() {
                   >
                     <StateIcon state={r.status} className="size-[18px]" />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium">{r.commitMessage}</span>
+                      <span className="block truncate text-sm font-medium">
+                        {r.runName || r.commitMessage}
+                      </span>
                       <span className="flex items-center gap-3 text-xs text-dim">
                         <span>{project.name}</span>
                         <RefChip run={r} className="max-w-40" />

@@ -354,5 +354,12 @@ export const migrations: Migration[] = [
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"exec_log_offset\" bigint;",
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"log_checkpoint\" bigint;"
     ]
+  },
+  {
+    "tag": "0028_run_name",
+    "when": 1795815821494,
+    "statements": [
+      "ALTER TABLE \"runs\" ADD COLUMN \"run_name\" text;"
+    ]
   }
 ];
