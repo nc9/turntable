@@ -1104,7 +1104,7 @@ export const MAX_NETWORK_REQUEUES = 10;
  * controller, found by the reconciler) also needs its lease to have expired before `now`.
  * Returns true when it requeued; false changes nothing.
  */
-export function requeuePreSandbox(
+export async function requeuePreSandbox(
   db: Db,
   scope: Scope,
   input: {
@@ -1115,6 +1115,10 @@ export function requeuePreSandbox(
     requireExpired?: boolean;
   },
 ): Promise<boolean> {
+  // With an external log store the log size is an HTTP call, read before the transaction opens;
+  // when the store is down the marker line is skipped and the requeue still happens.
+  const external = externalLogStore() !== undefined;
+  const early = external ? await logSize(db, scope, input.attemptId).catch(() => null) : null;
   return db.transaction(async (tx) => {
     const [cur] = await tx.orm
       .select()
@@ -1155,19 +1159,18 @@ export function requeuePreSandbox(
       .update(s.jobAttempts)
       .set({ leaseOwner: null, leaseExpiresAt: null })
       .where(eq(s.jobAttempts.id, cur.id));
-    const tail = (await readLog(tx, scope, cur.id)).reduce(
-      (end, c) => Math.max(end, c.offset + c.bytes.length),
-      0,
-    );
-    await appendLog(
-      tx,
-      scope,
-      cur.id,
-      tail,
-      new TextEncoder().encode(
-        "network degraded: this attempt failed before a sandbox existed; it is re-queued and does not use the retry\n",
-      ),
-    );
+    const tail = external ? early : await logSize(tx, scope, cur.id);
+    if (tail !== null) {
+      await appendLog(
+        tx,
+        scope,
+        cur.id,
+        tail,
+        new TextEncoder().encode(
+          "network degraded: this attempt failed before a sandbox existed; it is re-queued and does not use the retry\n",
+        ),
+      );
+    }
     await transitionJob(tx, scope, cur.jobId, "infra_error", { reason: NETWORK_REQUEUE });
     const job = await transitionJob(tx, scope, cur.jobId, "queued", { reason: NETWORK_REQUEUE });
     const next = await createAttempt(tx, scope, {
