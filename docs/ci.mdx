@@ -68,4 +68,6 @@ The `postgres` job (median 12.8, p95 24.6 minutes) and `check` (8.6) are 78% of 
 
 ## Report-only rollout
 
-The merge_group run prints the classification beside the full pipeline and changes no job. Compare it with real failures for a week: a job that failed on a stack the classifier would have skipped blocks the switch. The workflow step is staged in `.longshore/staged-workflows/ci-classify-report.yml` until the workflow owner applies it.
+The merge_group run prints the classification beside the full pipeline and changes no job. Compare it with real failures for a week: a job that failed on a stack the classifier would have skipped blocks the switch. The `classify-report` job in `ci.yml` runs on merge_group only, is `continue-on-error` and is not in `ci-ok`'s needs. `postgres-pglite` and `dep-age` never run on merge_group, so the report marks them and the comparison ignores them.
+
+Open design question: a docs-only diff skips `check`, which also runs the public-hygiene and test-wiring tests. Decide before the switch whether docs-only stacks keep a cheap hygiene step.

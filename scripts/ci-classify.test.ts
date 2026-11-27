@@ -42,6 +42,11 @@ const EXAMPLES: [string, string[], Job[]][] = [
     ],
   ],
   ["docs prose: docs job only", ["docs/quickstart.mdx", "README.md"], ["docs"]],
+  [
+    "skill markdown is core input, not docs",
+    ["skills/turntable-self-host/SKILL.md"],
+    ["check", "postgres", "postgres-pglite", "release-golden", "act-runner-e2e", "docker"],
+  ],
   ["root markdown: docs job only", ["AGENTS.md"], ["docs"]],
   ["generated docs file also runs check", ["docs/openapi.json"], ["check", "docs"]],
   [

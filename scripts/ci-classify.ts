@@ -70,6 +70,9 @@ const GENERATED_DOCS = new Set([
   "docs/compatibility.mdx",
 ]);
 
+/** Jobs ci.yml never runs on merge_group; the report marks them so the week's comparison skips them. */
+const NOT_ON_MERGE_GROUP = new Set<Job>(["postgres-pglite", "dep-age"]);
+
 const isDocFile = (f: string): boolean => f.startsWith("docs/") || /\.mdx?$/.test(f);
 
 /** Reads the workspace graph from packages/*\/package.json. Throws on a malformed file. */
@@ -118,7 +121,11 @@ function affectedWorkspaces(direct: Set<string>, graph: WorkspaceGraph): Record<
   return out;
 }
 
-export function classify(files: string[], graph: WorkspaceGraph): Classification {
+export function classify(
+  files: string[],
+  graph: WorkspaceGraph,
+  forcedFailOpen?: string,
+): Classification {
   const failOpen = (why: string): Classification => ({
     all: true,
     affected: Object.fromEntries(Object.keys(graph).map((w) => [w, why])),
@@ -126,6 +133,7 @@ export function classify(files: string[], graph: WorkspaceGraph): Classification
       JOBS.map((j) => [j, { run: true, reason: why }]),
     ) as Classification["jobs"],
   });
+  if (forcedFailOpen !== undefined) return failOpen(forcedFailOpen);
   if (files.length === 0) return failOpen("fail open: empty diff");
 
   const direct = new Set<string>();
@@ -149,7 +157,7 @@ export function classify(files: string[], graph: WorkspaceGraph): Classification
       anyCode = true;
       continue;
     }
-    if (isDocFile(f)) {
+    if (!CORE_PREFIX.some((p) => f.startsWith(p)) && isDocFile(f)) {
       if (GENERATED_DOCS.has(f)) force("check", `generated docs file: ${f}`);
       if (f === "docs/compatibility.mdx") force("runner-image", `compatibility table: ${f}`);
       force("docs", `docs file: ${f}`);
@@ -219,13 +227,20 @@ export function formatReport(c: Classification): string {
   lines.push(`affected workspaces: ${w.length === 0 ? "none" : ""}`);
   for (const [k, v] of w) lines.push(`  ${k}: ${v}`);
   lines.push("jobs:");
-  for (const j of JOBS)
-    lines.push(`  ${c.jobs[j].run ? "RUN " : "SKIP"} ${j}: ${c.jobs[j].reason}`);
+  for (const j of JOBS) {
+    const note = NOT_ON_MERGE_GROUP.has(j) ? " [does not run on merge_group]" : "";
+    lines.push(`  ${c.jobs[j].run ? "RUN " : "SKIP"} ${j}: ${c.jobs[j].reason}${note}`);
+  }
   return lines.join("\n");
 }
 
 function git(root: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 }
 
 /** Never throws: any error becomes a run-everything result. */
@@ -239,13 +254,11 @@ export function classifyRange(root: string, base: string, head: string): Classif
     return classify(files, readWorkspaceGraph(root));
   } catch (e) {
     const why = `fail open: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`;
-    return {
-      all: true,
-      affected: {},
-      jobs: Object.fromEntries(
-        JOBS.map((j) => [j, { run: true, reason: why }]),
-      ) as Classification["jobs"],
-    };
+    let graph: WorkspaceGraph = {};
+    try {
+      graph = readWorkspaceGraph(root);
+    } catch {}
+    return classify([], graph, why);
   }
 }
 
