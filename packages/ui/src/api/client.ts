@@ -234,6 +234,16 @@ export interface TurntableApi {
   }): Promise<Setting>;
   /** The org owner's view of the approval policy, defaults filled in (`get_approval_policy`). */
   getApprovalPolicy(): Promise<ApprovalPolicy>;
+  /** The project's default sandbox egress (`get_project_settings`). */
+  getProjectEgress(args: { project: string }): Promise<"none" | "allowlist" | "open">;
+  /**
+   * Tightens the project's default egress (`tighten_project_egress`, owner). It never widens: the
+   * server refuses, and the instance operator widens. Resolves with the provider warnings.
+   */
+  tightenProjectEgress(args: {
+    project: string;
+    egress: "none" | "allowlist" | "open";
+  }): Promise<{ egress: "none" | "allowlist" | "open"; warnings: string[] }>;
   /**
    * Sets one environment's approval policy (`set_approval_policy`). A loosening carries the
    * passkey `stepUp` for exactly these arguments; a refusal rejects with the server's words.

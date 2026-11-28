@@ -289,6 +289,8 @@ async function startBackground(
   dispatch: RunDispatcher | undefined;
   repoReader: RepoReaderFactory | undefined;
   runDefaultBranch: DefaultBranchRunner | undefined;
+  /** Egress modes the worker's provider can enforce; undefined without a worker role. */
+  providerEgress(): readonly string[] | undefined;
 }> {
   const log = (m: string) => console.log(`[turntable] ${m}`);
   // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
@@ -615,6 +617,7 @@ async function startBackground(
     dispatch: poller ? (scope, repo, req) => poller!.dispatch(scope, repo, req) : undefined,
     repoReader: poller ? (inst, repo) => poller!.repoReader(inst, repo) : undefined,
     runDefaultBranch: poller ? (scope, repo) => poller!.runDefaultBranch(scope, repo) : undefined,
+    providerEgress: () => workerProvider?.info.network.egressPolicy,
     async stop() {
       poller?.stop();
       if (reconcileTimer) clearInterval(reconcileTimer);
@@ -1290,6 +1293,7 @@ async function serve(args: string[]): Promise<void> {
         ...(laneSupervisor ? { releaseLane: laneSupervisor } : {}),
         ...(artifactStore ? { artifactBlobs: artifactStore } : {}),
         operatorOrgSlug: process.env.TURNTABLE_BOOTSTRAP_ORG?.trim() || "local",
+        providerEgress: () => background.providerEgress(),
         ...(oidc ? { oidc } : {}),
         ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),

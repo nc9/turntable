@@ -838,6 +838,24 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       );
     },
 
+    async getProjectEgress({ project }) {
+      const w = await call<{ egress: "none" | "allowlist" | "open" }>("GET", "/project-settings", {
+        org: org(),
+        project,
+      });
+      return w.egress;
+    },
+
+    async tightenProjectEgress({ project, egress }) {
+      const w = await call<{ to: "none" | "allowlist" | "open"; warnings: string[] }>(
+        "POST",
+        "/project-egress",
+        { org: org(), project },
+        { egress },
+      );
+      return { egress: w.to, warnings: w.warnings };
+    },
+
     async setApprovalPolicy({
       environment,
       required,

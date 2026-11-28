@@ -195,6 +195,8 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `set_oidc_audiences` | `POST /api/v1/oidc-audiences` | no |  | write | admin | token | Limit the OIDC audiences a project's jobs may ask for, or lift the limit. |
 | `get_project_settings` | `GET /api/v1/project-settings` | yes |  | read | reader | token | A project's sandbox snapshot, concurrency cap and untrusted-run approval policy. |
 | `set_project_settings` | none | no |  | write | admin | instance | Set a project's sandbox snapshot and concurrency cap (instance administrator only). |
+| `set_project_egress` | none | no |  | write | admin | instance | Set a project's default sandbox egress (instance administrator only). |
+| `tighten_project_egress` | `POST /api/v1/project-egress` | no |  | write | owner | token | Tighten a project's default sandbox egress (org owner; never widens). |
 | `create_project` | none | no |  | write | admin | instance | Create a project in an org (instance administrator only). |
 | `create_webhook` | `POST /api/v1/webhooks` | no |  | write | admin | token | Send this org's events to a URL, signed. |
 | `webhook_endpoints` | `GET /api/v1/webhooks` | no |  | read | admin | token | List this org's webhook endpoints. |

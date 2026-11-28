@@ -64,6 +64,8 @@ export type OpContext = {
   userGithub?: UserGithub | undefined;
   /** The adapter that carried the call; undefined for in-process callers. */
   transport?: "mcp" | "rest" | undefined;
+  /** Egress modes the instance's sandbox provider can enforce; absent when this process has no provider (web-only). */
+  providerEgress?: (() => readonly string[] | undefined) | undefined;
   /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */
   instanceOrgCap?: number | undefined;
   /** `org-slug/project-slug` pairs the running poll config names statically; empty when none. */
