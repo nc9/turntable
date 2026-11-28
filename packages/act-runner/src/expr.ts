@@ -17,6 +17,60 @@ export class ExprError extends Error {
   }
 }
 
+/** The most characters one expression function, or one interpolated string, may produce. */
+export const EXPR_OUTPUT_MAX = 64 * 1024;
+
+/** Appends to `parts` and throws as soon as the running total passes the cap (never builds then slices). */
+class Budget {
+  private n = 0;
+  readonly parts: string[] = [];
+  private readonly what: string;
+  constructor(what: string) {
+    this.what = what;
+  }
+  add(s: string): void {
+    this.n += s.length;
+    if (this.n > EXPR_OUTPUT_MAX) {
+      throw new ExprError(
+        "output size",
+        `${this.what} output is over the ${EXPR_OUTPUT_MAX / 1024} KiB limit`,
+      );
+    }
+    this.parts.push(s);
+  }
+  done(): string {
+    return this.parts.join("");
+  }
+}
+
+/** JSON.stringify(v, null, 2) with the output cap enforced while writing. */
+function boundedJson(v: Value, b: Budget, depth: number): void {
+  if (typeof v === "string") return b.add(JSON.stringify(v));
+  if (typeof v === "number") return b.add(Number.isFinite(v) ? String(v) : "null");
+  if (v === null || typeof v === "boolean") return b.add(String(v));
+  const pad = "  ".repeat(depth + 1);
+  const end = "  ".repeat(depth);
+  if (Array.isArray(v)) {
+    if (v.length === 0) return b.add("[]");
+    b.add("[\n");
+    v.forEach((x, i) => {
+      b.add(pad);
+      boundedJson(x, b, depth + 1);
+      b.add(i < v.length - 1 ? ",\n" : "\n");
+    });
+    return b.add(end + "]");
+  }
+  const entries = Object.entries(v);
+  if (entries.length === 0) return b.add("{}");
+  b.add("{\n");
+  entries.forEach(([k, x], i) => {
+    b.add(pad + JSON.stringify(k) + ": ");
+    boundedJson(x, b, depth + 1);
+    b.add(i < entries.length - 1 ? ",\n" : "\n");
+  });
+  b.add(end + "}");
+}
+
 export type Value = null | boolean | number | string | Value[] | { [k: string]: Value };
 
 export interface ExprContext {
@@ -314,24 +368,43 @@ function call(name: string, args: Value[], ctx: ExprContext): Value {
     }
     case "tojson":
       need(1);
-      return JSON.stringify(args[0], null, 2);
+      {
+        const b = new Budget("toJSON()");
+        boundedJson(args[0] as Value, b, 0);
+        return b.done();
+      }
     case "join": {
       if (args.length < 1 || args.length > 2)
         throw new ExprError("function", "join() takes 1 or 2 arguments");
       const sep = args.length === 2 ? toStr(args[1] as Value) : ",";
       const a = args[0] as Value;
-      return Array.isArray(a) ? a.map(toStr).join(sep) : toStr(a);
+      if (!Array.isArray(a)) return toStr(a);
+      const b = new Budget("join()");
+      a.forEach((x, i) => {
+        if (i > 0) b.add(sep);
+        b.add(toStr(x));
+      });
+      return b.done();
     }
     case "format": {
       if (args.length < 1) throw new ExprError("function", "format() needs a format string");
       const f = toStr(args[0] as Value);
-      return f.replaceAll(/\{\{|\}\}|\{(\d+)\}/g, (m, idx: string | undefined) => {
-        if (m === "{{") return "{";
-        if (m === "}}") return "}";
-        const a = args[Number(idx) + 1];
-        if (a === undefined) throw new ExprError("function", `format() has no argument {${idx}}`);
-        return toStr(a);
-      });
+      const b = new Budget("format()");
+      let last = 0;
+      for (const m of f.matchAll(/\{\{|\}\}|\{(\d+)\}/g)) {
+        b.add(f.slice(last, m.index));
+        last = m.index + m[0].length;
+        if (m[0] === "{{") b.add("{");
+        else if (m[0] === "}}") b.add("}");
+        else {
+          const a = args[Number(m[1]) + 1];
+          if (a === undefined)
+            throw new ExprError("function", `format() has no argument {${m[1]}}`);
+          b.add(toStr(a));
+        }
+      }
+      b.add(f.slice(last));
+      return b.done();
     }
     default:
       throw new ExprError(`function ${name}`, `unsupported function ${name}()`);
@@ -417,9 +490,15 @@ export function evaluateCondition(cond: string | boolean | undefined, ctx: ExprC
 
 /** Replaces every `${{ expr }}` in a string with its string value. */
 export function interpolate(text: string, ctx: ExprContext): string {
-  return text.replaceAll(/\$\{\{([\s\S]*?)\}\}/g, (_m, e: string) =>
-    toStr(evaluate(e.trim(), ctx)),
-  );
+  const b = new Budget("interpolated string");
+  let last = 0;
+  for (const m of text.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
+    b.add(text.slice(last, m.index));
+    last = m.index + m[0].length;
+    b.add(toStr(evaluate((m[1] ?? "").trim(), ctx)));
+  }
+  b.add(text.slice(last));
+  return b.done();
 }
 
 /** Names of the contexts an expression reads (for deciding whether it is static at plan time). */
