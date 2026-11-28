@@ -9,7 +9,6 @@ const WHY: Record<string, string> = {
   yield: "other projects' work goes first (yield class)",
   drain: "the instance is draining",
   approval: "waiting for an approval",
-  provider_capacity: "waiting for provider capacity",
   claimable: "next in line to start",
 };
 

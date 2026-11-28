@@ -16,7 +16,6 @@ export const WAIT_REASONS = [
   "yield",
   "drain",
   "approval",
-  "provider_capacity",
   "claimable",
 ] as const;
 export type WaitReason = (typeof WAIT_REASONS)[number] | `quota:${string}`;
