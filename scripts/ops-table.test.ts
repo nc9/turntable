@@ -103,6 +103,10 @@ const MCP_OFF: Record<string, string> = {
   set_quotas: "instance administrator ops are REST only, and quotas are a limit-raising setter",
   set_project_settings:
     "instance administrator ops are REST only: a project's snapshot and cap are operator controls, never an agent's",
+  set_project_egress:
+    "instance administrator ops are REST only: widening a project's egress is an operator control, never an agent's",
+  tighten_project_egress:
+    "web only: an org owner is a person, and an agent never changes a project's egress, even to tighten it",
   create_project:
     "instance administrator ops are REST only: projects are made by the operator, never an agent",
   create_org:
