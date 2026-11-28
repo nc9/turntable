@@ -31,7 +31,7 @@ import { type AdoptSpec, invalidSpec, parseAdoptSpec } from "./adopt-credentials
 import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
-import { effectiveChecksMode } from "../ops/setting-guard";
+import { effectiveChecksMode, effectivePrCodeScanningUpload } from "../ops/setting-guard";
 import { ambientSettings } from "../settings/ambient";
 import type { SettingsRuntime } from "../settings/resolve";
 import { getOrgById, logSize } from "../db/repos/api";
@@ -1127,8 +1127,17 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
                 ctx.scope.orgId,
                 ctx.scope.projectId,
               )) !== "live";
+            const codeScanningUpload =
+              jobKlass === "trusted_pr" &&
+              (await effectivePrCodeScanningUpload(
+                o.settings ?? ambientSettings(),
+                o.db,
+                ctx.scope.orgId,
+                ctx.scope.projectId,
+              ));
             const r = await o.jobTokens.issue({
               readOnly,
+              codeScanningUpload,
               installationId: repo.installationId,
               owner: repo.owner,
               repo: repo.repo,

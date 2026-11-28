@@ -30,6 +30,49 @@ describe("capPermissions", () => {
     expect(r.notes.join(" ")).toContain("contents: write lowered to read");
   });
 
+  test("trusted_pr keeps security_events: write only with the setting on, and no other write (#705)", () => {
+    const ask = { security_events: "write", contents: "write", issues: "write" } as const;
+    const on = capPermissions(ask, "trusted_pr", undefined, { codeScanningUpload: true });
+    expect(on.permissions).toEqual({
+      metadata: "read",
+      security_events: "write",
+      contents: "read",
+      issues: "read",
+    });
+    expect(on.notes.join(" ")).toContain(
+      "security_events: write kept for code scanning (pr_code_scanning_upload)",
+    );
+    // setting off (default) and explicit false: read
+    for (const o of [undefined, { codeScanningUpload: false }]) {
+      expect(capPermissions(ask, "trusted_pr", undefined, o).permissions.security_events).toBe(
+        "read",
+      );
+    }
+    // not declared: not added
+    expect(
+      capPermissions({ contents: "read" }, "trusted_pr", undefined, { codeScanningUpload: true })
+        .permissions,
+    ).toEqual({ metadata: "read", contents: "read" });
+    // the installation's grant still caps it
+    expect(
+      capPermissions(
+        ask,
+        "trusted_pr",
+        { security_events: "read", contents: "read" },
+        {
+          codeScanningUpload: true,
+        },
+      ).permissions.security_events,
+    ).toBe("read");
+  });
+
+  test("untrusted_pr never gets write, whatever the setting (#705)", () => {
+    const r = capPermissions({ security_events: "write" }, "untrusted_pr", undefined, {
+      codeScanningUpload: true,
+    });
+    expect(r.permissions).toEqual({ metadata: "read", contents: "read" });
+  });
+
   test("protected and release get what they asked for", () => {
     for (const k of ["protected", "release"] as const) {
       expect(capPermissions({ contents: "write", packages: "write" }, k).permissions).toEqual({
@@ -134,6 +177,42 @@ describe("job tokens against a fake GitHub", () => {
       permissions: { metadata: "read", contents: "write", issues: "read" },
     });
     expect(a.permissions).toEqual({ metadata: "read", contents: "write", issues: "read" });
+  });
+
+  test("code scanning upload: a trusted PR is minted security_events write; shadow wins (#705)", async () => {
+    const { g, tokens } = await issuer({
+      metadata: "read",
+      contents: "write",
+      security_events: "write",
+    });
+    const req = {
+      installationId: "100",
+      owner: "acme",
+      repo: "app",
+      klass: "trusted_pr" as const,
+      workflowYaml: yaml("    permissions:\n      contents: read\n      security-events: write\n"),
+      jobId: "build",
+      codeScanningUpload: true,
+    };
+    const live = await mint(tokens, req);
+    expect(live.permissions).toEqual({
+      metadata: "read",
+      contents: "read",
+      security_events: "write",
+    });
+    expect(live.notes.join(" ")).toContain("security_events: write kept for code scanning");
+    const shadow = await mint(tokens, { ...req, readOnly: true });
+    expect(shadow.permissions).toEqual({ contents: "read", metadata: "read" });
+    const off = await mint(tokens, { ...req, codeScanningUpload: false });
+    expect(off.permissions.security_events).toBe("read");
+    // contents read alone needs no token on a private repo: none is minted at all
+    const untrusted = await tokens.issue({ ...req, klass: "untrusted_pr" });
+    expect("none" in untrusted).toBe(true);
+    const posts = g.calls.filter((c) => c.method === "POST");
+    expect(posts[0]?.body).toEqual({
+      repositories: ["app"],
+      permissions: { metadata: "read", contents: "read", security_events: "write" },
+    });
   });
 
   test("a scope beyond contents read is minted as declared", async () => {
