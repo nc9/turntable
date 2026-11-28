@@ -68,3 +68,7 @@ The controller that re-attaches deletes whatever was stored past the checkpoint,
 A live log viewer that had already shown text past the checkpoint sees it again after the re-attach.
 
 The sandbox keeps a bounded amount of exec output (a head and a tail). If a job wrote more than that, the output in between is gone. The re-attach reads the exec from the start, so it rebuilds steps and the verdict from what survives and records a cut marker where output was dropped: a step whose events fell inside the dropped range is missing from the rebuilt list, as it would be for one controller watching the whole run.
+
+## Why a job is queued
+
+Each queued attempt carries a `waiting_reason`, shown by `get_run`, `job_steps` and the job page: `needs`, `project_cap`, `org_cap`, `instance_cap`, `quota:<metric>` (a held quota such as `quota:sandbox_minutes`, `quota:runs_per_hour` or `quota:concurrent`), `yield`, `drain`, `approval` or `claimable`. `needs` also covers a job held by its concurrency group or `strategy.max-parallel`. The claim pass records it from what it already read and writes only when the reason changes. `queued_ms_by_reason` splits the queued time by reason, and is final once the attempt starts. An attempt no claim pass has looked at yet has no reason. `provider_capacity` is reserved: a provider's capacity wait happens after the claim, so it is not recorded yet.

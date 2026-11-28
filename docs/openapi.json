@@ -694,6 +694,10 @@
                               }
                             ]
                           },
+                          "waiting_reason": {
+                            "description": "While the job waits: `approval` when held for an approval, else the latest attempt's waiting_reason. Null otherwise.",
+                            "type": ["string", "null"]
+                          },
                           "infra_error_reason": {
                             "description": "Set when the latest attempt ended in infra_error: the result is not trustworthy.",
                             "type": ["string", "null"]
@@ -779,6 +783,22 @@
                                   "type": "boolean",
                                   "description": "True when the stored log of this attempt is missing output that could not be retrieved (see job_cuts for where). The text also carries a `[turntable] ... could not be retrieved` line at each gap."
                                 },
+                                "waiting_reason": {
+                                  "description": "While queued: why it is not running (needs, project_cap, org_cap, instance_cap, quota:<metric>, yield, drain, claimable). Null once it started, or before a claim pass has looked at it.",
+                                  "type": ["string", "null"]
+                                },
+                                "queued_ms_by_reason": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "description": "Queued time in ms by reason: closed when the attempt starts, and still counting while it is queued. Empty for an attempt that never queued under a recording scheduler."
+                                },
                                 "sandbox_seconds": {
                                   "description": "Exact sandbox time (create to confirmed destroy); null until both are known. Unlike duration_ms it excludes time waiting for provider capacity.",
                                   "type": ["number", "null"]
@@ -797,6 +817,8 @@
                                 "sandbox_created_at",
                                 "sandbox_destroyed_at",
                                 "log_incomplete",
+                                "waiting_reason",
+                                "queued_ms_by_reason",
                                 "sandbox_seconds"
                               ],
                               "additionalProperties": false
@@ -820,6 +842,7 @@
                           "started_at",
                           "finished_at",
                           "duration_ms",
+                          "waiting_reason",
                           "infra_error_reason",
                           "preemptions",
                           "attempts",
@@ -1272,6 +1295,22 @@
                       ],
                       "description": "Attempt number; null when the job has no attempt yet."
                     },
+                    "waiting_reason": {
+                      "description": "While queued: why it is not running (needs, project_cap, org_cap, instance_cap, quota:<metric>, yield, drain, claimable). Null once it started, or before a claim pass has looked at it.",
+                      "type": ["string", "null"]
+                    },
+                    "queued_ms_by_reason": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "description": "Queued time in ms by reason: closed when the attempt starts, and still counting while it is queued. Empty for an attempt that never queued under a recording scheduler."
+                    },
                     "log_incomplete": {
                       "type": "boolean",
                       "description": "True when the stored log is missing output that could not be retrieved; job_cuts says where. The text has a `[turntable] ... could not be retrieved` line at each gap."
@@ -1348,7 +1387,14 @@
                       }
                     }
                   },
-                  "required": ["job_id", "attempt", "log_incomplete", "steps"],
+                  "required": [
+                    "job_id",
+                    "attempt",
+                    "waiting_reason",
+                    "queued_ms_by_reason",
+                    "log_incomplete",
+                    "steps"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -15826,6 +15872,18 @@
                           },
                           "oldest_running_started_at": {
                             "type": ["string", "null"]
+                          },
+                          "queued_by_reason": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "description": "Queued attempts by why they wait (needs, project_cap, org_cap, instance_cap, quota:<metric>, yield, drain, claimable; unknown before a claim pass has looked), with jobs held for an approval counted as approval. Omits reasons with no attempt."
                           }
                         },
                         "required": [
@@ -15833,7 +15891,8 @@
                           "runs",
                           "jobs",
                           "running_attempts",
-                          "oldest_running_started_at"
+                          "oldest_running_started_at",
+                          "queued_by_reason"
                         ],
                         "additionalProperties": false
                       }

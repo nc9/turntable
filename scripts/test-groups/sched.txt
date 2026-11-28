@@ -17,3 +17,4 @@ packages/core/tests/network-probe-bounds.test.ts
 packages/core/tests/attempt-adoption.test.ts
 packages/core/tests/attempt-adopt-block.test.ts
 packages/core/tests/attempt-adopt-credentials.test.ts
+packages/core/tests/waiting-reason.test.ts

@@ -246,6 +246,8 @@ function mapAttempt(a: WireAttempt, job: WireJob, run: WireRun, org: string): Jo
     sandboxCreatedAt: ms(a.sandbox_created_at),
     sandboxDestroyedAt: ms(a.sandbox_destroyed_at),
     sandboxSeconds: a.sandbox_seconds,
+    waitingReason: a.waiting_reason ?? null,
+    queuedMsByReason: a.queued_ms_by_reason ?? {},
   };
 }
 

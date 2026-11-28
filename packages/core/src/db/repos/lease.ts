@@ -14,6 +14,7 @@ import {
   isNull,
   lt,
   notInArray,
+  type SQL,
   sql,
 } from "drizzle-orm";
 import { retryableAfterSteps } from "@turntable/act-runner";
@@ -52,6 +53,7 @@ import {
   type QuotaUsage,
 } from "./quotas";
 import { groupBlocked } from "./poll";
+import { closeWaiting, markWaiting, setWaitingReason } from "./waiting";
 import { projectsWithCaps, yieldProjects } from "./project-settings";
 import {
   defaultReadiness,
@@ -227,6 +229,25 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
       Math.min(quotas.get(orgId)?.maxConcurrent ?? Infinity, o.perOrgCap);
     // Scheduling classes: a `yield` project's work is claimed only when no `normal` work can be.
     const yieldIds = await yieldProjects(tx);
+    // Why queued attempts were left out (#775), written only when no attempt was claimed (the
+    // last call of a scheduler tick), and only where the reason changed. `whyScanned` holds rows this
+    // pass already read; `marks` are the groups it excluded in SQL, found by one select each.
+    const marks: { reason: string; where: (SQL | undefined)[] }[] = [];
+    const whyScanned = new Map<
+      string,
+      { row: typeof s.jobAttempts.$inferSelect; reason: string }
+    >();
+    if (projectFull.length > 0) {
+      marks.push({ reason: "project_cap", where: [inArray(s.jobAttempts.projectId, projectFull)] });
+    }
+    const flushWaiting = async (): Promise<void> => {
+      for (const { row, reason } of whyScanned.values()) {
+        await setWaitingReason(tx, row, reason, o.now);
+      }
+      for (const m of marks) {
+        await markWaiting(tx, { reason: m.reason, where: m.where, now: o.now, onlyRun: o.onlyRun });
+      }
+    };
     const pass = async (
       klass: "all" | "normal" | "yield",
       probe: boolean,
@@ -239,7 +260,10 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
           : klass === "normal"
             ? [notInArray(s.jobAttempts.projectId, [...yieldIds])]
             : [inArray(s.jobAttempts.projectId, [...yieldIds])];
-      if (!probe && total >= o.globalCap) return undefined;
+      if (!probe && total >= o.globalCap) {
+        marks.push({ reason: "instance_cap", where: [...notProjectFull, ...classFilter] });
+        return undefined;
+      }
       const waiting = await tx.orm
         .select({ orgId: s.jobAttempts.orgId, oldest: sql<string>`min(${s.jobAttempts.id})` })
         .from(s.jobAttempts)
@@ -265,15 +289,31 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
         const usage = await cachedUsage(tx, w.orgId, o.now, o.quotaCacheMs ?? 0, q);
         const statuses = quotaStatuses(q, { ...usage, concurrent: perOrg.get(w.orgId) ?? 0 });
         await noticesOnce(tx, w.orgId, statuses, o.now, o.quotaCacheMs ?? 0);
-        if (
-          statuses.some(
-            (st) => st.metric !== "runs_per_hour" && st.metric !== "concurrent" && st.held,
-          )
-        )
+        const hold = statuses.find(
+          (st) => st.metric !== "runs_per_hour" && st.metric !== "concurrent" && st.held,
+        );
+        if (hold) {
           heldOrgs.add(w.orgId);
+          if (!probe) {
+            marks.push({
+              reason: `quota:${hold.metric}`,
+              where: [eq(s.jobAttempts.orgId, w.orgId), ...notProjectFull, ...classFilter],
+            });
+          }
+        }
         if (statuses.find((st) => st.metric === "runs_per_hour")?.held) {
           // New runs wait; runs that already started this hour finish their jobs.
           runsFull.set(w.orgId, await runsStartedSince(tx, w.orgId, o.now - HOUR_MS));
+        }
+      }
+      if (!probe) {
+        for (const w of waiting) {
+          if (heldOrgs.has(w.orgId) || (perOrg.get(w.orgId) ?? 0) < capOf(w.orgId)) continue;
+          const stored = quotas.get(w.orgId)?.maxConcurrent;
+          marks.push({
+            reason: stored != null && stored < o.perOrgCap ? "quota:concurrent" : "org_cap",
+            where: [eq(s.jobAttempts.orgId, w.orgId), ...notProjectFull, ...classFilter],
+          });
         }
       }
       const orgs = waiting
@@ -343,9 +383,18 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
             // A run waiting for its concurrency group (an older run of it is still going) starts
             // nothing yet.
             const candRun = await getRun(tx, scope, c.job.runId);
-            if (candRun && (await groupBlocked(tx, candRun))) continue;
+            const hold = (reason: string): void => {
+              if (!probe) whyScanned.set(c.attempt.id, { row: c.attempt, reason });
+            };
+            if (candRun && (await groupBlocked(tx, candRun))) {
+              hold("needs");
+              continue;
+            }
             const started = runsFull.get(orgId);
-            if (started && !started.has(c.job.runId)) continue;
+            if (started && !started.has(c.job.runId)) {
+              hold("quota:runs_per_hour");
+              continue;
+            }
             if (needsDecision(c.job)) {
               const siblings = await listJobs(tx, scope, c.job.runId);
               // Resolved earlier in this scan: no longer queued.
@@ -356,7 +405,10 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
                 depStates(c.job, siblings, await latestReasons(tx, scope, c.job.runId)),
                 await getRun(tx, scope, c.job.runId),
               ).decision;
-              if (decision === "wait") continue;
+              if (decision === "wait") {
+                hold("needs");
+                continue;
+              }
               if (decision === "skip" || decision === "cancel") {
                 await resolveDependents(tx, scope, c.job.runId, readiness);
                 continue;
@@ -372,7 +424,10 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
                     j.planned !== null &&
                     (JSON.parse(j.planned) as { id?: string }).id === planned.id,
                 ).length;
-                if (legsRunning >= planned.maxParallel) continue;
+                if (legsRunning >= planned.maxParallel) {
+                  hold("needs");
+                  continue;
+                }
               }
             }
             if (probe) {
@@ -391,9 +446,16 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
                 ),
               )
               .returning({ id: s.jobAttempts.id });
-            if (claimed.length === 0) continue;
+            if (claimed.length === 0) {
+              hold("claimable");
+              continue;
+            }
             await transitionJob(tx, scope, c.job.id, "running");
-            const attempt = (await updateAttempt(tx, scope, c.attempt.id, { state: "running" }))!;
+            const attempt = (await updateAttempt(tx, scope, c.attempt.id, {
+              state: "running",
+              waitingReason: null,
+              waitedMs: closeWaiting(c.attempt, o.now, "claimable"),
+            }))!;
             const run = (await getRun(tx, scope, c.job.runId))!;
             if (run.status !== "running") await setRunStatus(tx, scope, run.id, "running");
             return {
@@ -408,9 +470,22 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
       return probe && hits.length > 0 ? { blockedOrgs: hits } : undefined;
     };
 
-    if (yieldIds.size === 0) return (await pass("all", false)) as Claim | undefined;
+    if (yieldIds.size === 0) {
+      const claim = (await pass("all", false)) as Claim | undefined;
+      if (!claim) await flushWaiting();
+      return claim;
+    }
     const normal = await pass("normal", false);
-    if (normal) return normal as Claim;
+    if (normal) {
+      // Normal work went first: the yield projects' queued attempts wait for it.
+      await markWaiting(tx, {
+        reason: "yield",
+        where: [inArray(s.jobAttempts.projectId, [...yieldIds]), ...notProjectFull],
+        now: o.now,
+        onlyRun: o.onlyRun,
+      });
+      return normal as Claim;
+    }
     // Nothing normal could be claimed. If a normal attempt waits only for room, free a slot by
     // preempting the newest yield attempt holding one, then claim for the waiting attempt. One
     // victim per call, so a fan-out of waiting normal attempts preempts one yield attempt each.
@@ -440,7 +515,9 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
         return (await pass("normal", false)) as Claim | undefined;
       }
     }
-    return (await pass("yield", false)) as Claim | undefined;
+    const last = (await pass("yield", false)) as Claim | undefined;
+    if (!last) await flushWaiting();
+    return last;
   });
 }
 
@@ -1628,6 +1705,8 @@ export type OrgRunActivity = {
   runningAttempts: number;
   /** Start time (epoch ms) of the oldest running attempt, or null. */
   oldestRunningStartedAt: number | null;
+  /** Queued attempts by waiting reason (#775), with jobs held for an approval as `approval`. */
+  queuedByReason: Record<string, number>;
 };
 
 /**
@@ -1657,17 +1736,42 @@ export function instanceRunActivity(db: Db): Promise<OrgRunActivity[]> {
       .from(s.jobAttempts)
       .where(eq(s.jobAttempts.state, "running"))
       .groupBy(s.jobAttempts.orgId);
+    const queuedRows = await h.orm
+      .select({
+        orgId: s.jobAttempts.orgId,
+        reason: s.jobAttempts.waitingReason,
+        held: s.jobs.state,
+        n,
+      })
+      .from(s.jobAttempts)
+      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .where(eq(s.jobAttempts.state, "queued"))
+      .groupBy(s.jobAttempts.orgId, s.jobAttempts.waitingReason, s.jobs.state);
     const out = new Map<string, OrgRunActivity>();
     const of = (orgId: string): OrgRunActivity => {
       let e = out.get(orgId);
       if (!e) {
-        e = { orgId, runs: {}, jobs: {}, runningAttempts: 0, oldestRunningStartedAt: null };
+        e = {
+          orgId,
+          runs: {},
+          jobs: {},
+          runningAttempts: 0,
+          oldestRunningStartedAt: null,
+          queuedByReason: {},
+        };
         out.set(orgId, e);
       }
       return e;
     };
     for (const r of runRows) of(r.orgId).runs[r.state] = Number(r.n);
     for (const r of jobRows) of(r.orgId).jobs[r.state] = Number(r.n);
+    for (const r of queuedRows) {
+      const e = of(r.orgId);
+      // A job held for an approval waits for that, whatever its attempt says; an attempt no claim
+      // pass has looked at yet has no reason.
+      const k = r.held === "awaiting_approval" ? "approval" : (r.reason ?? "unknown");
+      e.queuedByReason[k] = (e.queuedByReason[k] ?? 0) + Number(r.n);
+    }
     for (const r of attemptRows) {
       const e = of(r.orgId);
       e.runningAttempts = Number(r.n);
