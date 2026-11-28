@@ -162,7 +162,15 @@ export interface JobSummary {
   /** Any event for the job was seen (set-up reached). */
   started: boolean;
   failedSteps: string[];
+  /**
+   * act gave up waiting for a service container to become healthy (its fixed 5 minute limit):
+   * the job's steps never ran (#796).
+   */
+  serviceUnhealthy?: boolean;
 }
+
+/** act's own words when a service never reports healthy (run_context.go, v0.2.97). */
+export const SERVICE_UNHEALTHY_TEXT = "service container failed to start";
 
 /** Folds events into the facts runJob needs. */
 export function summarize(events: readonly ActEvent[]): JobSummary {
@@ -174,6 +182,11 @@ export function summarize(events: readonly ActEvent[]): JobSummary {
       s.result = e.result;
     } else if (e.type === "step-end" && e.result === "failure") {
       s.failedSteps.push(e.name);
+    } else if (
+      (e.type === "error" && e.message.includes(SERVICE_UNHEALTHY_TEXT)) ||
+      (e.type === "text" && e.text.includes(SERVICE_UNHEALTHY_TEXT))
+    ) {
+      s.serviceUnhealthy = true;
     }
   }
   return s;
