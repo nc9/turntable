@@ -887,15 +887,23 @@ export async function isDefaultBranchPush(
 
 /**
  * Whether an attempt has started a step or launched its exec (#784): the point past which a
- * default-branch push attempt is waited for by a drain rather than requeued.
+ * default-branch push attempt is waited for by a drain rather than requeued. It follows the rule
+ * `requeueLostAttemptOnce` uses: when the attempt's trust class is not `retryableAfterSteps`
+ * (protected, release, none), a recorded `sandbox_id` also counts, since the runner records it
+ * before exec starts and a requeue would refuse the attempt (`not_retried`, a stranded gate).
  */
 export async function attemptHasStartedSteps(
   db: Db,
   scope: Scope,
   attemptId: string,
+  retryable: (trustClass: string | null) => boolean = retryableAfterSteps,
 ): Promise<boolean> {
   const [cur] = await db.orm
-    .select({ execId: s.jobAttempts.execId })
+    .select({
+      execId: s.jobAttempts.execId,
+      sandboxId: s.jobAttempts.sandboxId,
+      trustClass: s.jobAttempts.trustClass,
+    })
     .from(s.jobAttempts)
     .where(
       scoped(
@@ -906,6 +914,7 @@ export async function attemptHasStartedSteps(
     )
     .limit(1);
   if (cur?.execId) return true;
+  if (cur?.sandboxId && !retryable(cur.trustClass ?? null)) return true;
   const [started] = await db.orm
     .select({ stepKey: s.attemptSteps.stepKey })
     .from(s.attemptSteps)

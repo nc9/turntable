@@ -13,9 +13,11 @@ import {
   getJob,
   listAttempts,
   openDatabase,
+  recordTrustClass,
   type Scope,
   setProjectChecksMode,
   setProjectIngest,
+  updateAttempt,
   upsertStep,
 } from "../src/db";
 import { DrainState, Scheduler, type AttemptRunner } from "../src/scheduler";
@@ -155,6 +157,27 @@ describe("drain shadow: cut_branches (#784)", () => {
     s.gates[0]!();
     await s.sched.idle();
     expect((await getJob(db, scope, main.id))?.state).toBe("success");
+  });
+
+  test("a default-branch push attempt with only a sandbox recorded is waited for (no trust class, protected)", async () => {
+    for (const trustClass of [undefined, "protected"]) {
+      const main = await queue(`main-${trustClass ?? "none"}`, "push", "refs/heads/main");
+      const s = setup();
+      expect(await s.sched.tick()).toBe(1);
+      const [att] = await listAttempts(db, scope, main.id);
+      await updateAttempt(db, scope, att!.id, { sandboxId: "sb-1" });
+      if (trustClass) {
+        expect(await recordTrustClass(db, scope, att!.id, att!.leaseOwner!, trustClass)).toBe(true);
+      }
+      s.drain.set(true, "deploy", T0);
+      await s.drain.applyShadow("cut_branches");
+      expect(s.drain.shadowCut).toBe(0);
+      expect((await getJob(db, scope, main.id))?.state).toBe("running");
+      expect(await listAttempts(db, scope, main.id)).toHaveLength(1);
+      s.gates[0]!();
+      await s.sched.idle();
+      expect((await getJob(db, scope, main.id))?.state).toBe("success");
+    }
   });
 
   test("a user or API cancellation has no drain label", () => {
