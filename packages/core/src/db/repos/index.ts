@@ -675,7 +675,8 @@ export function updateAttempt(
     sandboxDestroyedAt?: number | null;
     sandboxTtlSeconds?: number | null;
     /** Cleared and closed when the attempt starts (#775). */
-    waitingReason?: null;
+    waitingReason?: string | null;
+    waitingSince?: number | null;
     waitedMs?: string;
   },
 ): Promise<JobAttempt | undefined> {

@@ -784,7 +784,7 @@
                                   "description": "True when the stored log of this attempt is missing output that could not be retrieved (see job_cuts for where). The text also carries a `[turntable] ... could not be retrieved` line at each gap."
                                 },
                                 "waiting_reason": {
-                                  "description": "While queued: why it is not running (needs, project_cap, org_cap, instance_cap, quota:<metric>, yield, drain, claimable). Null once it started, or before a claim pass has looked at it.",
+                                  "description": "While queued: why it is not running (needs, project_cap, org_cap, instance_cap, quota:<metric>, yield, drain, approval, claimable). Null once it started, or before a claim pass has looked at it.",
                                   "type": ["string", "null"]
                                 },
                                 "queued_ms_by_reason": {
@@ -1296,7 +1296,7 @@
                       "description": "Attempt number; null when the job has no attempt yet."
                     },
                     "waiting_reason": {
-                      "description": "While queued: why it is not running (needs, project_cap, org_cap, instance_cap, quota:<metric>, yield, drain, claimable). Null once it started, or before a claim pass has looked at it.",
+                      "description": "While queued: why it is not running (needs, project_cap, org_cap, instance_cap, quota:<metric>, yield, drain, approval, claimable). Null once it started, or before a claim pass has looked at it.",
                       "type": ["string", "null"]
                     },
                     "queued_ms_by_reason": {

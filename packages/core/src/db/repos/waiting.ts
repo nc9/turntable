@@ -5,6 +5,7 @@
 import { and, eq, isNull, ne, or, type SQL } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
+import { notFrozen } from "./incident";
 
 /** The reasons without a parameter. `quota:<metric>` is the other form. */
 export const WAIT_REASONS = [
@@ -98,6 +99,7 @@ export async function markWaiting(
         eq(s.jobs.state, "queued"),
         isNull(s.jobAttempts.leaseOwner),
         m.onlyRun ? eq(s.jobs.runId, m.onlyRun) : eq(s.runs.local, false),
+        notFrozen(s.runs.orgId, s.runs.projectId),
         or(isNull(s.jobAttempts.waitingReason), ne(s.jobAttempts.waitingReason, m.reason)),
         ...(m.where ?? []),
       ),
@@ -106,4 +108,26 @@ export async function markWaiting(
   let n = 0;
   for (const r of rows) if (await setWaitingReason(h, r, m.reason, m.now)) n++;
   return n;
+}
+
+/** The attempt columns for a job held for an approval: the period is open from creation. */
+export const HELD_FOR_APPROVAL = { waitingReason: "approval" } as const;
+
+/**
+ * The attempt columns when an approval releases it to the queue: the held time is booked to
+ * `approval`, and the next period starts now.
+ */
+export function releasedPatch(
+  row: WaitRow,
+  now: number,
+): {
+  waitingReason: null;
+  waitingSince: number;
+  waitedMs: string;
+} {
+  return {
+    waitingReason: null,
+    waitingSince: now,
+    waitedMs: closeWaiting({ ...row, waitingReason: "approval" }, now, "approval"),
+  };
 }

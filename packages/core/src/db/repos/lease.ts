@@ -260,8 +260,14 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
           : klass === "normal"
             ? [notInArray(s.jobAttempts.projectId, [...yieldIds])]
             : [inArray(s.jobAttempts.projectId, [...yieldIds])];
+      // A yield project waits for capacity by definition: normal work has first call on it, so
+      // when the room is full its reason is `yield` rather than the cap (written once, at rest).
+      const capReason = (r: string): string => (klass === "yield" ? "yield" : r);
       if (!probe && total >= o.globalCap) {
-        marks.push({ reason: "instance_cap", where: [...notProjectFull, ...classFilter] });
+        marks.push({
+          reason: capReason("instance_cap"),
+          where: [...notProjectFull, ...classFilter],
+        });
         return undefined;
       }
       const waiting = await tx.orm
@@ -311,7 +317,9 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
           if (heldOrgs.has(w.orgId) || (perOrg.get(w.orgId) ?? 0) < capOf(w.orgId)) continue;
           const stored = quotas.get(w.orgId)?.maxConcurrent;
           marks.push({
-            reason: stored != null && stored < o.perOrgCap ? "quota:concurrent" : "org_cap",
+            reason: capReason(
+              stored != null && stored < o.perOrgCap ? "quota:concurrent" : "org_cap",
+            ),
             where: [eq(s.jobAttempts.orgId, w.orgId), ...notProjectFull, ...classFilter],
           });
         }
@@ -477,13 +485,6 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     }
     const normal = await pass("normal", false);
     if (normal) {
-      // Normal work went first: the yield projects' queued attempts wait for it.
-      await markWaiting(tx, {
-        reason: "yield",
-        where: [inArray(s.jobAttempts.projectId, [...yieldIds]), ...notProjectFull],
-        now: o.now,
-        onlyRun: o.onlyRun,
-      });
       return normal as Claim;
     }
     // Nothing normal could be claimed. If a normal attempt waits only for room, free a slot by
@@ -1705,7 +1706,7 @@ export type OrgRunActivity = {
   runningAttempts: number;
   /** Start time (epoch ms) of the oldest running attempt, or null. */
   oldestRunningStartedAt: number | null;
-  /** Queued attempts by waiting reason (#775), with jobs held for an approval as `approval`. */
+  /** Queued attempts by waiting reason (#775), with attempts held for an approval as `approval`. */
   queuedByReason: Record<string, number>;
 };
 
@@ -1740,13 +1741,12 @@ export function instanceRunActivity(db: Db): Promise<OrgRunActivity[]> {
       .select({
         orgId: s.jobAttempts.orgId,
         reason: s.jobAttempts.waitingReason,
-        held: s.jobs.state,
+        state: s.jobAttempts.state,
         n,
       })
       .from(s.jobAttempts)
-      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
-      .where(eq(s.jobAttempts.state, "queued"))
-      .groupBy(s.jobAttempts.orgId, s.jobAttempts.waitingReason, s.jobs.state);
+      .where(inArray(s.jobAttempts.state, ["queued", "awaiting_approval"]))
+      .groupBy(s.jobAttempts.orgId, s.jobAttempts.waitingReason, s.jobAttempts.state);
     const out = new Map<string, OrgRunActivity>();
     const of = (orgId: string): OrgRunActivity => {
       let e = out.get(orgId);
@@ -1767,9 +1767,9 @@ export function instanceRunActivity(db: Db): Promise<OrgRunActivity[]> {
     for (const r of jobRows) of(r.orgId).jobs[r.state] = Number(r.n);
     for (const r of queuedRows) {
       const e = of(r.orgId);
-      // A job held for an approval waits for that, whatever its attempt says; an attempt no claim
-      // pass has looked at yet has no reason.
-      const k = r.held === "awaiting_approval" ? "approval" : (r.reason ?? "unknown");
+      // An attempt held for an approval waits for that; one no claim pass has looked at yet has no
+      // reason.
+      const k = r.state === "awaiting_approval" ? "approval" : (r.reason ?? "unknown");
       e.queuedByReason[k] = (e.queuedByReason[k] ?? 0) + Number(r.n);
     }
     for (const r of attemptRows) {

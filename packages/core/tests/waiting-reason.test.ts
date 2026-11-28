@@ -8,14 +8,19 @@ import {
   createJob,
   createOrg,
   createProject,
+  createPolledRun,
   createRun,
   type Db,
   getAttempt,
+  listAttempts,
+  listJobs,
+  setFreeze,
   markWaiting,
   openDatabase,
   type Scope,
-  transitionJob,
 } from "../src/db";
+import { approveRun } from "../src/db/repos/approve";
+import { toWaiting } from "../src/ops/waiting";
 import { setOrgQuotas } from "../src/db/repos/quotas";
 import { putStoredSetting } from "../src/db/repos/settings";
 import { dispatch, registry, type DispatchEnv } from "../src/ops";
@@ -147,7 +152,7 @@ test("quota:runs_per_hour: a new run waits while one that started finishes its j
   expect(await reasonOf(next)).toBe("quota:runs_per_hour");
 });
 
-test("yield: a yield project's attempt waits while normal work is claimed, then says why it still waits", async () => {
+test("yield: a yield project's attempt waiting for capacity says yield, written once", async () => {
   await putStoredSetting(
     db,
     { kind: "project", id: a2.projectId, orgId: a2.orgId },
@@ -158,7 +163,14 @@ test("yield: a yield project's attempt waits while normal work is claimed, then 
   );
   const y = await queue(a2, "y");
   const n = await queue(a, "n");
-  expect((await claim())!.attempt.id).toBe(n.attempt.id);
+  expect((await claim({ globalCap: 1 }))!.attempt.id).toBe(n.attempt.id);
+  expect(await claim({ globalCap: 1 })).toBeUndefined();
+  expect(await reasonOf(y)).toBe("yield");
+  // later ticks change nothing: no overwrite between yield and another reason
+  const w = countWrites();
+  expect(await claim({ globalCap: 1 })).toBeUndefined();
+  expect(await claim({ globalCap: 1 })).toBeUndefined();
+  expect(w.n()).toBe(0);
   expect(await reasonOf(y)).toBe("yield");
 });
 
@@ -177,17 +189,65 @@ test("drain: a draining scheduler marks the queue drain without claiming", async
   expect(await reasonOf(q)).toBe("drain");
 });
 
-test("approval: a job held for approval reads approval in get_run and run_activity", async () => {
-  const q = await queue(a, "r1");
-  await transitionJob(db, a, q.job.id, "awaiting_approval");
+const trust = JSON.stringify({ class: "untrusted_author", workflowHash: "h".repeat(8) });
+
+async function heldRun() {
+  const made = (await createPolledRun(db, a, {
+    repo: "o/r",
+    run: { workflowPath: "w.yml", event: "pull_request", ref: "pr", sha: "b".repeat(40), trust },
+    jobs: [{ key: "build", name: "build", needs: [] }],
+    provider: "fake",
+    hold: true,
+  }))!;
+  const job = (await listJobs(db, a, made.run.id))[0]!;
+  return { run: made.run, job, attempt: (await listAttempts(db, a, job.id))[0]! };
+}
+
+async function activity(): Promise<Map<string, Record<string, number>>> {
   const secret = (await createInstanceTokenFromCli(db, { name: "ops" })).secret;
   const env: DispatchEnv = { registry, db, allowInstance: true, instanceOrgCap: 4 };
   const act = await dispatch(env, { kind: "bearer", token: secret }, "instance_run_activity", {});
-  expect(act.ok).toBe(true);
-  if (!act.ok) return;
-  const rows = (act.output as { orgs: { org: string; queued_by_reason: Record<string, number> }[] })
-    .orgs;
-  expect(rows.find((r) => r.org === "org-a")!.queued_by_reason).toEqual({ approval: 1 });
+  if (!act.ok) throw new Error("run_activity failed");
+  return new Map(
+    (act.output as { orgs: { org: string; queued_by_reason: Record<string, number> }[] }).orgs.map(
+      (o) => [o.org, o.queued_by_reason],
+    ),
+  );
+}
+
+test("approval: a held run counts as approval in run_activity and shows it on the attempt", async () => {
+  const h = await heldRun();
+  expect(h.attempt.state).toBe("awaiting_approval");
+  expect((await activity()).get("org-a")).toEqual({ approval: 1 });
+  const w = toWaiting(h.attempt, h.attempt.createdAt + 5000);
+  expect(w.waiting_reason).toBe("approval");
+  expect(w.queued_ms_by_reason.approval).toBe(5000);
+});
+
+test("approval: the held time is booked to approval, not to the next reason", async () => {
+  const h = await heldRun();
+  const at = h.attempt.createdAt + 2 * 3600_000;
+  await approveRun(db, a, h.run.id, {
+    headSha: "b".repeat(40),
+    workflowHash: "h".repeat(8),
+    by: "tester",
+    now: at,
+  });
+  const queued = (await getAttempt(db, a, h.attempt.id))!;
+  expect(queued.state).toBe("queued");
+  expect(queued.waitingReason).toBeNull();
+  expect((await activity()).get("org-a")).toEqual({ unknown: 1 });
+  const c = (await claim({ now: at + 100 }))!;
+  const by = JSON.parse(c.attempt.waitedMs!) as Record<string, number>;
+  expect(by.approval).toBe(2 * 3600_000);
+  expect(by.claimable).toBe(100);
+});
+
+test("frozen orgs are not marked", async () => {
+  const q = await queue(a, "r1");
+  await setFreeze(db, { orgId: a.orgId }, { reason: "test", by: "test", now: T0 });
+  expect(await markWaiting(db, { reason: "drain", now: T0 })).toBe(0);
+  expect(await reasonOf(q)).toBeNull();
 });
 
 test("run_activity counts queued attempts per org by reason", async () => {
