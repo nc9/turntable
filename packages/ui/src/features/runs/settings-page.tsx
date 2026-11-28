@@ -3,6 +3,7 @@ import { EmptyState } from "@/components/empty-state";
 import { SettingsSection } from "@/features/settings/settings-section";
 import { useScope } from "@/features/shell/scope";
 import { useWhoami } from "@/lib/directory";
+import { ProjectVarsSection } from "./project-vars-section";
 import { ProjectSecretsSection } from "./project-secrets-section";
 import { RemoveProject } from "./remove-project";
 
@@ -44,6 +45,14 @@ export function SettingsPage() {
           key={`secrets-${scope.project.id}`}
           org={scope.orgSlug}
           project={scope.project.slug}
+        />
+      ) : null}
+      {scope.project && scope.orgSlug ? (
+        <ProjectVarsSection
+          key={`vars-${scope.project.id}`}
+          org={scope.orgSlug}
+          project={scope.project.slug}
+          role={who.data?.role ?? null}
         />
       ) : null}
       {scope.project && scope.orgSlug ? (

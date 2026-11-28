@@ -833,6 +833,8 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       "set_approval_policy", // an owner session; loosening also needs a step-up (and a quorum)
       "notifications_ack", // a person's own notification rows (#611)
       "set_notification_prefs", // a person's own preferences (#611)
+      "set_project_var", // an operator session edits a project's non-secret vars (#798)
+      "delete_project_var", // the same; TURNTABLE_CI is reserved
 
       "cancel", // operator role, as for a token; no step-up
       "rerun", // same
