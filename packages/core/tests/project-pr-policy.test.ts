@@ -80,6 +80,16 @@ describe("project pr policy", () => {
     expect((await change(member("owner"), { pr_mode: "allowlist" })).ok).toBe(true);
   });
 
+  test("adding an author while the mode is off still needs the owner (the merge queue reads authors)", async () => {
+    await setProjectIngest(db, a, JSON.stringify({ ...INGEST, prMode: "off", mergeQueue: true }));
+    const adm = member("admin");
+    const widen = await change(adm, { authors: ["octocat", "mallory"] });
+    expect(!widen.ok && widen.error.code).toBe("forbidden");
+    expect((await stored()).authors).toEqual(["octocat"]);
+    const r = await change(member("owner"), { authors: ["octocat", "mallory"] });
+    expect(r.ok && r.output).toMatchObject({ loosened: true });
+  });
+
   test("a member and an operator token are refused", async () => {
     expect((await change(member("member"), { pr_mode: "off" })).ok).toBe(false);
     const op = (await mintToken(db, a, "operator")).secret;

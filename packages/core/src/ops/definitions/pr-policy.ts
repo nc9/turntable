@@ -69,7 +69,7 @@ const policyOf = (s: IngestSettings): Policy => ({ pr_mode: s.prMode, authors: [
 /** True when `to` runs PRs `from` would not: a looser mode, or an author added. */
 export function loosensPrPolicy(from: Policy, to: Policy): boolean {
   if (MODE_RANK[to.pr_mode] < MODE_RANK[from.pr_mode]) return true;
-  if (to.pr_mode === "off") return false;
+  // No short-circuit for "off": the merge-queue gate checks `authors` whatever the mode is.
   const had = new Set(from.authors.map(lower));
   return to.authors.some((a) => !had.has(lower(a)));
 }

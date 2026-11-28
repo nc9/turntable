@@ -4680,7 +4680,7 @@
                               "required": ["number", "reason", "since"],
                               "additionalProperties": false
                             },
-                            "description": "Open pull requests the last successful poll did not run, so a skipped PR is never silent. Fix an author with set_project_pr_policy."
+                            "description": "Open pull requests the last successful poll did not run, so a skipped PR is never silent. Fix an author with change_project_pr_policy."
                           }
                         },
                         "required": [

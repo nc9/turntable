@@ -83,7 +83,7 @@ export const ingestStatusOp = defineOp({
             }),
           )
           .describe(
-            "Open pull requests the last successful poll did not run, so a skipped PR is never silent. Fix an author with set_project_pr_policy.",
+            "Open pull requests the last successful poll did not run, so a skipped PR is never silent. Fix an author with change_project_pr_policy.",
           ),
       }),
     ),
