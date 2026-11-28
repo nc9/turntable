@@ -69,6 +69,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     );
 
   const settings = createFixtureSettings(() => options.role ?? "owner");
+  let demoEgress: "none" | "allowlist" | "open" = "open";
   const demoPolicy: ApprovalPolicy = {
     environments: ["production", "release"].map((environment) => ({
       environment,
@@ -235,6 +236,14 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     listSettings: (a) => delay(() => settings.list(a?.project)),
     setSetting: (a) => delay(() => settings.set(a)),
     getApprovalPolicy: () => delay(() => structuredClone(demoPolicy)),
+    getProjectEgress: () => delay(() => demoEgress),
+    tightenProjectEgress: ({ egress }) =>
+      delay(() => {
+        const rank = { open: 0, allowlist: 1, none: 2 };
+        if (rank[egress] < rank[demoEgress]) throw new Error("egress can only be tightened here");
+        demoEgress = egress;
+        return { egress, warnings: [] };
+      }),
     setApprovalPolicy: (a) =>
       delay(() => {
         const e = demoPolicy.environments.find((x) => x.environment === a.environment);

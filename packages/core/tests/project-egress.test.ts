@@ -96,9 +96,35 @@ describe("egress ops", () => {
     expect(await getProjectEgress(db, a)).toBe("none");
   });
 
-  test("unknown provider capabilities warn instead of refusing", async () => {
+  test("unknown provider capabilities refuse allowlist and open, and warn for none", async () => {
     caps = undefined;
-    const r = await asInstance("open");
+    expect((await asInstance("open")).ok).toBe(false);
+    expect((await asInstance("allowlist")).ok).toBe(false);
+    const r = await asInstance("none");
     expect(r.ok && (r.output as { warnings: string[] }).warnings.length).toBe(1);
+  });
+
+  test("re-setting none on a provider that cannot enforce it still warns", async () => {
+    caps = ["open"];
+    const r = await asInstance("none");
+    expect(r.ok && (r.output as { warnings: string[] }).warnings[0]).toContain("cannot enforce");
+  });
+
+  test("a tighten is audited once by the handler with the session kind and slugs, a no-op not at all", async () => {
+    await setProjectEgress(db, a, "open");
+    const owner = member("owner");
+    await tighten(owner, "none");
+    await tighten(owner, "none");
+    const rows = (await listAudit(db, a)).filter(
+      (e) => e.op === "tighten_project_egress" && String(e.input).includes("from"),
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.principalKind).toBe("member");
+    expect(JSON.parse(String(rows[0]?.input))).toMatchObject({
+      target_org: "org-a",
+      target_project: "app",
+      from: "open",
+      to: "none",
+    });
   });
 });

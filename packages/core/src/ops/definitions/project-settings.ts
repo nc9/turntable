@@ -3,7 +3,9 @@ import { z } from "zod";
 import {
   appendAudit,
   createProject,
+  getOrgById,
   getOrgBySlug,
+  getProject,
   getProjectBySlug,
   getProjectEgress,
   getProjectSandboxSettings,
@@ -241,11 +243,18 @@ export const createProjectOp = defineOp({
  * Checks a mode against what the provider can enforce. `allowlist` and `open` the provider cannot
  * enforce are refused; `none` it cannot enforce is allowed (it is the safe default) with a warning,
  * because every job would then fail its egress canary. Unknown capabilities (no provider in this
- * process) are a warning, not a refusal.
+ * process) refuse `allowlist` and `open` and warn for `none`.
  */
 function egressCapability(ctx: OpContext, mode: EgressMode): string[] {
   const caps = ctx.providerEgress?.();
-  if (!caps) return ["the provider's egress support is unknown here (no provider in this process)"];
+  if (!caps) {
+    if (mode !== "none")
+      throw new OpError(
+        "invalid_input",
+        `the provider's egress support is unknown here (no provider in this process), so egress ${mode} cannot be checked`,
+      );
+    return ["the provider's egress support is unknown here (no provider in this process)"];
+  }
   if (caps.includes(mode)) return [];
   if (mode === "none")
     return [
@@ -271,11 +280,13 @@ async function changeEgress(
       "forbidden",
       `egress can only be tightened here (open, then allowlist, then none); ${from} to ${to} is widening, which the instance operator does`,
     );
-  const warnings = from === to ? [] : egressCapability(ctx, to);
-  if (from !== to) await setProjectEgress(ctx.db, scope, to);
+  // Checked even when the mode is unchanged: re-setting `none` must still warn.
+  const warnings = egressCapability(ctx, to);
+  if (from === to) return { project: projectId, from, to, warnings };
+  await setProjectEgress(ctx.db, scope, to);
   for (const c of chains)
     await appendAudit(ctx.db, c, {
-      principalKind: tightenOnly ? "token" : "instance",
+      principalKind: ctx.principal.kind,
       principalId: ctx.principal.id,
       op,
       effect: "write",
@@ -353,13 +364,16 @@ export const tightenProjectEgress = defineOp({
   mcp: false,
   async handler(ctx, i) {
     if (!ctx.scope.projectId) throw new OpError("invalid_input", "a project is required");
+    const org = await getOrgById(ctx.db, ctx.scope.orgId);
+    const project = await getProject(ctx.db, { orgId: ctx.scope.orgId }, ctx.scope.projectId);
+    if (!org || !project) throw new OpError("not_found", "no such project");
     return changeEgress(
       ctx,
       "tighten_project_egress",
       ctx.scope.orgId,
       ctx.scope.projectId,
       [{ orgId: ctx.scope.orgId, projectId: ctx.scope.projectId }],
-      { org: ctx.scope.orgId, project: ctx.scope.projectId },
+      { org: org.slug, project: project.slug },
       i.egress,
       true,
     );
