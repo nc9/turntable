@@ -18,6 +18,8 @@ import {
   ifLeaseHeld,
   isAdoptable,
   markDrainCut,
+  isDefaultBranchPush,
+  DRAIN_CUT,
   type Readiness,
   recordExec,
   recordLogCheckpoint,
@@ -155,6 +157,8 @@ export class Scheduler {
       detach: AbortController;
       done: Promise<void>;
       scope: Claim["scope"];
+      /** The run's event and ref, for the ref-aware drain cut (#784). */
+      run: { event: string; ref: string };
     }
   >();
   /** Attempts being handed off to the next controller (#761): no outcome is recorded for them. */
@@ -192,19 +196,23 @@ export class Scheduler {
       log: o.log ?? (() => {}),
     };
     this.#o.drain.trackRunning(() => this.#active.size);
-    this.#o.drain.trackShadowCutter(() => this.cutShadow());
+    this.#o.drain.trackShadowCutter((mode) => this.cutShadow(mode));
   }
 
   /** Attempts a drain is cutting (#480): their runner is stopped and the job requeued once. */
-  readonly #cutting = new Set<string>();
+  readonly #cutting = new Map<string, "cut" | "requeue" | "requeue_repeat">();
 
   /**
    * Drain `shadow: "cancel"` (#480): for each running attempt of a project whose checks mode is
    * not `live`, marks it cut by the drain (the same mark #448's timeout uses) and stops its runner,
    * which destroys the sandbox like a supersede does. The attempt ends as an infra retry (see
    * `#launch`), never a job failure. Live projects' attempts are left to finish. Returns the count.
+   *
+   * `cut_branches` (#784): an attempt on a ref other than the project's default branch is cut (it
+   * ends cancelled, reason `drain_cut`, no requeue). A default-branch push attempt is requeued, as
+   * `cancel` does, but without the one-requeue limit, so it runs again after every restart.
    */
-  async cutShadow(): Promise<number> {
+  async cutShadow(mode: "cancel" | "cut_branches" = "cancel"): Promise<number> {
     let n = 0;
     for (const [id, a] of [...this.#active.entries()]) {
       if (this.#cutting.has(id)) continue;
@@ -218,12 +226,18 @@ export class Scheduler {
           )) === "live"
         )
           continue;
+        const how =
+          mode === "cancel"
+            ? "requeue"
+            : (await isDefaultBranchPush(this.#o.db, a.scope, a.run))
+              ? "requeue_repeat"
+              : "cut";
         if (!(await markDrainCut(this.#o.db, a.scope, id, this.owner))) continue;
+        this.#cutting.set(id, how);
       } catch (err) {
         this.#o.log(`could not cut ${id} for the drain: ${String(err)}`);
         continue;
       }
-      this.#cutting.add(id);
       a.controller.abort("drain_cut");
       n++;
     }
@@ -648,14 +662,30 @@ export class Scheduler {
       // A shadow attempt the drain cut ends as a requeue, not a result: its job goes back to the
       // queue under a new attempt (once) and no check is reported. A verdict it reached before the
       // stop landed is kept.
-      if (
-        this.#cutting.delete(attempt.id) &&
-        (outcome.state === "infra_error" || outcome.state === "cancelled")
-      ) {
+      const cutKind = this.#cutting.get(attempt.id);
+      this.#cutting.delete(attempt.id);
+      if (cutKind && (outcome.state === "infra_error" || outcome.state === "cancelled")) {
+        if (cutKind === "cut") {
+          // #784: a branch attempt is cut for good, labelled as a deploy drain, not a human cancel.
+          const done = await finishAttempt(db, scope, {
+            attemptId: attempt.id,
+            owner,
+            state: "cancelled",
+            exitCode: null,
+            errorClass: DRAIN_CUT,
+            readiness: this.#o.readiness,
+          }).catch((err) => {
+            this.#o.log(`could not record the drain cut of ${attempt.id}: ${String(err)}`);
+            return false;
+          });
+          if (done) this.#notify((o) => o.finished(claim, { ...outcome, state: "cancelled" }));
+          return;
+        }
         const requeued = await requeueLostAttemptOnce(db, scope, {
           attemptId: attempt.id,
           owner,
-          errorClass: `${CONTROLLER_LOST} (drain cancel)`,
+          errorClass: cutKind === "requeue" ? `${CONTROLLER_LOST} (drain cancel)` : DRAIN_CUT,
+          ...(cutKind === "requeue_repeat" ? { repeatable: true } : {}),
           now: this.#o.now(),
           requireExpired: false,
           retryableAfterSteps,
@@ -728,7 +758,13 @@ export class Scheduler {
     };
 
     const done = run().finally(() => this.#active.delete(attempt.id));
-    this.#active.set(attempt.id, { controller, detach, done, scope });
+    this.#active.set(attempt.id, {
+      controller,
+      detach,
+      done,
+      scope,
+      run: { event: claim.run.event, ref: claim.run.ref },
+    });
     this.#notify((o) => o.started(claim));
   }
 }

@@ -51,7 +51,7 @@ import {
   type QuotaStatus,
   type QuotaUsage,
 } from "./quotas";
-import { groupBlocked } from "./poll";
+import { getProjectIngest, groupBlocked } from "./poll";
 import { projectsWithCaps, yieldProjects } from "./project-settings";
 import {
   defaultReadiness,
@@ -847,6 +847,44 @@ export function markDrainCut(
 export const DRAIN_CUT_NOT_RETRIED =
   "cut by a drain after steps started; not retried for a protected or release job: rerun it by hand";
 
+/** What get_run and job_steps show for an attempt a drain cut or requeued (#784). */
+export const DRAIN_CUT_LABEL = "cancelled by deploy drain";
+
+/** The label for an attempt a deploy drain cut or requeued, else null. */
+export function drainCutLabel(errorClass: string | null | undefined): string | null {
+  if (!errorClass) return null;
+  return errorClass === DRAIN_CUT ||
+    errorClass.startsWith(`${CONTROLLER_LOST} (drain cancel)`) ||
+    errorClass === DRAIN_CUT_NOT_RETRIED
+    ? DRAIN_CUT_LABEL
+    : null;
+}
+
+/**
+ * Whether a run is a push to the project's default branch (#784), from the ingest settings'
+ * `defaultBranch`. A project with no known default branch counts a push run as one: it is requeued
+ * rather than cut, so a deploy gate can never be stranded by a guess.
+ */
+export async function isDefaultBranchPush(
+  db: Db,
+  scope: Scope,
+  run: { event: string; ref: string },
+): Promise<boolean> {
+  if (run.event !== "push") return false;
+  let branch: string | undefined;
+  try {
+    const json = await getProjectIngest(db, scope);
+    const parsed: unknown = json ? JSON.parse(json) : null;
+    const d = (parsed as { defaultBranch?: unknown } | null)?.defaultBranch;
+    if (typeof d === "string" && d !== "") branch = d;
+  } catch {
+    branch = undefined;
+  }
+  if (branch === undefined) return true;
+  const norm = (r: string): string => r.replace(/^refs\/heads\//, "");
+  return norm(run.ref) === norm(branch);
+}
+
 export type RequeueLostResult = "requeued" | "not_retried" | "no";
 
 /**
@@ -885,6 +923,11 @@ export function requeueLostAttemptOnce(
      * stopped the sandbox.
      */
     requireExpired?: boolean;
+    /**
+     * A default-branch push attempt cut by a drain (#784) is requeued after every drain, not once:
+     * skips the check for an earlier lost attempt of the job.
+     */
+    repeatable?: boolean;
     /** The trust-class half of the rule: `retryableAfterSteps` from `@turntable/act-runner`. */
     retryableAfterSteps: (trustClass: string | null) => boolean;
   },
@@ -912,7 +955,7 @@ export function requeueLostAttemptOnce(
     const earlier = (await listAttempts(tx, scope, cur.jobId)).filter(
       (a) => a.id !== cur.id && a.errorClass?.startsWith(CONTROLLER_LOST),
     );
-    if (earlier.length > 0) return "no";
+    if (earlier.length > 0 && !input.repeatable) return "no";
     if (!input.retryableAfterSteps(cur.trustClass)) {
       const launched = cur.sandboxId !== null || cur.execId !== null;
       const [started] = launched

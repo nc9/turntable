@@ -1127,7 +1127,7 @@ const drainOutput = z.object({
     })
     .describe("`running_attempts` split by the project's checks mode."),
   shadow_mode: z
-    .enum(["wait", "cancel"])
+    .enum(["wait", "cancel", "cut_branches"])
     .describe("What this drain does with shadow attempts: wait for them or cut them."),
   shadow_cut: z.int().describe("Shadow attempts cut since this drain began."),
   running_by_adoption: z
@@ -1187,18 +1187,23 @@ export const instanceDrainOp = defineOp({
     "Turning it on twice keeps the first time. With shadow=cancel, running attempts of projects " +
     "whose checks mode is shadow or off are stopped now as infrastructure cuts and their jobs " +
     "requeued once (never a job failure, no failed check); live projects are still waited for. " +
+    "With shadow=cut_branches, attempts on a ref other than the project's default branch are cut " +
+    "(they end cancelled, labelled as cancelled by deploy drain) and default-branch push attempts " +
+    "are requeued with no rerun used, on every drain. " +
     "The reason is kept in the system audit chain. " +
     "Only the instance administrator can call it. Not an MCP tool.",
   input: z.object({
     on: z.boolean().describe("true starts the drain, false ends it."),
     reason: z.string().trim().min(3).max(500).describe("Why. Kept in the audit."),
     shadow: z
-      .enum(["wait", "cancel"])
+      .enum(["wait", "cancel", "cut_branches"])
       .optional()
       .describe(
         "What to do with running attempts of projects whose checks mode is not live (shadow or " +
           "off), which gate nothing. wait (default) lets them finish; cancel stops each one now " +
-          "as an infrastructure cut and requeues its job once. Live projects' attempts are " +
+          "as an infrastructure cut and requeues its job once; cut_branches cuts attempts on any ref " +
+          "but the project's default branch (cancelled, labelled cancelled by deploy drain) and " +
+          "requeues default-branch push attempts, with no rerun used and no once limit. Live projects' attempts are " +
           "always waited for. Only meaningful with on=true. Each call sets it explicitly: omitted means wait, even if an earlier call set cancel.",
       ),
   }),

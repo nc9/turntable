@@ -1,0 +1,132 @@
+// Drain shadow mode cut_branches (#784): branch attempts are cut, default-branch push attempts are
+// requeued with no rerun used, and both carry the drain label.
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
+import {
+  createAttempt,
+  createJob,
+  createOrg,
+  createProject,
+  createRun,
+  type Db,
+  drainCutLabel,
+  getJob,
+  listAttempts,
+  openDatabase,
+  type Scope,
+  setProjectChecksMode,
+  setProjectIngest,
+} from "../src/db";
+import { DrainState, Scheduler, type AttemptRunner } from "../src/scheduler";
+
+let db: Db;
+let scope: Required<Scope>;
+let world: FakeWorld;
+const T0 = 1_800_000_000_000;
+
+beforeEach(async () => {
+  db = openDatabase(":memory:");
+  const org = await createOrg(db, { slug: "org-a", name: "org-a" });
+  const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "app" });
+  scope = { orgId: org.id, projectId: project.id };
+  await setProjectChecksMode(db, scope, "shadow");
+  await setProjectIngest(db, scope, JSON.stringify({ defaultBranch: "main" }));
+  world = new FakeWorld();
+});
+afterEach(() => world.dispose());
+
+async function queue(key: string, event: string, ref: string) {
+  const run = await createRun(db, scope, {
+    workflowPath: "w.yml",
+    event,
+    ref,
+    sha: "a".repeat(40),
+  });
+  const job = (await createJob(db, scope, { runId: run.id, jobKey: key, name: key }))!;
+  await createAttempt(db, scope, { jobId: job.id, provider: "fake" });
+  return job;
+}
+
+function setup() {
+  const aborted: string[] = [];
+  const gates: (() => void)[] = [];
+  const runner: AttemptRunner = async (ctx) => {
+    await new Promise<void>((open) => {
+      gates.push(open);
+      ctx.signal.addEventListener("abort", () => {
+        aborted.push(ctx.job.jobKey);
+        open();
+      });
+    });
+    return ctx.signal.aborted
+      ? { state: "cancelled", reason: "stopped" }
+      : { state: "success", reason: "ok" };
+  };
+  const drain = new DrainState();
+  const sched = new Scheduler({
+    db,
+    runner,
+    providers: () => world.provider(),
+    globalCap: 50,
+    perOrgCap: 50,
+    drain,
+  });
+  return { sched, drain, aborted, gates };
+}
+
+describe("drain shadow: cut_branches (#784)", () => {
+  test("cuts branch and PR attempts, requeues default-branch push attempts, with the drain label", async () => {
+    const branch = await queue("branch", "push", "refs/heads/feature");
+    const pr = await queue("pr", "pull_request", "refs/pull/3/head");
+    const main = await queue("main", "push", "refs/heads/main");
+    const s = setup();
+    expect(await s.sched.tick()).toBe(3);
+    s.drain.set(true, "deploy", T0);
+    await s.drain.applyShadow("cut_branches");
+    await s.sched.idle();
+    expect(s.drain.shadowCut).toBe(3);
+
+    for (const j of [branch, pr]) {
+      expect((await getJob(db, scope, j.id))?.state).toBe("cancelled");
+      const [a] = await listAttempts(db, scope, j.id);
+      expect(a).toMatchObject({ state: "cancelled", errorClass: "drain_cut" });
+      expect(drainCutLabel(a!.errorClass)).toBe("cancelled by deploy drain");
+    }
+    // the default-branch push is requeued under a new attempt: queued, not cancelled
+    expect((await getJob(db, scope, main.id))?.state).toBe("queued");
+    const attempts = await listAttempts(db, scope, main.id);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toMatchObject({ state: "infra_error", errorClass: "drain_cut" });
+    expect(drainCutLabel(attempts[0]!.errorClass)).toBe("cancelled by deploy drain");
+    expect(attempts[1]).toMatchObject({ state: "queued" });
+    // no rerun reason: it used none of the commit's reruns
+    expect(attempts[1]!.rerunReason ?? null).toBeNull();
+
+    // after the restart it runs again by itself
+    s.drain.set(false, "", T0);
+    expect(await s.sched.tick()).toBe(1);
+    s.gates.at(-1)!();
+    await s.sched.idle();
+    expect((await getJob(db, scope, main.id))?.state).toBe("success");
+  });
+
+  test("a default-branch push attempt is requeued by every drain, not once", async () => {
+    const main = await queue("main", "push", "refs/heads/main");
+    const s = setup();
+    for (let i = 0; i < 3; i++) {
+      await s.sched.tick();
+      s.drain.set(true, "deploy", T0);
+      await s.drain.applyShadow("cut_branches");
+      await s.sched.idle();
+      s.drain.set(false, "", T0);
+      expect((await getJob(db, scope, main.id))?.state).toBe("queued");
+    }
+    expect(await listAttempts(db, scope, main.id)).toHaveLength(4);
+  });
+
+  test("a user or API cancellation has no drain label", () => {
+    expect(drainCutLabel(null)).toBeNull();
+    expect(drainCutLabel("incident_freeze")).toBeNull();
+    expect(drainCutLabel("controller_lost (drain cancel)")).toBe("cancelled by deploy drain");
+  });
+});
