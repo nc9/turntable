@@ -1,4 +1,4 @@
-import type { TurntableApi } from "../client";
+import type { PrPolicy, TurntableApi } from "../client";
 import type {
   ChangeEvent,
   ConnectionStatus,
@@ -69,6 +69,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     );
 
   const settings = createFixtureSettings(() => options.role ?? "owner");
+  let demoPr: PrPolicy = { prMode: "allowlist", authors: ["octocat"], ingestEnabled: true };
   let demoEgress: "none" | "allowlist" | "open" = "open";
   const demoPolicy: ApprovalPolicy = {
     environments: ["production", "release"].map((environment) => ({
@@ -236,6 +237,12 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     listSettings: (a) => delay(() => settings.list(a?.project)),
     setSetting: (a) => delay(() => settings.set(a)),
     getApprovalPolicy: () => delay(() => structuredClone(demoPolicy)),
+    getProjectPrPolicy: () => delay(() => structuredClone(demoPr)),
+    changeProjectPrPolicy: ({ prMode, authors }) =>
+      delay(() => {
+        demoPr = { prMode, authors, ingestEnabled: true };
+        return structuredClone(demoPr);
+      }),
     getProjectEgress: () => delay(() => demoEgress),
     tightenProjectEgress: ({ egress }) =>
       delay(() => {
