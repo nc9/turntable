@@ -1,2 +1,3 @@
 packages/core/tests/sandbox-size.test.ts
 packages/core/tests/docker-class.test.ts
+packages/core/tests/job-services.test.ts
