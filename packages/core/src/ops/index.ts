@@ -68,6 +68,7 @@ import {
   setProjectEgressOp,
   tightenProjectEgress,
 } from "./definitions/project-settings";
+import { registerSandboxImage } from "./definitions/sandbox-images";
 import { createApiToken } from "./definitions/create-api-token";
 import { listApiTokensOp } from "./definitions/list-api-tokens";
 import { revokeApiTokenOp } from "./definitions/revoke-api-token";
@@ -312,6 +313,7 @@ export const registry = createRegistry([
   setOidcAudiencesOp,
   getProjectSettings,
   setProjectSettings,
+  registerSandboxImage,
   setProjectEgressOp,
   tightenProjectEgress,
   createProjectOp,
