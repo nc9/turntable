@@ -554,7 +554,7 @@ describe("a proxied attempt taken over by the next controller", () => {
     }
   }, 30_000);
 
-  test("a fresh proxied attempt records no block and a spec with no secret in it", async () => {
+  const fresh = async (pinned: boolean) => {
     // The fake provider then refuses to run it (it cannot confine a sandbox to the proxy): what
     // matters here is what was recorded before the exec would start.
     const db = openDatabase(":memory:");
@@ -610,6 +610,7 @@ describe("a proxied attempt taken over by the next controller", () => {
       db,
       vault,
       bindHost: "127.0.0.1",
+      ...(pinned ? ADVERTISE : {}),
       seeds: attemptSeeds(master),
       upstream: async () => new Response("unused"),
       tunnel: async () => {
@@ -647,15 +648,104 @@ describe("a proxied attempt taken over by the next controller", () => {
       await sched.tick();
       await sched.idle();
       const [att] = await listAttempts(db, scope, job!.id);
-      expect(att!.adoptBlock).toBeNull();
-      const spec = parseAdoptSpec(att!.adoptSpec);
-      expect(spec?.proxy?.endpoint).toBe(proxy.endpoint);
-      expect(spec?.proxy?.check).toMatch(/^[0-9a-f]{32}$/);
-      expect(att!.adoptSpec).not.toContain(VALUE);
+      return att!;
     } finally {
       await proxy.stop();
     }
+  };
+
+  test("a fresh proxied attempt records no block and a spec with no secret in it", async () => {
+    const att = await fresh(true);
+    expect(att.adoptBlock).toBeNull();
+    const spec = parseAdoptSpec(att.adoptSpec);
+    expect(spec?.proxy?.check).toMatch(/^[0-9a-f]{32}$/);
+    expect(att.adoptSpec).not.toContain(VALUE);
   });
+
+  test("on a free proxy port the attempt is not adoptable: the next process would bind another", async () => {
+    const att = await fresh(false);
+    expect(att.adoptBlock).toBe("secrets proxy");
+    expect(att.adoptSpec).toBeNull();
+  });
+
+  test("an adopter with no secrets proxy ends a proxied attempt as a lost controller, never runs it", async () => {
+    const provider = world.provider();
+    const db = openDatabase(":memory:");
+    const org = await createOrg(db, { slug: "a", name: "a" });
+    const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "app" });
+    const scope = { orgId: org.id, projectId: project.id };
+    const run = await createRun(db, scope, {
+      workflowPath: "w.yml",
+      event: "push",
+      ref: "main",
+      sha: "a".repeat(40),
+    });
+    const job = (await createJob(db, scope, { runId: run.id, jobKey: "hello", name: "hello" }))!;
+    const attempt = (await createAttempt(db, scope, { jobId: job.id, provider: "fake" }))!;
+    await claimNextAttempt(db, { owner: "dead", leaseMs: 1, now: 1, globalCap: 99, perOrgCap: 99 });
+    await recordTrustClass(db, scope, attempt.id, "dead", "protected");
+    const sb = await provider.create({
+      name: "job",
+      labels: {},
+      ttlSeconds: 600,
+      network: { egress: "none" },
+    });
+    const { execId } = await provider.exec.start(sb.id, {
+      argv: ["sh", "-c", "sleep 30"],
+      timeoutSeconds: 60,
+    });
+    const plan = planJob(WORKFLOW, "hello", {
+      workflowPath: "w.yml",
+      event: "push",
+      readFile: () => undefined,
+    });
+    const spec: AdoptSpec = {
+      v: 1,
+      proxy: {
+        issuedAt: Date.now(),
+        ttlMs: 600_000,
+        rules: "0".repeat(64),
+        endpoint: "host.docker.internal:1",
+        check: "0".repeat(32),
+      },
+    };
+    await recordExec(db, scope, attempt.id, "dead", {
+      sandboxId: sb.id,
+      execId,
+      adoptBlock: null,
+      adoptSpec: JSON.stringify(spec),
+    });
+    await recordPlan(db, scope, attempt.id, "dead", JSON.stringify(plan));
+    // Controller B has no withSecretsProxy wrapper.
+    const b = new Scheduler({
+      db,
+      owner: "controller-b",
+      providers: () => provider,
+      runner: createActRunner({
+        db,
+        source: {
+          checkout: async () => ({
+            tarball: new Uint8Array(),
+            readFile: (p: string) => (p === "w.yml" ? WORKFLOW : undefined),
+          }),
+        },
+        pollMs: 20,
+      }),
+      leaseMs: 60_000,
+      drain: new DrainState(),
+    });
+    const rec = await reconcileExpired(db, () => provider, {
+      owner: b.owner,
+      leaseMs: 60_000,
+      adopt: (c, x) => void b.adopt(c, x),
+    });
+    expect(rec.adopted).toHaveLength(1);
+    await b.idle();
+    const done = (await listAttempts(db, scope, job.id))[0]!;
+    expect(done.state).toBe("infra_error");
+    expect(done.errorClass).toContain("controller_lost");
+    expect(done.errorClass).toContain("secrets proxy");
+  }, 30_000);
 });
 
 async function until(f: () => Promise<boolean>, ms = 10_000): Promise<void> {

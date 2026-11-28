@@ -707,6 +707,9 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     const revoke = (): void => void issued?.revoke();
     ctx.signal.addEventListener("abort", revoke, { once: true });
     try {
+      // A proxied attempt needs the proxy it had: with none here (no secrets proxy on this
+      // controller), the job would run on against a dead proxy URL.
+      if (spec.proxy && !ctx.proxy) return lost("secrets proxy");
       if (spec.token) {
         if (!o.jobTokens || !ctx.proxy) return lost("GitHub token, no proxy or token issuer");
         try {

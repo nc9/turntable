@@ -436,13 +436,19 @@ export class SecretsProxy {
       ...(seed
         ? {
             derive: { seed, issuedAt },
-            adopt: {
-              issuedAt,
-              ttlMs: o.ttlMs,
-              rules: rulesHash(rules, o.passthroughHosts),
-              endpoint: this.endpoint,
-              check: seedCheck(seed),
-            },
+            // Adoptable only on a pinned port: a free port differs in the next process, which
+            // would refuse every adoption, so the attempt stays not adoptable (drain waits).
+            ...(this.#o.port || this.#o.advertisePort
+              ? {
+                  adopt: {
+                    issuedAt,
+                    ttlMs: o.ttlMs,
+                    rules: rulesHash(rules, o.passthroughHosts),
+                    endpoint: this.endpoint,
+                    check: seedCheck(seed),
+                  },
+                }
+              : {}),
           }
         : {}),
     });
