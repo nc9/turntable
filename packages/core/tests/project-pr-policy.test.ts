@@ -6,7 +6,12 @@ import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { getProjectIngest, listAudit, setProjectIngest, type Db } from "../src/db";
 import { dispatch, type Credential, type DispatchEnv, registry } from "../src/ops";
 import { mcpTools } from "../src/ops/mcp";
-import { ingestStatus, resetIngestStatus } from "../src/poll/status";
+import {
+  ingestStatus,
+  MAX_SKIPPED_PRS,
+  resetIngestStatus,
+  skippedFromRefused,
+} from "../src/poll/status";
 import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
 
 let db: Db;
@@ -158,5 +163,26 @@ describe("project pr policy", () => {
         since: new Date(1_800_000_000_000).toISOString(),
       },
     ]);
+  });
+});
+
+describe("skippedFromRefused cap", () => {
+  const refuse = (n: number, reason: string) => ({ what: `pr #${n}`, reason });
+  const fork = (n: number) => refuse(n, "fork PRs are refused");
+
+  test("an author-refused PR stays listed across polls past the cap", () => {
+    const refused = [
+      ...Array.from({ length: MAX_SKIPPED_PRS + 4 }, (_, i) => fork(i + 1)),
+      refuse(500, "author is not on the allowlist"),
+    ];
+    let prior = skippedFromRefused(refused, undefined, 1000);
+    for (let poll = 1; poll <= 8; poll++) {
+      const next = skippedFromRefused(refused, prior, 1000 + poll * 60_000);
+      expect(next).toHaveLength(MAX_SKIPPED_PRS);
+      const bot = next.find((p) => p.number === 500);
+      expect(bot?.reason).toBe("author not allowlisted");
+      expect(bot?.at).toBe(1000);
+      prior = next;
+    }
   });
 });

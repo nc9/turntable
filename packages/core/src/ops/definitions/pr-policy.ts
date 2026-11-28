@@ -3,6 +3,7 @@
 // admin op, and a read-only MCP tool. Only these two fields change; every other ingest setting is
 // kept as stored.
 import { z } from "zod";
+import type { Db } from "../../db";
 import {
   appendAudit,
   getOrgById,
@@ -50,10 +51,10 @@ type Policy = { pr_mode: PrMode; authors: string[] };
 const lower = (s: string): string => s.toLowerCase();
 
 async function loadIngest(
-  ctx: OpContext,
+  db: Db,
   scope: { orgId: string; projectId: string },
 ): Promise<IngestSettings> {
-  const raw = await getProjectIngest(ctx.db, scope);
+  const raw = await getProjectIngest(db, scope);
   const parsed = raw === null ? undefined : ingestSettingsSchema.safeParse(JSON.parse(raw)).data;
   if (!parsed)
     throw new OpError(
@@ -102,45 +103,49 @@ async function changePolicy(
   if (i.pr_mode === undefined && i.authors === undefined)
     throw new OpError("invalid_input", "name pr_mode or authors to set");
   const scope = { orgId, projectId };
-  const cur = await loadIngest(ctx, scope);
-  const from = policyOf(cur);
-  const to: Policy = {
-    pr_mode: i.pr_mode ?? from.pr_mode,
-    authors: i.authors === undefined ? from.authors : normalizeAuthors(i.authors),
-  };
-  const loosened = loosensPrPolicy(from, to);
-  if (requireOwnerToLoosen && loosened && !roleSatisfies(orgRole(ctx.principal), "owner"))
-    throw new OpError(
-      "forbidden",
-      "widening the allowlist or switching to approval needs the owner role; an admin can only tighten",
-    );
-  const changed =
-    from.pr_mode !== to.pr_mode ||
-    from.authors.length !== to.authors.length ||
-    from.authors.some((a, n) => a !== to.authors[n]);
-  if (changed) {
-    const next = ingestSettingsSchema.parse({
-      ...cur,
-      prMode: to.pr_mode,
-      authors: to.authors,
-    });
-    await setProjectIngest(ctx.db, scope, JSON.stringify(next));
-    await appendAudit(ctx.db, scope, {
-      principalKind: ctx.principal.kind,
-      principalId: ctx.principal.id,
-      op,
-      effect: "write",
-      outcome: "ok",
-      input: {
-        target_org: target.org,
-        target_project: target.project,
-        from,
-        to,
-        loosened,
-      },
-    });
-  }
-  return { project: projectId, from, to, loosened };
+  // Read, write and audit commit together: a concurrent edit cannot lose an update between the
+  // read and the write, and a change is never stored without its audit row.
+  return ctx.db.transaction(async (tx) => {
+    const cur = await loadIngest(tx, scope);
+    const from = policyOf(cur);
+    const to: Policy = {
+      pr_mode: i.pr_mode ?? from.pr_mode,
+      authors: i.authors === undefined ? from.authors : normalizeAuthors(i.authors),
+    };
+    const loosened = loosensPrPolicy(from, to);
+    if (requireOwnerToLoosen && loosened && !roleSatisfies(orgRole(ctx.principal), "owner"))
+      throw new OpError(
+        "forbidden",
+        "widening the allowlist or switching to approval needs the owner role; an admin can only tighten",
+      );
+    const changed =
+      from.pr_mode !== to.pr_mode ||
+      from.authors.length !== to.authors.length ||
+      from.authors.some((a, n) => a !== to.authors[n]);
+    if (changed) {
+      const next = ingestSettingsSchema.parse({
+        ...cur,
+        prMode: to.pr_mode,
+        authors: to.authors,
+      });
+      await setProjectIngest(tx, scope, JSON.stringify(next));
+      await appendAudit(tx, scope, {
+        principalKind: ctx.principal.kind,
+        principalId: ctx.principal.id,
+        op,
+        effect: "write",
+        outcome: "ok",
+        input: {
+          target_org: target.org,
+          target_project: target.project,
+          from,
+          to,
+          loosened,
+        },
+      });
+    }
+    return { project: projectId, from, to, loosened };
+  });
 }
 
 export const getProjectPrPolicy = defineOp({

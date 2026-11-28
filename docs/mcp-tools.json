@@ -22,9 +22,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "run_id"
-      ],
+      "required": ["run_id"],
       "additionalProperties": false
     }
   },
@@ -126,10 +124,7 @@
                   "pattern": "^[A-Za-z0-9_-]{1,8192}$"
                 }
               },
-              "required": [
-                "kind",
-                "signature"
-              ],
+              "required": ["kind", "signature"],
               "additionalProperties": false
             },
             {
@@ -180,11 +175,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "run_id",
-        "head_sha",
-        "workflow_hash"
-      ],
+      "required": ["run_id", "head_sha", "workflow_hash"],
       "additionalProperties": false
     }
   },
@@ -237,9 +228,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "run_id"
-      ],
+      "required": ["run_id"],
       "additionalProperties": false
     }
   },
@@ -257,12 +246,7 @@
         "consumer_class": {
           "description": "Instead of a run: ask whether a build of this class may take them.",
           "type": "string",
-          "enum": [
-            "untrusted_pr",
-            "trusted_pr",
-            "protected",
-            "release"
-          ]
+          "enum": ["untrusted_pr", "trusted_pr", "protected", "release"]
         },
         "sources": {
           "minItems": 1,
@@ -282,10 +266,7 @@
                 "maxLength": 200
               }
             },
-            "required": [
-              "run_id",
-              "name"
-            ]
+            "required": ["run_id", "name"]
           }
         },
         "quarantine": {
@@ -306,10 +287,7 @@
                 "maxLength": 200
               }
             },
-            "required": [
-              "run_id",
-              "name"
-            ]
+            "required": ["run_id", "name"]
           }
         },
         "org": {
@@ -325,9 +303,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "sources"
-      ],
+      "required": ["sources"],
       "additionalProperties": false
     }
   },
@@ -359,9 +335,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "sha"
-      ],
+      "required": ["sha"],
       "additionalProperties": false
     }
   },
@@ -389,9 +363,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "host"
-      ],
+      "required": ["host"],
       "additionalProperties": false
     }
   },
@@ -417,9 +389,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "name"
-      ],
+      "required": ["name"],
       "additionalProperties": false
     }
   },
@@ -459,9 +429,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "name"
-      ],
+      "required": ["name"],
       "additionalProperties": false
     }
   },
@@ -632,10 +600,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "run_id",
-        "name"
-      ],
+      "required": ["run_id", "name"],
       "additionalProperties": false
     }
   },
@@ -662,9 +627,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "run_id"
-      ],
+      "required": ["run_id"],
       "additionalProperties": false
     }
   },
@@ -775,9 +738,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "id"
-      ],
+      "required": ["id"],
       "additionalProperties": false
     }
   },
@@ -804,9 +765,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "run_id"
-      ],
+      "required": ["run_id"],
       "additionalProperties": false
     }
   },
@@ -834,9 +793,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "key"
-      ],
+      "required": ["key"],
       "additionalProperties": false
     }
   },
@@ -885,9 +842,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "reason"
-      ],
+      "required": ["reason"],
       "additionalProperties": false
     }
   },
@@ -962,9 +917,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "job_id"
-      ],
+      "required": ["job_id"],
       "additionalProperties": false
     }
   },
@@ -987,12 +940,7 @@
         "mode": {
           "default": "tail",
           "type": "string",
-          "enum": [
-            "head",
-            "tail",
-            "range",
-            "grep"
-          ]
+          "enum": ["head", "tail", "range", "grep"]
         },
         "pattern": {
           "description": "Text or regex to find, for mode=grep.",
@@ -1058,9 +1006,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "job_id"
-      ],
+      "required": ["job_id"],
       "additionalProperties": false
     }
   },
@@ -1093,9 +1039,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "job_id"
-      ],
+      "required": ["job_id"],
       "additionalProperties": false
     }
   },
@@ -1166,9 +1110,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "installation_id"
-      ],
+      "required": ["installation_id"],
       "additionalProperties": false
     }
   },
@@ -1452,11 +1394,7 @@
           "default": "all",
           "description": "running: not finished; failed: failure or infra error; all: everything.",
           "type": "string",
-          "enum": [
-            "running",
-            "failed",
-            "all"
-          ]
+          "enum": ["running", "failed", "all"]
         },
         "limit": {
           "default": 20,
@@ -1678,9 +1616,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "name"
-      ],
+      "required": ["name"],
       "additionalProperties": false
     }
   },
@@ -1733,10 +1669,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "run_id",
-        "reason"
-      ],
+      "required": ["run_id", "reason"],
       "additionalProperties": false
     }
   },
@@ -1763,9 +1696,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "installation_id"
-      ],
+      "required": ["installation_id"],
       "additionalProperties": false
     }
   },
@@ -1808,10 +1739,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "token_id",
-        "reason"
-      ],
+      "required": ["token_id", "reason"],
       "additionalProperties": false
     }
   },
@@ -1864,10 +1792,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "workflow",
-        "ref"
-      ],
+      "required": ["workflow", "ref"],
       "additionalProperties": false
     }
   },
@@ -1907,9 +1832,7 @@
         "group_by": {
           "description": "`project` adds a per-project breakdown under `projects`.",
           "type": "string",
-          "enum": [
-            "project"
-          ]
+          "enum": ["project"]
         },
         "org": {
           "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
@@ -1958,10 +1881,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "name",
-        "since"
-      ],
+      "required": ["name", "since"],
       "additionalProperties": false
     }
   },
@@ -2007,9 +1927,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "kind"
-      ],
+      "required": ["kind"],
       "additionalProperties": false
     }
   },
@@ -2044,9 +1962,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "key"
-      ],
+      "required": ["key"],
       "additionalProperties": false
     }
   },
@@ -2133,10 +2049,7 @@
                   "pattern": "^[A-Za-z0-9_-]{1,8192}$"
                 }
               },
-              "required": [
-                "kind",
-                "signature"
-              ],
+              "required": ["kind", "signature"],
               "additionalProperties": false
             },
             {
@@ -2187,10 +2100,7 @@
           "maxLength": 64
         }
       },
-      "required": [
-        "statement",
-        "signature"
-      ],
+      "required": ["statement", "signature"],
       "additionalProperties": false
     }
   },
