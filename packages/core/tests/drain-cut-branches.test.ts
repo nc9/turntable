@@ -180,6 +180,42 @@ describe("drain shadow: cut_branches (#784)", () => {
     }
   });
 
+  test("a default-branch push cut while its sandbox is being created is requeued, not infra_error", async () => {
+    for (const trustClass of [undefined, "protected"]) {
+      const main = await queue(`main-${trustClass ?? "none"}`, "push", "refs/heads/main");
+      // The runner records its sandbox only once the stop has landed, as job-exec does when
+      // `provider.create` returns after the cut.
+      const runner: AttemptRunner = async (ctx) => {
+        await new Promise<void>((open) => ctx.signal.addEventListener("abort", () => open()));
+        await updateAttempt(db, scope, ctx.attempt.id, { sandboxId: "sb-late" });
+        return { state: "cancelled", reason: "stopped" };
+      };
+      const drain = new DrainState();
+      const sched = new Scheduler({
+        db,
+        runner,
+        providers: () => world.provider(),
+        globalCap: 50,
+        perOrgCap: 50,
+        drain,
+        onlyRun: main.runId,
+      });
+      expect(await sched.tick()).toBe(1);
+      const [att] = await listAttempts(db, scope, main.id);
+      if (trustClass) {
+        expect(await recordTrustClass(db, scope, att!.id, att!.leaseOwner!, trustClass)).toBe(true);
+      }
+      drain.set(true, "deploy", T0);
+      await drain.applyShadow("cut_branches");
+      await sched.idle();
+      expect((await getJob(db, scope, main.id))?.state).toBe("queued");
+      const attempts = await listAttempts(db, scope, main.id);
+      expect(attempts).toHaveLength(2);
+      expect(attempts[0]).toMatchObject({ state: "infra_error", errorClass: "drain_cut" });
+      expect(attempts[1]).toMatchObject({ state: "queued" });
+    }
+  });
+
   test("a user or API cancellation has no drain label", () => {
     expect(drainCutLabel(null)).toBeNull();
     expect(drainCutLabel("incident_freeze")).toBeNull();

@@ -690,7 +690,7 @@ export class Scheduler {
           attemptId: attempt.id,
           owner,
           errorClass: cutKind === "requeue" ? `${CONTROLLER_LOST} (drain cancel)` : DRAIN_CUT,
-          ...(cutKind === "requeue_repeat" ? { repeatable: true } : {}),
+          ...(cutKind === "requeue_repeat" ? { repeatable: true, sandboxAfterCut: true } : {}),
           now: this.#o.now(),
           requireExpired: false,
           retryableAfterSteps,

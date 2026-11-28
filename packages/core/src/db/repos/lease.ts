@@ -945,7 +945,7 @@ export type RequeueLostResult = "requeued" | "not_retried" | "no";
  * row with `started_at` AND no `exec_id` AND no `sandbox_id`. The runner records `sandbox_id`
  * (awaited) before it uploads anything or starts act, and records `exec_id` only AFTER
  * `exec.start` returned, so a NULL `exec_id` alone would not prove act never started; a NULL
- * `sandbox_id` does (the cut came while the sandbox was being created). Otherwise a protected or
+ * `sandbox_id` does (the cut came while the sandbox was being created), unless the caller says the sandbox was recorded after the cut (`sandboxAfterCut`). Otherwise a protected or
  * release job may have deployed or published, so nothing is changed except an
  * `attempt.drain_cut_not_retried` event and audit entry, and "not_retried" is returned: the
  * caller ends the attempt `infra_error` with `DRAIN_CUT_NOT_RETRIED`. An attempt with no recorded
@@ -972,6 +972,12 @@ export function requeueLostAttemptOnce(
      * skips the check for an earlier lost attempt of the job.
      */
     repeatable?: boolean;
+    /**
+     * The cut was chosen while no sandbox was recorded (#784), so a `sandbox_id` seen now was
+     * recorded after the cut, and the runner settles before it uploads or starts act once it sees
+     * the stop: it does not count as a launch. An `exec_id` or a started step still does.
+     */
+    sandboxAfterCut?: boolean;
     /** The trust-class half of the rule: `retryableAfterSteps` from `@turntable/act-runner`. */
     retryableAfterSteps: (trustClass: string | null) => boolean;
   },
@@ -1001,7 +1007,7 @@ export function requeueLostAttemptOnce(
     );
     if (earlier.length > 0 && !input.repeatable) return "no";
     if (!input.retryableAfterSteps(cur.trustClass)) {
-      const launched = cur.sandboxId !== null || cur.execId !== null;
+      const launched = (cur.sandboxId !== null && !input.sandboxAfterCut) || cur.execId !== null;
       const [started] = launched
         ? [{ stepKey: "" }]
         : await tx.orm
