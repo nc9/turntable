@@ -68,6 +68,11 @@ import {
   setProjectEgressOp,
   tightenProjectEgress,
 } from "./definitions/project-settings";
+import {
+  changeProjectPrPolicy,
+  getProjectPrPolicy,
+  setProjectPrPolicy,
+} from "./definitions/pr-policy";
 import { createApiToken } from "./definitions/create-api-token";
 import { listApiTokensOp } from "./definitions/list-api-tokens";
 import { revokeApiTokenOp } from "./definitions/revoke-api-token";
@@ -314,6 +319,9 @@ export const registry = createRegistry([
   setProjectSettings,
   setProjectEgressOp,
   tightenProjectEgress,
+  getProjectPrPolicy,
+  changeProjectPrPolicy,
+  setProjectPrPolicy,
   createProjectOp,
   createWebhookOp,
   webhookEndpointsOp,

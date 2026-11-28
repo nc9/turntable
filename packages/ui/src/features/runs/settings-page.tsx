@@ -4,6 +4,7 @@ import { SettingsSection } from "@/features/settings/settings-section";
 import { useScope } from "@/features/shell/scope";
 import { useWhoami } from "@/lib/directory";
 import { EgressSection } from "./egress-section";
+import { PrPolicySection } from "./pr-policy-section";
 import { ProjectSecretsSection } from "./project-secrets-section";
 import { RemoveProject } from "./remove-project";
 
@@ -43,6 +44,13 @@ export function SettingsPage() {
       {scope.project ? (
         <EgressSection
           key={`egress-${scope.project.id}`}
+          project={scope.project.slug}
+          role={who.data?.role ?? null}
+        />
+      ) : null}
+      {scope.project ? (
+        <PrPolicySection
+          key={`pr-policy-${scope.project.id}`}
           project={scope.project.slug}
           role={who.data?.role ?? null}
         />

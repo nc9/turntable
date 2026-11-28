@@ -229,6 +229,9 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   // An owner session tightens its project's egress (open, then allowlist, then none); widening
   // is the instance administrator's op and the handler refuses it here.
   "tighten_project_egress",
+  // An owner or admin session edits its project's PR mode and authors; the handler lets only an
+  // owner widen (#807).
+  "change_project_pr_policy",
   // A person's own notifications and preferences (#611): rows keyed by the session's user.
   "notifications_ack",
   "set_notification_prefs",
