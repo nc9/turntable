@@ -47,7 +47,7 @@ import {
   parseAdoptSpec,
 } from "../src/scheduler/adopt-credentials";
 import { DrainState } from "../src/scheduler/drain";
-import type { AttemptContext, AttemptOutcome } from "../src/scheduler/types";
+import type { AttemptContext, AttemptOutcome, AttemptRunner } from "../src/scheduler/types";
 import { SecretVault } from "../src/secrets/vault";
 import { makeGithub } from "./github-stub";
 import { seedWorld, type Tenant } from "./ops-helpers";
@@ -149,6 +149,15 @@ describe("derived proxy credentials", () => {
     expect(attemptSeeds(randomBytes(32))("proxy", who).toString("hex")).not.toBe(base);
   });
 });
+
+/** A runner that, like the act runner, ends an attempt a wrapper refused without running it. */
+const refusing =
+  (onRun: () => void): AttemptRunner =>
+  async (ctx) => {
+    if (ctx.refuseResume) return { state: "infra_error", reason: ctx.refuseResume };
+    onRun();
+    return { state: "success", reason: "ok" };
+  };
 
 describe("re-registering an adopted attempt behind the proxy", () => {
   let db: Db;
@@ -274,9 +283,10 @@ describe("re-registering an adopted attempt behind the proxy", () => {
     const first = await firstController(attemptSeeds(master));
     const refusedWith = async (proxy: SecretsProxy): Promise<AttemptOutcome> => {
       let ran = false;
-      const out = await withSecretsProxy(async () => ((ran = true), done), { proxy })(
-        await resumed(first.adopt),
-      );
+      const out = await withSecretsProxy(
+        refusing(() => (ran = true)),
+        { proxy },
+      )(await resumed(first.adopt));
       expect(ran).toBe(false);
       expect(out.state).toBe("infra_error");
       expect(out.reason).toContain("lost its secrets-proxy credential");
@@ -306,9 +316,10 @@ describe("re-registering an adopted attempt behind the proxy", () => {
   test("an older attempt with no spec keeps the old rule: refused when it had vault rules", async () => {
     const p = await start({ seeds: attemptSeeds(master) });
     let ran = false;
-    const out = await withSecretsProxy(async () => ((ran = true), done), { proxy: p })(
-      await ctxOf({ resume: { sandboxId: "sb", execId: "ex" } }),
-    );
+    const out = await withSecretsProxy(
+      refusing(() => (ran = true)),
+      { proxy: p },
+    )(await ctxOf({ resume: { sandboxId: "sb", execId: "ex" } }));
     expect(ran).toBe(false);
     expect(out.state).toBe("infra_error");
   });

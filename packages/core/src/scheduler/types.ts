@@ -74,6 +74,12 @@ export interface AttemptContext {
    */
   resume?: { sandboxId: string; execId: string };
   /**
+   * Set by a wrapper that refused to resume this attempt (for example the secrets proxy, which
+   * cannot re-establish its credential). The runner does not run the job: it releases the
+   * inherited sandbox and ends the attempt as infra_error with this reason.
+   */
+  refuseResume?: string;
+  /**
    * Lines the runner shows at the top of the job's log, ahead of its own output: policy facts
    * the people reading the run should see (for example an isolation override).
    */

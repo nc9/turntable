@@ -636,10 +636,12 @@ export function withSecretsProxy(
         artifactUpload: artifactTarget !== undefined,
       });
       if (!r.ok) {
-        return {
-          state: "infra_error",
-          reason: `re-attached attempt lost its secrets-proxy credential (${r.why}); not resumed`,
-        };
+        // The runner releases the inherited sandbox and ends the attempt: returning here would
+        // leave its exec running without its credential.
+        return runner({
+          ...ctx,
+          refuseResume: `re-attached attempt lost its secrets-proxy credential (${r.why}); not resumed`,
+        });
       }
       return guarded(ctx, r.access, r.redact);
     }
@@ -649,10 +651,10 @@ export function withSecretsProxy(
       // GitHub rules only, the job may or may not have had a token; it carries on without the
       // proxy (a token it held is unusable: its credential is gone), which can only fail closed.
       if (vaultRules.length === 0) return runner(ctx);
-      return {
-        state: "infra_error",
-        reason: "re-attached attempt lost its secrets-proxy credential; not resumed",
-      };
+      return runner({
+        ...ctx,
+        refuseResume: "re-attached attempt lost its secrets-proxy credential; not resumed",
+      });
     }
     const { access, redact } = o.proxy.register(ctx, rules, {
       // Hosts with no rule are tunnelled only if the project listed them, and only for a class

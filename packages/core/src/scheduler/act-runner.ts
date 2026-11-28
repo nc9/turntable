@@ -1358,6 +1358,10 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         await release("cancelled before re-attaching");
         return { state: "cancelled", reason: "cancelled by user" };
       }
+      if (ctx.refuseResume) {
+        await release(ctx.refuseResume);
+        return { state: "infra_error", reason: ctx.refuseResume };
+      }
       const outcome = await attemptRunner(rctx);
       if (!handedOff.has(id)) await release(`ended before re-attaching: ${outcome.reason}`);
       return outcome;

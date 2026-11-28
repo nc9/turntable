@@ -28,7 +28,7 @@ A job behind the secrets proxy (vault rules, its GitHub token, OIDC) or holding 
 - **GitHub token (behind the proxy).** The job never held it. The next process mints a new one with the permissions recorded when the first was minted, never wider and lowered to read if the project is no longer live. The old one is revoked when the old process hands the attempt off. After a crash it expires on its own.
 - **OIDC.** The proxy mints the credential per request from the master key, as before.
 
-The attempt stores only what is needed to check this (`adopt_spec`): times, the token's permissions, a hash of the proxy rules, the proxy endpoint and a check value for each derived credential. It holds no secret. If anything differs at adoption (another master key, other proxy rules, another proxy endpoint, an expired credential, a token that cannot be minted), the attempt ends `infra_error` with `controller_lost (credential not re-established: ...)`. It never runs on without its credential. Do not rotate the master key in the same restart as a deploy that hands attempts off.
+The attempt stores only what is needed to check this (`adopt_spec`): times, the token's permissions, a hash of the proxy rules, the proxy endpoint and a check value for each derived credential. It holds no secret. If anything differs at adoption (another master key, other proxy rules, another proxy endpoint, an expired credential, a token that cannot be minted), the attempt ends `infra_error` (a lost token or artifact credential reads `controller_lost (credential not re-established: ...)`; a lost proxy credential reads `re-attached attempt lost its secrets-proxy credential (...); not resumed`). The inherited sandbox is stopped and destroyed, and the job never runs on without its credential. Do not rotate the master key in the same restart as a deploy that hands attempts off.
 
 A job with a cache grant is adoptable: after the restart its cache calls fail, which `actions/cache` reports as a miss on restore and a warning on save.
 
@@ -51,7 +51,7 @@ Turn the drain on (`instance_drain`) and wait before the deploy when:
 - `not_adoptable` stays above 0 because of `release` jobs, jobs holding a GitHub token in their environment, or a controller with no master key, and you do not want them cut. Wait for `running_by_adoption.not_adoptable` to be 0, not `running_attempts`.
 - The deploy changes the database in a way the old and new process must not share (a migration with a manual step, `instance_db_copy`). Wait for `running_attempts` 0.
 
-Several worker processes: drain or restart each one. A handed-off attempt is taken by whichever controller reconciles first.
+Several worker processes: drain or restart each one. A handed-off attempt is taken by whichever controller reconciles first. A job behind the secrets proxy is re-established only by a controller that advertises the same proxy endpoint and has the same master key. With workers that advertise different hosts or ports, drain the proxied jobs before a restart (wait for `running_by_adoption.not_adoptable` and `running_attempts` of those jobs to reach 0), or the peer that takes one refuses it and it ends `infra_error`.
 
 ## How a hand-off is safe
 

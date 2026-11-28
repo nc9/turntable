@@ -152,9 +152,12 @@ describe("registration around an attempt", () => {
   test("a re-attached attempt is refused: its credential died with the old process", async () => {
     await seed("protected");
     let ran = false;
-    const out = await withSecretsProxy(async () => ((ran = true), done), { proxy })(
-      await ctxOf({ resume: { sandboxId: "sb", execId: "ex" } }),
-    );
+    // The act runner releases the inherited sandbox and ends the attempt on a refusal.
+    const out = await withSecretsProxy(
+      async (c) =>
+        c.refuseResume ? { state: "infra_error", reason: c.refuseResume } : ((ran = true), done),
+      { proxy },
+    )(await ctxOf({ resume: { sandboxId: "sb", execId: "ex" } }));
     expect(ran).toBe(false);
     expect(out.state).toBe("infra_error");
   });
