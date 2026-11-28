@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { attemptsWithCuts, getRunRow, listJobs, listRunAttempts, PREEMPTED } from "../../db/repos";
+import {
+  attemptsWithCuts,
+  drainCutLabel,
+  getRunRow,
+  listJobs,
+  listRunAttempts,
+  PREEMPTED,
+} from "../../db/repos";
 import { APPROVAL_KINDS } from "../../db/schema";
 import { toWaiting, waitingFields } from "../waiting";
 import { durationMs, iso, jobStateSchema, runSummarySchema, toRunSummary } from "../common";
@@ -13,6 +20,12 @@ const attemptSchema = z.object({
   provider: z.string(),
   exit_code: z.int().nullable(),
   error_class: z.string().nullable().describe("Why an infra_error happened, when it did."),
+  cancel_reason: z
+    .string()
+    .nullable()
+    .describe(
+      "`cancelled by deploy drain` when a deploy drain cut or requeued this attempt (#784), distinct from a user or API cancel; else null.",
+    ),
   started_at: z.string().nullable(),
   finished_at: z.string().nullable(),
   duration_ms: z.int().nullable(),
@@ -221,6 +234,7 @@ export const getRun = defineOp({
             provider: a.provider,
             exit_code: a.exitCode,
             error_class: a.errorClass,
+            cancel_reason: drainCutLabel(a.errorClass),
             started_at: iso(a.startedAt),
             finished_at: iso(a.finishedAt),
             duration_ms: durationMs(a.startedAt, a.finishedAt),

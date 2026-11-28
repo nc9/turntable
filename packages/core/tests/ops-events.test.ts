@@ -180,6 +180,7 @@ test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async (
     attempt: 1,
     waiting_reason: null,
     queued_ms_by_reason: {},
+    cancel_reason: null,
     log_incomplete: false,
     steps: [],
   });
@@ -264,6 +265,7 @@ test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async (
     attempt: null,
     waiting_reason: null,
     queued_ms_by_reason: {},
+    cancel_reason: null,
     log_incomplete: false,
     steps: [],
   });

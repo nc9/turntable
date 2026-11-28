@@ -174,6 +174,22 @@ test("yield: a yield project's attempt waiting for capacity says yield, written 
   expect(await reasonOf(y)).toBe("yield");
 });
 
+test("yield: a yield project at its own org cap says org_cap, not yield", async () => {
+  await putStoredSetting(
+    db,
+    { kind: "project", id: a2.projectId, orgId: a2.orgId },
+    "scheduling_class",
+    "yield",
+    "test",
+    T0,
+  );
+  const first = await queue(a2, "y1");
+  const second = await queue(a2, "y2");
+  expect((await claim({ perOrgCap: 1 }))!.attempt.id).toBe(first.attempt.id);
+  expect(await claim({ perOrgCap: 1 })).toBeUndefined();
+  expect(await reasonOf(second)).toBe("org_cap");
+});
+
 test("drain: a draining scheduler marks the queue drain without claiming", async () => {
   const q = await queue(a, "r1");
   const drain = new DrainState();

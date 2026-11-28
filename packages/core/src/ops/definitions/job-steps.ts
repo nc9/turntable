@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { attemptsWithCuts, listSteps } from "../../db/repos";
+import { attemptsWithCuts, drainCutLabel, listSteps } from "../../db/repos";
 import { STEP_RESULTS, STEP_STAGES } from "../../db/schema";
 import { toWaiting, waitingFields } from "../waiting";
 import { attemptInput, resolveAttempt } from "../attempt";
@@ -20,6 +20,12 @@ export const jobSteps = defineOp({
     job_id: z.string(),
     attempt: z.int().nullable().describe("Attempt number; null when the job has no attempt yet."),
     ...waitingFields,
+    cancel_reason: z
+      .string()
+      .nullable()
+      .describe(
+        "`cancelled by deploy drain` when a deploy drain cut or requeued this attempt (#784), distinct from a user or API cancel; else null.",
+      ),
     log_incomplete: z
       .boolean()
       .describe(
@@ -52,6 +58,7 @@ export const jobSteps = defineOp({
         attempt: null,
         waiting_reason: job.state === "awaiting_approval" ? "approval" : null,
         queued_ms_by_reason: {},
+        cancel_reason: null,
         log_incomplete: false,
         steps: [],
       };
@@ -62,6 +69,7 @@ export const jobSteps = defineOp({
       job_id: job.id,
       attempt: attempt.attempt,
       ...toWaiting(attempt, Date.now()),
+      cancel_reason: drainCutLabel(attempt.errorClass),
       log_incomplete: incomplete,
       steps: steps.map((s) => ({
         key: s.stepKey,

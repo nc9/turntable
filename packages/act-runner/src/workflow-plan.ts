@@ -756,8 +756,11 @@ function evaluateRunName(
       contexts: { github, inputs },
       status: { needs: [], cancelled: false },
     });
-    const title = text.replaceAll(/[\r\n]+/g, " ").slice(0, RUN_NAME_MAX);
-    return title.trim() === "" ? {} : { runName: title };
+    const title = text
+      .replaceAll(/[\r\n]+/g, " ")
+      .slice(0, RUN_NAME_MAX)
+      .trim();
+    return title === "" ? {} : { runName: title };
   } catch (e) {
     if (!(e instanceof ExprError)) throw e;
     return { warning: `run-name could not be evaluated (${e.message}); using the default title` };

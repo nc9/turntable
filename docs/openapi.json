@@ -753,6 +753,10 @@
                                   "description": "Why an infra_error happened, when it did.",
                                   "type": ["string", "null"]
                                 },
+                                "cancel_reason": {
+                                  "description": "`cancelled by deploy drain` when a deploy drain cut or requeued this attempt (#784), distinct from a user or API cancel; else null.",
+                                  "type": ["string", "null"]
+                                },
                                 "started_at": {
                                   "type": ["string", "null"]
                                 },
@@ -811,6 +815,7 @@
                                 "provider",
                                 "exit_code",
                                 "error_class",
+                                "cancel_reason",
                                 "started_at",
                                 "finished_at",
                                 "duration_ms",
@@ -1311,6 +1316,10 @@
                       },
                       "description": "Queued time in ms by reason: closed when the attempt starts, and still counting while it is queued. Empty for an attempt that never queued under a recording scheduler."
                     },
+                    "cancel_reason": {
+                      "description": "`cancelled by deploy drain` when a deploy drain cut or requeued this attempt (#784), distinct from a user or API cancel; else null.",
+                      "type": ["string", "null"]
+                    },
                     "log_incomplete": {
                       "type": "boolean",
                       "description": "True when the stored log is missing output that could not be retrieved; job_cuts says where. The text has a `[turntable] ... could not be retrieved` line at each gap."
@@ -1392,6 +1401,7 @@
                     "attempt",
                     "waiting_reason",
                     "queued_ms_by_reason",
+                    "cancel_reason",
                     "log_incomplete",
                     "steps"
                   ],
@@ -15350,7 +15360,7 @@
       "post": {
         "operationId": "instance_drain",
         "summary": "Stop starting new attempts so a deploy does not cut running jobs (instance administrator).",
-        "description": "With on=true the scheduler of this server process starts no new attempt: queued work stays queued in the database and running attempts finish. Poll `instance_drain_status` (or `/healthz`) until `running_attempts` is 0, deploy, and the new instance boots undrained and resumes the queue. on=false resumes claiming without a restart. The drain is held in memory and is never persisted, so a restart always ends it. It covers this process: run the worker role in the same process as the web role (the default), or drain each worker process. Turning it on twice keeps the first time. With shadow=cancel, running attempts of projects whose checks mode is shadow or off are stopped now as infrastructure cuts and their jobs requeued once (never a job failure, no failed check); live projects are still waited for. The reason is kept in the system audit chain. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "description": "With on=true the scheduler of this server process starts no new attempt: queued work stays queued in the database and running attempts finish. Poll `instance_drain_status` (or `/healthz`) until `running_attempts` is 0, deploy, and the new instance boots undrained and resumes the queue. on=false resumes claiming without a restart. The drain is held in memory and is never persisted, so a restart always ends it. It covers this process: run the worker role in the same process as the web role (the default), or drain each worker process. Turning it on twice keeps the first time. With shadow=cancel, running attempts of projects whose checks mode is shadow or off are stopped now as infrastructure cuts and their jobs requeued once (never a job failure, no failed check); live projects are still waited for. With shadow=cut_branches, attempts on a ref other than the project's default branch are cut (they end cancelled, labelled as cancelled by deploy drain) and default-branch push attempts with no step started are requeued with no rerun used, on every drain; one whose steps have started is waited for, never cut. The reason is kept in the system audit chain. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -15370,9 +15380,9 @@
                     "description": "Why. Kept in the audit."
                   },
                   "shadow": {
-                    "description": "What to do with running attempts of projects whose checks mode is not live (shadow or off), which gate nothing. wait (default) lets them finish; cancel stops each one now as an infrastructure cut and requeues its job once. Live projects' attempts are always waited for. Only meaningful with on=true. Each call sets it explicitly: omitted means wait, even if an earlier call set cancel.",
+                    "description": "What to do with running attempts of projects whose checks mode is not live (shadow or off), which gate nothing. wait (default) lets them finish; cancel stops each one now as an infrastructure cut and requeues its job once; cut_branches cuts attempts on any ref but the project's default branch (cancelled, labelled cancelled by deploy drain) and requeues default-branch push attempts that have started no step, with no rerun used and no once limit (one with steps started is waited for). Live projects' attempts are always waited for. Only meaningful with on=true. Each call sets it explicitly: omitted means wait, even if an earlier call set cancel.",
                     "type": "string",
-                    "enum": ["wait", "cancel"]
+                    "enum": ["wait", "cancel", "cut_branches"]
                   }
                 },
                 "required": ["on", "reason"],
@@ -15429,7 +15439,7 @@
                     },
                     "shadow_mode": {
                       "type": "string",
-                      "enum": ["wait", "cancel"],
+                      "enum": ["wait", "cancel", "cut_branches"],
                       "description": "What this drain does with shadow attempts: wait for them or cut them."
                     },
                     "shadow_cut": {
@@ -15548,7 +15558,7 @@
                     },
                     "shadow_mode": {
                       "type": "string",
-                      "enum": ["wait", "cancel"],
+                      "enum": ["wait", "cancel", "cut_branches"],
                       "description": "What this drain does with shadow attempts: wait for them or cut them."
                     },
                     "shadow_cut": {
