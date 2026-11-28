@@ -16,6 +16,7 @@ import {
   type Scope,
   setProjectChecksMode,
   setProjectIngest,
+  upsertStep,
 } from "../src/db";
 import { DrainState, Scheduler, type AttemptRunner } from "../src/scheduler";
 
@@ -122,6 +123,38 @@ describe("drain shadow: cut_branches (#784)", () => {
       expect((await getJob(db, scope, main.id))?.state).toBe("queued");
     }
     expect(await listAttempts(db, scope, main.id)).toHaveLength(4);
+  });
+
+  test("a default-branch push attempt with steps started is waited for, never cut or requeued", async () => {
+    const main = await queue("main", "push", "refs/heads/main");
+    const branch = await queue("branch", "push", "refs/heads/feature");
+    const s = setup();
+    expect(await s.sched.tick()).toBe(2);
+    const [att] = await listAttempts(db, scope, main.id);
+    await upsertStep(db, scope, {
+      attemptId: att!.id,
+      stepKey: "s1",
+      stage: "main",
+      index: 0,
+      name: "deploy",
+      startedAt: T0,
+    });
+    s.drain.set(true, "deploy", T0);
+    await s.drain.applyShadow("cut_branches");
+    // only the branch attempt was cut; the main push is still running and counts in the wait
+    expect(s.drain.shadowCut).toBe(1);
+    for (let i = 0; i < 100 && (await getJob(db, scope, branch.id))?.state !== "cancelled"; i++) {
+      await Bun.sleep(10);
+    }
+    expect(s.aborted).toEqual(["branch"]);
+    expect((await getJob(db, scope, branch.id))?.state).toBe("cancelled");
+    expect((await getJob(db, scope, main.id))?.state).toBe("running");
+    const attempts = await listAttempts(db, scope, main.id);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]!.state).toBe("running");
+    s.gates[0]!();
+    await s.sched.idle();
+    expect((await getJob(db, scope, main.id))?.state).toBe("success");
   });
 
   test("a user or API cancellation has no drain label", () => {

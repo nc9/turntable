@@ -19,6 +19,7 @@ import {
   isAdoptable,
   markDrainCut,
   isDefaultBranchPush,
+  attemptHasStartedSteps,
   DRAIN_CUT,
   type Readiness,
   recordExec,
@@ -209,8 +210,9 @@ export class Scheduler {
    * `#launch`), never a job failure. Live projects' attempts are left to finish. Returns the count.
    *
    * `cut_branches` (#784): an attempt on a ref other than the project's default branch is cut (it
-   * ends cancelled, reason `drain_cut`, no requeue). A default-branch push attempt is requeued, as
-   * `cancel` does, but without the one-requeue limit, so it runs again after every restart.
+   * ends cancelled, reason `drain_cut`, no requeue). A default-branch push attempt with no step
+   * started is requeued, as `cancel` does but without the one-requeue limit; one with steps started
+   * is waited for (left running, counted in the drain's wait).
    */
   async cutShadow(mode: "cancel" | "cut_branches" = "cancel"): Promise<number> {
     let n = 0;
@@ -226,12 +228,15 @@ export class Scheduler {
           )) === "live"
         )
           continue;
-        const how =
-          mode === "cancel"
-            ? "requeue"
-            : (await isDefaultBranchPush(this.#o.db, a.scope, a.run))
-              ? "requeue_repeat"
-              : "cut";
+        let how: "cut" | "requeue" | "requeue_repeat" = "requeue";
+        if (mode === "cut_branches") {
+          if (await isDefaultBranchPush(this.#o.db, a.scope, a.run)) {
+            // A default-branch push with steps started is waited for: it stays running and counts
+            // in the drain's wait, never cut and never an infra_error. Before any step, requeue.
+            if (await attemptHasStartedSteps(this.#o.db, a.scope, id)) continue;
+            how = "requeue_repeat";
+          } else how = "cut";
+        }
         if (!(await markDrainCut(this.#o.db, a.scope, id, this.owner))) continue;
         this.#cutting.set(id, how);
       } catch (err) {

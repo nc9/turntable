@@ -1189,7 +1189,8 @@ export const instanceDrainOp = defineOp({
     "requeued once (never a job failure, no failed check); live projects are still waited for. " +
     "With shadow=cut_branches, attempts on a ref other than the project's default branch are cut " +
     "(they end cancelled, labelled as cancelled by deploy drain) and default-branch push attempts " +
-    "are requeued with no rerun used, on every drain. " +
+    "with no step started are requeued with no rerun used, on every drain; one whose steps have " +
+    "started is waited for, never cut. " +
     "The reason is kept in the system audit chain. " +
     "Only the instance administrator can call it. Not an MCP tool.",
   input: z.object({
@@ -1203,7 +1204,8 @@ export const instanceDrainOp = defineOp({
           "off), which gate nothing. wait (default) lets them finish; cancel stops each one now " +
           "as an infrastructure cut and requeues its job once; cut_branches cuts attempts on any ref " +
           "but the project's default branch (cancelled, labelled cancelled by deploy drain) and " +
-          "requeues default-branch push attempts, with no rerun used and no once limit. Live projects' attempts are " +
+          "requeues default-branch push attempts that have started no step, with no rerun used and no once limit " +
+          "(one with steps started is waited for). Live projects' attempts are " +
           "always waited for. Only meaningful with on=true. Each call sets it explicitly: omitted means wait, even if an earlier call set cancel.",
       ),
   }),

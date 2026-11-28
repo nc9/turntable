@@ -885,6 +885,41 @@ export async function isDefaultBranchPush(
   return norm(run.ref) === norm(branch);
 }
 
+/**
+ * Whether an attempt has started a step or launched its exec (#784): the point past which a
+ * default-branch push attempt is waited for by a drain rather than requeued.
+ */
+export async function attemptHasStartedSteps(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+): Promise<boolean> {
+  const [cur] = await db.orm
+    .select({ execId: s.jobAttempts.execId })
+    .from(s.jobAttempts)
+    .where(
+      scoped(
+        scope,
+        { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+        eq(s.jobAttempts.id, attemptId),
+      ),
+    )
+    .limit(1);
+  if (cur?.execId) return true;
+  const [started] = await db.orm
+    .select({ stepKey: s.attemptSteps.stepKey })
+    .from(s.attemptSteps)
+    .where(
+      scoped(
+        scope,
+        { orgId: s.attemptSteps.orgId, projectId: s.attemptSteps.projectId },
+        and(eq(s.attemptSteps.attemptId, attemptId), isNotNull(s.attemptSteps.startedAt)),
+      ),
+    )
+    .limit(1);
+  return started !== undefined;
+}
+
 export type RequeueLostResult = "requeued" | "not_retried" | "no";
 
 /**
