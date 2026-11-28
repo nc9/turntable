@@ -87,13 +87,68 @@ export interface AdoptSpec {
   artifact?: AdoptArtifactSpec;
 }
 
-/** The stored spec, or undefined for none or anything unreadable (the caller then fails closed). */
-export function parseAdoptSpec(raw: string | null | undefined): AdoptSpec | undefined {
-  if (!raw) return undefined;
-  try {
-    const v = JSON.parse(raw) as AdoptSpec;
-    return v && typeof v === "object" && v.v === 1 ? v : undefined;
-  } catch {
-    return undefined;
+/** A stored spec that is present but unusable: the attempt is refused and released, never run. */
+export interface InvalidAdoptSpec {
+  invalid: string;
+}
+
+const isObj = (x: unknown): x is Record<string, unknown> =>
+  typeof x === "object" && x !== null && !Array.isArray(x);
+const isTime = (x: unknown, now: number): x is number =>
+  typeof x === "number" && Number.isFinite(x) && x > 0 && x <= now;
+const isStr = (x: unknown): x is string => typeof x === "string" && x.length > 0;
+const isCheck = (x: unknown): x is string => typeof x === "string" && /^[0-9a-f]{32}$/.test(x);
+
+function validSpec(v: unknown, now: number): string | undefined {
+  if (!isObj(v) || v.v !== 1) return "unknown version";
+  const p = v.proxy;
+  if (p !== undefined) {
+    if (!isObj(p)) return "proxy";
+    if (!isTime(p.issuedAt, now)) return "proxy issuedAt";
+    if (typeof p.ttlMs !== "number" || !Number.isFinite(p.ttlMs) || p.ttlMs <= 0) {
+      return "proxy ttlMs";
+    }
+    if (!isStr(p.rules) || !isStr(p.endpoint) || !isCheck(p.check)) return "proxy fields";
   }
+  const t = v.token;
+  if (t !== undefined) {
+    if (!isObj(t)) return "token";
+    if (!isStr(t.installationId) || !isStr(t.owner) || !isStr(t.repo)) return "token fields";
+    if (!isObj(t.permissions)) return "token permissions";
+    if (!Object.values(t.permissions).every((x) => typeof x === "string")) {
+      return "token permissions";
+    }
+  }
+  if (v.oidc !== undefined && v.oidc !== true) return "oidc";
+  const a = v.artifact;
+  if (a !== undefined) {
+    if (!isObj(a)) return "artifact";
+    if (!isTime(a.issuedAt, now)) return "artifact issuedAt";
+    if (a.mode !== "full" && a.mode !== "upload") return "artifact mode";
+    if (!isCheck(a.check)) return "artifact check";
+  }
+  return undefined;
+}
+
+/**
+ * The stored spec: undefined when there is none, `{ invalid }` when there is one that is not a
+ * well-formed v1 spec (the caller refuses and releases the attempt, fail closed). Never throws.
+ */
+export function parseAdoptSpec(
+  raw: string | null | undefined,
+  now: number = Date.now(),
+): AdoptSpec | InvalidAdoptSpec | undefined {
+  if (!raw) return undefined;
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return { invalid: "unreadable" };
+  }
+  const bad = validSpec(v, now);
+  return bad ? { invalid: bad } : (v as AdoptSpec);
+}
+
+export function invalidSpec(x: AdoptSpec | InvalidAdoptSpec | undefined): x is InvalidAdoptSpec {
+  return x !== undefined && "invalid" in x;
 }

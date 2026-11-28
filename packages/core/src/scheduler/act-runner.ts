@@ -24,9 +24,10 @@ import {
   workflowSubmodulesJobs,
   workflowHeadCheckouts,
 } from "@turntable/act-runner";
+import { UPLOAD_GRANT_MS } from "../artifacts/grants";
 import type { JobArtifactProvider, JobArtifacts } from "../artifacts/job";
 import { CONTROLLER_LOST } from "../db/repos/lease";
-import { type AdoptSpec, parseAdoptSpec } from "./adopt-credentials";
+import { type AdoptSpec, invalidSpec, parseAdoptSpec } from "./adopt-credentials";
 import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
@@ -742,7 +743,12 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         if ("none" in r) return lost(`OIDC credential, ${r.none}`);
         ctx.proxy.setOidcMinter(r.credentialFor);
       }
-      if (spec.artifact) {
+      // An upload grant lives UPLOAD_GRANT_MS from issue. One older than that had already expired
+      // under the old controller: nothing to restore, the job carries on (a long job is not lost).
+      const expired =
+        spec.artifact?.mode === "upload" &&
+        (o.now?.() ?? Date.now()) - spec.artifact.issuedAt >= UPLOAD_GRANT_MS;
+      if (spec.artifact && !expired) {
         if (!o.artifacts || !klass) return lost("artifact credential, no artifact service");
         artifacts = o.artifacts({
           runId: ctx.run.id,
@@ -792,6 +798,8 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     if (ctx.resume && ctx.attempt.plan) {
       const plan = JSON.parse(ctx.attempt.plan) as JobPlan;
       const spec = parseAdoptSpec(ctx.attempt.adoptSpec);
+      // The release wrapper refuses an unusable spec before this; this is the backstop.
+      if (invalidSpec(spec)) return { state: "infra_error", reason: CONTROLLER_LOST };
       // An older attempt (no spec recorded) re-attaches as before.
       if (!spec) return run(ctx, plan, undefined);
       return adopted(ctx, plan, spec);
@@ -1357,6 +1365,14 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       if (ctx.signal.aborted) {
         await release("cancelled before re-attaching");
         return { state: "cancelled", reason: "cancelled by user" };
+      }
+      // An unusable adoption record is refused here too, whatever wraps this runner.
+      const bad = parseAdoptSpec(ctx.attempt.adoptSpec);
+      if (!ctx.refuseResume && invalidSpec(bad)) {
+        ctx = {
+          ...ctx,
+          refuseResume: `re-attached attempt has an unusable adoption record (${bad.invalid}); not resumed`,
+        };
       }
       if (ctx.refuseResume) {
         await release(ctx.refuseResume);

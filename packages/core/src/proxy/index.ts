@@ -40,6 +40,7 @@ import type { AttemptContext, AttemptOutcome, AttemptRunner } from "../scheduler
 import {
   type AdoptProxySpec,
   type AttemptSeeds,
+  invalidSpec,
   parseAdoptSpec,
   sameCheck,
   seedCheck,
@@ -626,7 +627,14 @@ export function withSecretsProxy(
       ...(artifactTarget ? artifactRules(artifactTarget) : []),
     ];
     const passthroughHosts = mayHoldSecrets ? await o.proxy.passthroughFor(ctx.scope) : [];
-    const spec = ctx.resume ? parseAdoptSpec(ctx.attempt.adoptSpec) : undefined;
+    const parsed = ctx.resume ? parseAdoptSpec(ctx.attempt.adoptSpec) : undefined;
+    if (invalidSpec(parsed)) {
+      return runner({
+        ...ctx,
+        refuseResume: `re-attached attempt has an unusable adoption record (${parsed.invalid}); not resumed`,
+      });
+    }
+    const spec = parsed;
     if (ctx.resume && spec) {
       // The job never went behind the proxy (no rule it needed was used): nothing to restore.
       if (!spec.proxy) return runner(ctx);

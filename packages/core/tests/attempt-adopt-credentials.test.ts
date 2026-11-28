@@ -668,7 +668,7 @@ describe("a proxied attempt taken over by the next controller", () => {
   test("a fresh proxied attempt records no block and a spec with no secret in it", async () => {
     const att = await fresh(true);
     expect(att.adoptBlock).toBeNull();
-    const spec = parseAdoptSpec(att.adoptSpec);
+    const spec = parseAdoptSpec(att.adoptSpec) as AdoptSpec | undefined;
     expect(spec?.proxy?.check).toMatch(/^[0-9a-f]{32}$/);
     expect(att.adoptSpec).not.toContain(VALUE);
   });
@@ -757,6 +757,112 @@ describe("a proxied attempt taken over by the next controller", () => {
     expect(done.errorClass).toContain("controller_lost");
     expect(done.errorClass).toContain("secrets proxy");
   }, 30_000);
+
+  // A dead controller's attempt with a stored spec row, taken over by a controller with no proxy.
+  const adoptRow = async (rawSpec: string, argv: string[]) => {
+    const provider = world.provider();
+    const db = openDatabase(":memory:");
+    const org = await createOrg(db, { slug: "a", name: "a" });
+    const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "app" });
+    const scope = { orgId: org.id, projectId: project.id };
+    const run = await createRun(db, scope, {
+      workflowPath: "w.yml",
+      event: "push",
+      ref: "main",
+      sha: "a".repeat(40),
+    });
+    const job = (await createJob(db, scope, { runId: run.id, jobKey: "hello", name: "hello" }))!;
+    const attempt = (await createAttempt(db, scope, { jobId: job.id, provider: "fake" }))!;
+    await claimNextAttempt(db, { owner: "dead", leaseMs: 1, now: 1, globalCap: 99, perOrgCap: 99 });
+    await recordTrustClass(db, scope, attempt.id, "dead", "protected");
+    const sb = await provider.create({
+      name: "job",
+      labels: {},
+      ttlSeconds: 600,
+      network: { egress: "none" },
+    });
+    const { execId } = await provider.exec.start(sb.id, { argv, timeoutSeconds: 60 });
+    const plan = planJob(WORKFLOW, "hello", {
+      workflowPath: "w.yml",
+      event: "push",
+      readFile: () => undefined,
+    });
+    await recordExec(db, scope, attempt.id, "dead", {
+      sandboxId: sb.id,
+      execId,
+      adoptBlock: null,
+      adoptSpec: rawSpec,
+    });
+    await recordPlan(db, scope, attempt.id, "dead", JSON.stringify(plan));
+    const b = new Scheduler({
+      db,
+      owner: "controller-b",
+      providers: () => provider,
+      runner: createActRunner({
+        db,
+        source: {
+          checkout: async () => ({
+            tarball: new Uint8Array(),
+            readFile: (p: string) => (p === "w.yml" ? WORKFLOW : undefined),
+          }),
+        },
+        pollMs: 20,
+      }),
+      leaseMs: 60_000,
+      drain: new DrainState(),
+    });
+    const rec = await reconcileExpired(db, () => provider, {
+      owner: b.owner,
+      leaseMs: 60_000,
+      adopt: (c, x) => void b.adopt(c, x),
+    });
+    expect(rec.adopted).toHaveLength(1);
+    await b.idle();
+    return { done: (await listAttempts(db, scope, job.id))[0]! };
+  };
+
+  test("an upload grant older than its lifetime is nothing to restore: the adopted attempt finishes with its real result", async () => {
+    const spec: AdoptSpec = {
+      v: 1,
+      artifact: { issuedAt: Date.now() - 3 * 3600_000, mode: "upload", check: "0".repeat(32) },
+    };
+    const { done } = await adoptRow(JSON.stringify(spec), ["cat", FIXTURE]);
+    expect(done.state).toBe("success");
+    expect(done.errorClass ?? "").not.toContain("controller_lost");
+  }, 30_000);
+
+  const check = "0".repeat(32);
+  test.each([
+    ["not json", "{nope"],
+    ["wrong version", JSON.stringify({ v: 2 })],
+    [
+      "proxy without a check",
+      JSON.stringify({ v: 1, proxy: { issuedAt: 1, ttlMs: 5, rules: "r", endpoint: "h:1" } }),
+    ],
+    [
+      "issuedAt in the future",
+      JSON.stringify({
+        v: 1,
+        artifact: { issuedAt: Date.now() + 3600_000, mode: "full", check },
+      }),
+    ],
+    [
+      "a mistyped field",
+      JSON.stringify({
+        v: 1,
+        token: { installationId: 1, owner: "o", repo: "r", permissions: {} },
+      }),
+    ],
+  ])(
+    "a malformed spec row (%s) is refused and the sandbox destroyed, nothing runs",
+    async (_n, raw) => {
+      const { done } = await adoptRow(raw, ["sh", "-c", "sleep 30"]);
+      expect(done.state).toBe("infra_error");
+      expect(done.errorClass ?? "").toContain("unusable adoption record");
+      expect(done.sandboxDestroyedAt).not.toBeNull();
+    },
+    30_000,
+  );
 });
 
 async function until(f: () => Promise<boolean>, ms = 10_000): Promise<void> {
