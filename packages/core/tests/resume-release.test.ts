@@ -215,6 +215,23 @@ describe.each(dialects)("resumed attempt (%s)", (_name, open) => {
     expect(audit[0]!.input).toContain("cancelled before re-attaching");
   });
 
+  test("a wrapper's refusal to resume (refuseResume): the exec is stopped, the sandbox destroyed, the job not run", async () => {
+    const r = await setup({ resume: await sandboxWithExec() })();
+    const reason = "re-attached attempt lost its secrets-proxy credential (test); not resumed";
+    const out = await createActRunner({ db, source: source(), pollMs: 25 })({
+      ...r.ctx,
+      refuseResume: reason,
+    });
+    expect(out).toEqual({ state: "infra_error", reason });
+    expect(await provider.list({})).toEqual([]);
+    expect(r.destroyedAt()).toBeGreaterThan(0);
+    expect(r.logs.join("")).toContain(`released sandbox ${r.ctx.resume!.sandboxId}`);
+    expect(r.logs.join("")).not.toContain("hi");
+    const audit = await auditOps();
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.input).toContain("lost its secrets-proxy credential");
+  });
+
   test("a failed destroy is logged and audited as such, and not recorded as destroyed", async () => {
     const sizes = await staleTenantEntry();
     const r = await setup({ resume: await sandboxWithExec() })();

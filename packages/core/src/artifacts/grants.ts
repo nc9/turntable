@@ -8,7 +8,7 @@
 // `scp` claim, so it has three dot-separated parts: a header, a claims part, and a random secret
 // where a signature would be. The claims are not trusted by this service: the grant, found by the
 // hash of the whole token, decides which run and attempt a request is for.
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { TrustClass } from "../trust";
 
 export type ArtifactGrant = {
@@ -44,18 +44,37 @@ export class ArtifactGrants {
     this.#maxMs = o.maxMs ?? 6 * 3600_000;
   }
 
-  /** Mints a credential for the attempt. A second grant for the same attempt replaces the first. */
-  issue(g: Omit<ArtifactGrant, "expiresAt" | "mode"> & { mode?: ArtifactGrant["mode"] }): string {
+  /**
+   * Mints a credential for the attempt. A second grant for the same attempt replaces the first.
+   *
+   * `derive` (#787): the secret part comes from `seed` (a per-attempt key derived from the master
+   * key, never stored) and the lifetime counts from `issuedAt`. Issuing again with the same seed
+   * and time, in another controller, gives the token the job already holds: that is how an
+   * adopted attempt keeps its artifact access. An already expired grant is not issued.
+   */
+  issue(
+    g: Omit<ArtifactGrant, "expiresAt" | "mode"> & { mode?: ArtifactGrant["mode"] },
+    derive?: { seed: Buffer; issuedAt: number },
+  ): string {
     this.revoke(g.attemptId);
+    if (derive && derive.seed.length < 32) throw new Error("seed too short");
     const token = [
       b64({ alg: "none", typ: "JWT" }),
       b64({ scp: `Actions.Results:${g.runId}:${g.attemptId}`, iss: "turntable" }),
-      randomBytes(24).toString("base64url"),
+      derive
+        ? createHmac("sha256", derive.seed)
+            .update("turntable artifact credential v1")
+            .digest()
+            .subarray(0, 24)
+            .toString("base64url")
+        : randomBytes(24).toString("base64url"),
     ].join(".");
     const h = hash(token);
     const mode = g.mode ?? "full";
     const ttl = mode === "upload" ? Math.min(this.#maxMs, UPLOAD_GRANT_MS) : this.#maxMs;
-    this.#byHash.set(h, { ...g, mode, expiresAt: this.#now() + ttl });
+    const expiresAt = (derive ? derive.issuedAt : this.#now()) + ttl;
+    if (expiresAt <= this.#now()) throw new Error("grant already expired");
+    this.#byHash.set(h, { ...g, mode, expiresAt });
     this.#byAttempt.set(g.attemptId, h);
     return token;
   }

@@ -452,6 +452,13 @@ export const jobAttempts = pgTable(
      */
     adoptBlock: text("adopt_block"),
     /**
+     * What another controller needs to rebuild this attempt's credentials (#787), as JSON: times,
+     * the GitHub token's permissions, a hash of the proxy rules, the proxy endpoint and seed check
+     * values (scheduler/adopt-credentials.ts). Never a secret: the credentials themselves are
+     * derived again from the master key. Null: none recorded (an older attempt).
+     */
+    adoptSpec: text("adopt_spec"),
+    /**
      * The log checkpoint (#761): the stored log holds exactly the rendering of the exec's output up
      * to `exec_log_offset` in its first `log_checkpoint` bytes. A controller that re-attaches
      * truncates the stored log there and renders from that exec offset on, so nothing is lost or

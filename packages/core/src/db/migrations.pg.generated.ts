@@ -361,5 +361,12 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE \"runs\" ADD COLUMN \"run_name\" text;"
     ]
+  },
+  {
+    "tag": "0029_attempt_adopt_spec",
+    "when": 1795820959199,
+    "statements": [
+      "ALTER TABLE \"job_attempts\" ADD COLUMN \"adopt_spec\" text;"
+    ]
   }
 ];

@@ -88,6 +88,34 @@ export interface Leaf {
   cert: string;
 }
 
+const P256_N = BigInt("0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
+
+/**
+ * A P-256 private key derived from `seed` (#787): the same seed gives the same key, so a controller
+ * that takes over an attempt rebuilds the CA the sandbox already trusts without the key ever being
+ * stored. The scalar is 384 bits of HKDF output reduced into [1, n-1] (bias below 2^-128).
+ */
+export function derivedEcKey(seed: Buffer, label: string): crypto.KeyObject {
+  if (seed.length < 32) throw new Error("seed too short");
+  const okm = Buffer.from(crypto.hkdfSync("sha256", seed, Buffer.alloc(0), label, 48));
+  const d = (BigInt(`0x${okm.toString("hex")}`) % (P256_N - 1n)) + 1n;
+  const dBuf = Buffer.from(d.toString(16).padStart(64, "0"), "hex");
+  const ecdh = crypto.createECDH("prime256v1");
+  ecdh.setPrivateKey(dBuf);
+  const pub = ecdh.getPublicKey();
+  const b = (x: Buffer): string => x.toString("base64url");
+  return crypto.createPrivateKey({
+    key: {
+      kty: "EC",
+      crv: "P-256",
+      d: b(dBuf),
+      x: b(pub.subarray(1, 33)),
+      y: b(pub.subarray(33, 65)),
+    },
+    format: "jwk",
+  });
+}
+
 /** The CA of one attempt. The CA private key stays inside this object and is never exported. */
 export class JobCa {
   /** PEM of the CA certificate: the one thing given to the sandbox. */
@@ -100,8 +128,18 @@ export class JobCa {
   readonly #from: Date;
   readonly #to: Date;
 
-  constructor(o: { label: string; now: number; ttlMs: number }) {
-    const ca = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  /**
+   * `seed`: derive the CA key from it instead of generating one (#787), so a controller that
+   * adopts the attempt rebuilds a CA with the same name and key as the one the sandbox trusts.
+   * `now` is then the original registration time, so the validity window is the original one too.
+   */
+  constructor(o: { label: string; now: number; ttlMs: number; seed?: Buffer }) {
+    const ca = o.seed
+      ? (() => {
+          const privateKey = derivedEcKey(o.seed, "turntable proxy job ca v1");
+          return { privateKey, publicKey: crypto.createPublicKey(privateKey) };
+        })()
+      : crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
     const leaf = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
     this.#key = ca.privateKey;
     this.#leafKeyPem = leaf.privateKey.export({ type: "pkcs8", format: "pem" }) as string;

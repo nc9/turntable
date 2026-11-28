@@ -37,6 +37,15 @@ import { parseTrust } from "../db/repos/approve";
 import type { SecretVault } from "../secrets/vault";
 import { credentialsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "../scheduler/types";
+import {
+  type AdoptProxySpec,
+  type AttemptSeeds,
+  invalidSpec,
+  parseAdoptSpec,
+  sameCheck,
+  seedCheck,
+  specHash,
+} from "../scheduler/adopt-credentials";
 
 /** What a runner needs to put a job behind the proxy. */
 export interface ProxyAccess {
@@ -50,6 +59,11 @@ export interface ProxyAccess {
   vaultRules: boolean;
   /** The attempt's rules include the upload-only route to the artifact service. */
   artifactUpload?: boolean;
+  /**
+   * How another controller re-registers this same credential (#787), stored with the attempt.
+   * Absent when the proxy has no seed source (no master key): the attempt is then not adoptable.
+   */
+  adopt?: AdoptProxySpec;
   /**
    * Hands the proxy this attempt's GitHub installation token, minted once the job is planned. The
    * proxy attaches it to requests to the run's own repository; the job never holds it.
@@ -224,6 +238,12 @@ export interface SecretsProxyOptions {
   tunnel?: (host: string, port: number) => Promise<net.Socket>;
   now?: () => number;
   log?: (message: string) => void;
+  /**
+   * Per-attempt seeds from the master key (#787). With them each attempt's credential and CA are
+   * derived instead of random, so a controller that adopts the attempt can register them again.
+   * Without them every proxied attempt stays bound to the process that registered it.
+   */
+  seeds?: AttemptSeeds;
 }
 
 interface Live {
@@ -395,6 +415,11 @@ export class SecretsProxy {
     return listPassthroughHosts(this.#o.db, scope);
   }
 
+  /** The endpoint sandboxes are told to use, as `host:port` (compared on adoption). */
+  get endpoint(): string {
+    return `${this.#o.advertiseHost ?? "host.docker.internal"}:${this.#o.advertisePort ?? this.port}`;
+  }
+
   register(
     ctx: AttemptContext,
     rules: readonly Rule[],
@@ -405,19 +430,101 @@ export class SecretsProxy {
       artifactUpload?: boolean;
     },
   ): { access: ProxyAccess; redact: SecretRegistry } {
+    const seed = this.#o.seeds?.("proxy", { orgId: ctx.scope.orgId, attemptId: ctx.attempt.id });
+    const issuedAt = (this.#o.now ?? Date.now)();
+    return this.#register(ctx, rules, {
+      ...o,
+      ...(seed
+        ? {
+            derive: { seed, issuedAt },
+            // Adoptable only on a pinned port: a free port differs in the next process, which
+            // would refuse every adoption, so the attempt stays not adoptable (drain waits).
+            ...(this.#o.port || this.#o.advertisePort
+              ? {
+                  adopt: {
+                    issuedAt,
+                    ttlMs: o.ttlMs,
+                    rules: rulesHash(rules, o.passthroughHosts),
+                    endpoint: this.endpoint,
+                    check: seedCheck(seed),
+                  },
+                }
+              : {}),
+          }
+        : {}),
+    });
+  }
+
+  /**
+   * Registers, for an attempt this controller adopted (#787), the credential the old controller
+   * registered: the same seed, time and rules give the same password and CA, so the sandbox's
+   * proxy URL and trusted CA still work. Refused (with why) when anything differs: no seed source,
+   * another master key, other rules or another endpoint. Nothing then runs with a credential that
+   * is not the one it had.
+   */
+  adopt(
+    ctx: AttemptContext,
+    spec: AdoptProxySpec,
+    rules: readonly Rule[],
+    o: {
+      passthroughHosts: readonly PassthroughEntry[];
+      vaultRules?: boolean;
+      artifactUpload?: boolean;
+    },
+  ): { ok: true; access: ProxyAccess; redact: SecretRegistry } | { ok: false; why: string } {
+    const seed = this.#o.seeds?.("proxy", { orgId: ctx.scope.orgId, attemptId: ctx.attempt.id });
+    if (!seed) return { ok: false, why: "this controller derives no proxy credentials" };
+    if (!sameCheck(seed, spec.check)) return { ok: false, why: "the master key changed" };
+    if (spec.endpoint !== this.endpoint) return { ok: false, why: "the proxy endpoint changed" };
+    if (rulesHash(rules, o.passthroughHosts) !== spec.rules) {
+      return { ok: false, why: "the attempt's proxy rules changed" };
+    }
+    if (spec.issuedAt + spec.ttlMs <= (this.#o.now ?? Date.now)()) {
+      return { ok: false, why: "the credential has expired" };
+    }
+    try {
+      return {
+        ok: true,
+        ...this.#register(ctx, rules, {
+          ...o,
+          ttlMs: spec.ttlMs,
+          derive: { seed, issuedAt: spec.issuedAt },
+          adopt: spec,
+        }),
+      };
+    } catch (e) {
+      return { ok: false, why: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  #register(
+    ctx: AttemptContext,
+    rules: readonly Rule[],
+    o: {
+      passthroughHosts: readonly PassthroughEntry[];
+      ttlMs: number;
+      vaultRules?: boolean;
+      artifactUpload?: boolean;
+      derive?: { seed: Buffer; issuedAt: number };
+      adopt?: AdoptProxySpec;
+    },
+  ): { access: ProxyAccess; redact: SecretRegistry } {
+    const credential = this.#registry.register(
+      {
+        attemptId: ctx.attempt.id,
+        orgId: ctx.scope.orgId,
+        projectId: ctx.scope.projectId,
+        runId: ctx.run.id,
+        jobId: ctx.job.id,
+        rules,
+        passthroughHosts: o.passthroughHosts,
+        ttlMs: o.ttlMs,
+      },
+      o.derive,
+    );
     const redact = new SecretRegistry();
     this.#live.set(ctx.attempt.id, { scope: ctx.scope, redact });
     const live = this.#live.get(ctx.attempt.id);
-    const credential = this.#registry.register({
-      attemptId: ctx.attempt.id,
-      orgId: ctx.scope.orgId,
-      projectId: ctx.scope.projectId,
-      runId: ctx.run.id,
-      jobId: ctx.job.id,
-      rules,
-      passthroughHosts: o.passthroughHosts,
-      ttlMs: o.ttlMs,
-    });
     return {
       access: {
         listen: {
@@ -430,6 +537,7 @@ export class SecretsProxy {
         credential,
         vaultRules: o.vaultRules ?? true,
         artifactUpload: o.artifactUpload ?? false,
+        ...(o.adopt ? { adopt: o.adopt } : {}),
         setGithubToken: (token) => {
           if (live) live.githubToken = token;
         },
@@ -452,6 +560,11 @@ export class SecretsProxy {
   get active(): number {
     return this.#live.size;
   }
+}
+
+/** The hash an adopted attempt's rules must match: what the credential was registered with. */
+function rulesHash(rules: readonly Rule[], passthrough: readonly PassthroughEntry[]): string {
+  return specHash({ rules, passthrough });
 }
 
 export interface SecretsProxyRunnerOptions {
@@ -484,8 +597,10 @@ export interface SecretsProxyRunnerOptions {
  * - GitHub rules (the job's own token, for its own repository) for every class when the run is
  *   bound to an installation. For `untrusted_pr` they are the ONLY rules.
  * - No rules at all: no proxy, egress unchanged.
- * - A re-attached attempt (its credential died with the old process) is refused, fail closed,
- *   when it would have had rules.
+ * - A re-attached attempt (#787) registers again the credential the old controller registered,
+ *   from the spec stored with it, or is refused (infra_error), fail closed: it never runs behind
+ *   a proxy that does not know it, nor with other rules. An older attempt with no spec keeps the
+ *   old rule: refused when it would have had vault rules.
  */
 export function withSecretsProxy(
   runner: AttemptRunner,
@@ -511,25 +626,60 @@ export function withSecretsProxy(
       ...(oidcTarget ? oidcRules(oidcTarget) : []),
       ...(artifactTarget ? artifactRules(artifactTarget) : []),
     ];
+    const passthroughHosts = mayHoldSecrets ? await o.proxy.passthroughFor(ctx.scope) : [];
+    const parsed = ctx.resume ? parseAdoptSpec(ctx.attempt.adoptSpec) : undefined;
+    if (invalidSpec(parsed)) {
+      return runner({
+        ...ctx,
+        refuseResume: `re-attached attempt has an unusable adoption record (${parsed.invalid}); not resumed`,
+      });
+    }
+    const spec = parsed;
+    if (ctx.resume && spec) {
+      // The job never went behind the proxy (no rule it needed was used): nothing to restore.
+      if (!spec.proxy) return runner(ctx);
+      const r = o.proxy.adopt(ctx, spec.proxy, rules, {
+        passthroughHosts,
+        vaultRules: vaultRules.length > 0,
+        artifactUpload: artifactTarget !== undefined,
+      });
+      if (!r.ok) {
+        // The runner releases the inherited sandbox and ends the attempt: returning here would
+        // leave its exec running without its credential.
+        return runner({
+          ...ctx,
+          refuseResume: `re-attached attempt lost its secrets-proxy credential (${r.why}); not resumed`,
+        });
+      }
+      return guarded(ctx, r.access, r.redact);
+    }
     if (rules.length === 0) return runner(ctx);
     if (ctx.resume) {
       // Vault rules: the credential died with the old process, so the job cannot be resumed. With
       // GitHub rules only, the job may or may not have had a token; it carries on without the
       // proxy (a token it held is unusable: its credential is gone), which can only fail closed.
       if (vaultRules.length === 0) return runner(ctx);
-      return {
-        state: "infra_error",
-        reason: "re-attached attempt lost its secrets-proxy credential; not resumed",
-      };
+      return runner({
+        ...ctx,
+        refuseResume: "re-attached attempt lost its secrets-proxy credential; not resumed",
+      });
     }
     const { access, redact } = o.proxy.register(ctx, rules, {
       // Hosts with no rule are tunnelled only if the project listed them, and only for a class
       // that may hold secrets. No list, rule hosts only.
-      passthroughHosts: mayHoldSecrets ? await o.proxy.passthroughFor(ctx.scope) : [],
+      passthroughHosts,
       ttlMs: o.ttlMs ?? 5 * 3600 * 1000,
       vaultRules: vaultRules.length > 0,
       artifactUpload: artifactTarget !== undefined,
     });
+    return guarded(ctx, access, redact);
+  };
+  /** Runs with the registration, and revokes it however the attempt ends (or is handed off). */
+  async function guarded(
+    ctx: AttemptContext,
+    access: ProxyAccess,
+    redact: SecretRegistry,
+  ): Promise<AttemptOutcome> {
     const revoke = (): void => o.proxy.release(ctx.attempt.id);
     ctx.signal.addEventListener("abort", revoke, { once: true });
     try {
@@ -538,7 +688,7 @@ export function withSecretsProxy(
       ctx.signal.removeEventListener("abort", revoke);
       revoke();
     }
-  };
+  }
 }
 
 /**
