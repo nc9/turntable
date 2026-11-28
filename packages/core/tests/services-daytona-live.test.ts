@@ -29,9 +29,9 @@ const live = process.env.TT_DAYTONA_SERVICES_LIVE === "1";
 const snapshot = process.env.TT_DAYTONA_DOCKER_SNAPSHOT;
 
 // The customer shape: steps reach the service on localhost:5432, gated on its health check.
-// The connect step speaks Postgres's SSLRequest and expects the server's one-byte answer, so it
-// proves a Postgres server answered, not just that a port was open.
-const PG_PROBE = `const net=require("net");const s=net.connect(+process.argv[1],process.argv[2]);s.setTimeout(5000,()=>{console.log("probe=timeout");process.exit(2)});s.on("error",e=>{console.log("probe="+e.code);process.exit(2)});s.on("connect",()=>s.write(Buffer.from([0,0,0,8,4,210,22,47])));s.on("data",d=>{console.log("probe=pg-"+String.fromCharCode(d[0]));process.exit(0)});`;
+// The connect step speaks Postgres's SSLRequest from the job container (bash /dev/tcp) and expects
+// the server's one-byte answer (`N`), so it proves a Postgres server answered, not just an open port.
+const PG_PROBE = `pg_probe() { exec 3<>"/dev/tcp/$1/$2" || { echo probe=refused; return 2; }; printf '\\x00\\x00\\x00\\x08\\x04\\xd2\\x16\\x2f' >&3; echo "probe=pg-$(timeout 5 head -c1 <&3)"; exec 3>&-; }`;
 
 const WORKFLOW = `name: services
 on: push
@@ -48,14 +48,18 @@ jobs:
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
     steps:
       - name: connect on localhost
-        run: node -e '${PG_PROBE}' "\${{ job.services.postgres.ports[5432] }}" 127.0.0.1
+        shell: bash
+        run: |
+          ${PG_PROBE}
+          pg_probe 127.0.0.1 "\${{ job.services.postgres.ports[5432] }}"
       - name: ports context
         run: echo "ports-context=\${{ job.services.postgres.ports['5432'] }}"
       - name: not published beyond loopback
+        shell: bash
         run: |
           ip=$(hostname -I | awk '{print $1}')
           if [ -z "$ip" ]; then echo "no non-loopback address"; exit 1; fi
-          if node -e '${PG_PROBE}' 5432 "$ip"; then echo "outside=reachable"; exit 1; fi
+          if timeout 5 bash -c "exec 3<>/dev/tcp/$ip/5432" 2>/dev/null; then echo "outside=reachable"; exit 1; fi
           echo "outside=refused"
   sick:
     runs-on: ubuntu-latest
