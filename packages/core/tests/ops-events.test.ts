@@ -178,6 +178,7 @@ test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async (
   expect(await run("job_steps", { job_id: a.jobId })).toEqual({
     job_id: a.jobId,
     attempt: 1,
+    cancel_reason: null,
     log_incomplete: false,
     steps: [],
   });
@@ -260,6 +261,7 @@ test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async (
   expect(await run("job_steps", { job_id: j.id })).toEqual({
     job_id: j.id,
     attempt: null,
+    cancel_reason: null,
     log_incomplete: false,
     steps: [],
   });

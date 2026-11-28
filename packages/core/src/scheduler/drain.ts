@@ -2,8 +2,13 @@
 // queued in the database and running attempts finish. The flag lives in this process only and is
 // never persisted, so a restart (a deploy) always boots undrained and the queue resumes.
 
-/** What a drain does with running attempts of projects that gate nothing (checks `shadow` or `off`). */
-export type ShadowDrainMode = "wait" | "cancel";
+/**
+ * What a drain does with running attempts of projects that gate nothing (checks `shadow` or `off`):
+ * `wait` lets them finish; `cancel` stops each and requeues its job once; `cut_branches` (#784)
+ * cuts attempts on any ref but the project's default branch and requeues default-branch push
+ * attempts, so a deploy gate waiting for green on that sha is never stranded.
+ */
+export type ShadowDrainMode = "wait" | "cancel" | "cut_branches";
 
 export type DrainSnapshot = { draining: boolean; since: number | null; reason: string | null };
 
@@ -13,10 +18,10 @@ export class DrainState {
   #running: () => number = () => 0;
   #shadow: ShadowDrainMode = "wait";
   #shadowCut = 0;
-  #cutter: () => Promise<number> = async () => 0;
+  #cutter: (mode: "cancel" | "cut_branches") => Promise<number> = async () => 0;
 
   /** Stops running shadow attempts and returns how many (set by the scheduler, #480). */
-  trackShadowCutter(cut: () => Promise<number>): void {
+  trackShadowCutter(cut: (mode: "cancel" | "cut_branches") => Promise<number>): void {
     this.#cutter = cut;
   }
 
@@ -31,13 +36,14 @@ export class DrainState {
 
   /**
    * Sets what the drain does with shadow attempts. `cancel` stops each running attempt of a
-   * non-live project now (once, as an infra cut) and counts it; `wait` leaves them. A no-op when
+   * non-live project now (once, as an infra cut) and counts it; `cut_branches` does the same but
+   * by ref (see `ShadowDrainMode`); `wait` leaves them. A no-op when
    * not draining.
    */
   async applyShadow(mode: ShadowDrainMode): Promise<void> {
     if (this.#since === null) return;
     this.#shadow = mode;
-    if (mode === "cancel") this.#shadowCut += await this.#cutter();
+    if (mode !== "wait") this.#shadowCut += await this.#cutter(mode);
   }
 
   /** Attempts this process is running, for `/healthz` (set by the scheduler). */

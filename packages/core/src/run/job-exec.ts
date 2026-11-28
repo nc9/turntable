@@ -327,6 +327,10 @@ export async function executeJob(
         Date.now(),
         cap === undefined ? undefined : Math.min(ttlSeconds, cap),
       );
+      // `provider.create` takes no signal, so a stop (a drain cut, a cancel) that landed while it
+      // ran is seen only now: settle before anything is uploaded or act starts, so a cut attempt
+      // provably never ran a step (#784).
+      if (cancelled) return await settle("cancelled", "cancelled by user");
       let proxyUrl: string | undefined;
       if (proxied) {
         if (!sb.proxy) {

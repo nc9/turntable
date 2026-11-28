@@ -160,6 +160,10 @@ A moved tag, a refused owner, an unpinned or unreachable action and the other de
 
 Two optional project policies tighten this further. `require_sha_pins` refuses any `uses:` that is not already a full commit sha. The org's action owner allowlist refuses actions from any owner not on it (`turntable policy set --allow-owners actions,oven-sh`). Both are off by default and apply to nested actions inside local composite actions too.
 
+## Expression output limit
+
+Plan-time expressions (`if:`, `run-name`, `matrix`, `runs-on`, `${{ }}` in names and the rest) are evaluated on the control plane, and `github.event` carries text a fork PR author controls. `format`, `join`, `toJSON` and `${{ }}` interpolation stop and fail the expression as soon as their output passes 64 KiB. The cap is checked while the string is built, never after, so an expression like `format('{0}{0}...', toJSON(github))` is refused by size without allocating the result. A `run-name` that hits the limit falls back to the default title with a warning. The stored run title is also cut to 200 characters and trimmed.
+
 ## Job cache
 
 Implemented. The control-plane cache assigns each job a namespace from its org, project, trust class and ref scope. A job writes only to its own namespace and never reads one written by a lower trust class, release jobs restore nothing unless a project opts in, each trust class has its own share of the org quota and evicts only within it, archives are validated before they can be restored, and the per-job credential dies with the job. See [Job cache](/cache). Issue [#38](https://github.com/turntable-ci/turntable/issues/38).
