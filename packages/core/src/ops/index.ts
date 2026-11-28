@@ -65,6 +65,8 @@ import {
   createProjectOp,
   getProjectSettings,
   setProjectSettings,
+  setProjectEgressOp,
+  tightenProjectEgress,
 } from "./definitions/project-settings";
 import { createApiToken } from "./definitions/create-api-token";
 import { listApiTokensOp } from "./definitions/list-api-tokens";
@@ -310,6 +312,8 @@ export const registry = createRegistry([
   setOidcAudiencesOp,
   getProjectSettings,
   setProjectSettings,
+  setProjectEgressOp,
+  tightenProjectEgress,
   createProjectOp,
   createWebhookOp,
   webhookEndpointsOp,

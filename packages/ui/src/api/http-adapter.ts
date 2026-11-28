@@ -246,6 +246,8 @@ function mapAttempt(a: WireAttempt, job: WireJob, run: WireRun, org: string): Jo
     sandboxCreatedAt: ms(a.sandbox_created_at),
     sandboxDestroyedAt: ms(a.sandbox_destroyed_at),
     sandboxSeconds: a.sandbox_seconds,
+    waitingReason: a.waiting_reason ?? null,
+    queuedMsByReason: a.queued_ms_by_reason ?? {},
   };
 }
 
@@ -836,6 +838,24 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       return mapApprovalPolicy(
         await call<WireApprovalPolicy>("GET", "/approval-policy", { org: org() }),
       );
+    },
+
+    async getProjectEgress({ project }) {
+      const w = await call<{ egress: "none" | "allowlist" | "open" }>("GET", "/project-settings", {
+        org: org(),
+        project,
+      });
+      return w.egress;
+    },
+
+    async tightenProjectEgress({ project, egress }) {
+      const w = await call<{ to: "none" | "allowlist" | "open"; warnings: string[] }>(
+        "POST",
+        "/project-egress",
+        { org: org(), project },
+        { egress },
+      );
+      return { egress: w.to, warnings: w.warnings };
     },
 
     async setApprovalPolicy({

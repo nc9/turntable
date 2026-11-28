@@ -18,6 +18,7 @@ import {
   ifLeaseHeld,
   isAdoptable,
   markDrainCut,
+  markWaiting,
   isDefaultBranchPush,
   attemptHasStartedSteps,
   DRAIN_CUT,
@@ -282,7 +283,15 @@ export class Scheduler {
     let started = 0;
     for (;;) {
       // Draining: nothing new starts. Queued work stays queued; running attempts carry on.
-      if (this.#o.drain.draining) return started;
+      if (this.#o.drain.draining) {
+        // Say why they wait (#775); a no-op once every queued attempt already says so.
+        await markWaiting(this.#o.db, {
+          reason: "drain",
+          now: this.#o.now(),
+          onlyRun: this.#o.onlyRun,
+        }).catch((err) => this.#o.log(`could not mark the queue as draining: ${String(err)}`));
+        return started;
+      }
       // Degraded network (#698): nothing is claimed; the queue waits and resumes in order.
       if (this.#o.network.degraded) return started;
       const now = this.#o.now();
