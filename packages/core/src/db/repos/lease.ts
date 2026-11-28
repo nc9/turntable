@@ -51,7 +51,7 @@ import {
   type QuotaStatus,
   type QuotaUsage,
 } from "./quotas";
-import { groupBlocked } from "./poll";
+import { getProjectIngest, groupBlocked } from "./poll";
 import { projectsWithCaps, yieldProjects } from "./project-settings";
 import {
   defaultReadiness,
@@ -847,6 +847,88 @@ export function markDrainCut(
 export const DRAIN_CUT_NOT_RETRIED =
   "cut by a drain after steps started; not retried for a protected or release job: rerun it by hand";
 
+/** What get_run and job_steps show for an attempt a drain cut or requeued (#784). */
+export const DRAIN_CUT_LABEL = "cancelled by deploy drain";
+
+/** The label for an attempt a deploy drain cut or requeued, else null. */
+export function drainCutLabel(errorClass: string | null | undefined): string | null {
+  if (!errorClass) return null;
+  return errorClass === DRAIN_CUT ||
+    errorClass.startsWith(`${CONTROLLER_LOST} (drain cancel)`) ||
+    errorClass === DRAIN_CUT_NOT_RETRIED
+    ? DRAIN_CUT_LABEL
+    : null;
+}
+
+/**
+ * Whether a run is a push to the project's default branch (#784), from the ingest settings'
+ * `defaultBranch`. A project with no known default branch counts a push run as one: it is requeued
+ * rather than cut, so a deploy gate can never be stranded by a guess.
+ */
+export async function isDefaultBranchPush(
+  db: Db,
+  scope: Scope,
+  run: { event: string; ref: string },
+): Promise<boolean> {
+  if (run.event !== "push") return false;
+  let branch: string | undefined;
+  try {
+    const json = await getProjectIngest(db, scope);
+    const parsed: unknown = json ? JSON.parse(json) : null;
+    const d = (parsed as { defaultBranch?: unknown } | null)?.defaultBranch;
+    if (typeof d === "string" && d !== "") branch = d;
+  } catch {
+    branch = undefined;
+  }
+  if (branch === undefined) return true;
+  const norm = (r: string): string => r.replace(/^refs\/heads\//, "");
+  return norm(run.ref) === norm(branch);
+}
+
+/**
+ * Whether an attempt has started a step or launched its exec (#784): the point past which a
+ * default-branch push attempt is waited for by a drain rather than requeued. It follows the rule
+ * `requeueLostAttemptOnce` uses: when the attempt's trust class is not `retryableAfterSteps`
+ * (protected, release, none), a recorded `sandbox_id` also counts, since the runner records it
+ * before exec starts and a requeue would refuse the attempt (`not_retried`, a stranded gate).
+ */
+export async function attemptHasStartedSteps(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  retryable: (trustClass: string | null) => boolean = retryableAfterSteps,
+): Promise<boolean> {
+  const [cur] = await db.orm
+    .select({
+      execId: s.jobAttempts.execId,
+      sandboxId: s.jobAttempts.sandboxId,
+      trustClass: s.jobAttempts.trustClass,
+    })
+    .from(s.jobAttempts)
+    .where(
+      scoped(
+        scope,
+        { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+        eq(s.jobAttempts.id, attemptId),
+      ),
+    )
+    .limit(1);
+  if (cur?.execId) return true;
+  if (cur?.sandboxId && !retryable(cur.trustClass ?? null)) return true;
+  const [started] = await db.orm
+    .select({ stepKey: s.attemptSteps.stepKey })
+    .from(s.attemptSteps)
+    .where(
+      scoped(
+        scope,
+        { orgId: s.attemptSteps.orgId, projectId: s.attemptSteps.projectId },
+        and(eq(s.attemptSteps.attemptId, attemptId), isNotNull(s.attemptSteps.startedAt)),
+      ),
+    )
+    .limit(1);
+  return started !== undefined;
+}
+
 export type RequeueLostResult = "requeued" | "not_retried" | "no";
 
 /**
@@ -863,7 +945,7 @@ export type RequeueLostResult = "requeued" | "not_retried" | "no";
  * row with `started_at` AND no `exec_id` AND no `sandbox_id`. The runner records `sandbox_id`
  * (awaited) before it uploads anything or starts act, and records `exec_id` only AFTER
  * `exec.start` returned, so a NULL `exec_id` alone would not prove act never started; a NULL
- * `sandbox_id` does (the cut came while the sandbox was being created). Otherwise a protected or
+ * `sandbox_id` does (the cut came while the sandbox was being created), unless the caller says the sandbox was recorded after the cut (`sandboxAfterCut`). Otherwise a protected or
  * release job may have deployed or published, so nothing is changed except an
  * `attempt.drain_cut_not_retried` event and audit entry, and "not_retried" is returned: the
  * caller ends the attempt `infra_error` with `DRAIN_CUT_NOT_RETRIED`. An attempt with no recorded
@@ -885,6 +967,17 @@ export function requeueLostAttemptOnce(
      * stopped the sandbox.
      */
     requireExpired?: boolean;
+    /**
+     * A default-branch push attempt cut by a drain (#784) is requeued after every drain, not once:
+     * skips the check for an earlier lost attempt of the job.
+     */
+    repeatable?: boolean;
+    /**
+     * The cut was chosen while no sandbox was recorded (#784), so a `sandbox_id` seen now was
+     * recorded after the cut, and the runner settles before it uploads or starts act once it sees
+     * the stop: it does not count as a launch. An `exec_id` or a started step still does.
+     */
+    sandboxAfterCut?: boolean;
     /** The trust-class half of the rule: `retryableAfterSteps` from `@turntable/act-runner`. */
     retryableAfterSteps: (trustClass: string | null) => boolean;
   },
@@ -912,9 +1005,9 @@ export function requeueLostAttemptOnce(
     const earlier = (await listAttempts(tx, scope, cur.jobId)).filter(
       (a) => a.id !== cur.id && a.errorClass?.startsWith(CONTROLLER_LOST),
     );
-    if (earlier.length > 0) return "no";
+    if (earlier.length > 0 && !input.repeatable) return "no";
     if (!input.retryableAfterSteps(cur.trustClass)) {
-      const launched = cur.sandboxId !== null || cur.execId !== null;
+      const launched = (cur.sandboxId !== null && !input.sandboxAfterCut) || cur.execId !== null;
       const [started] = launched
         ? [{ stepKey: "" }]
         : await tx.orm
